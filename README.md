@@ -75,6 +75,14 @@ python3 scripts/obsidian_memory.py audit --project "My Project"
 python3 scripts/obsidian_memory.py doctor
 ```
 
+7. Configure automatic audit cadence (default is every 5 runs):
+
+```bash
+python3 scripts/obsidian_memory.py set-audit-frequency --runs 5
+```
+
+Set `--runs 0` to disable automatic audits.
+
 ## Install In Codex
 
 Copy or symlink the skill into your Codex skills directory:
@@ -85,6 +93,33 @@ cp -R ./ "$CODEX_HOME/skills/obsidian-cli-memory-bank"
 ```
 
 Then trigger it by mentioning `obsidian-cli-memory-bank` in your task.
+
+### Codex Native Hook (notify)
+
+Codex supports a `notify` command hook that runs when a turn completes (`agent-turn-complete` payload).
+This repository includes a ready-to-install hook that auto-logs each Codex turn into the project memory bank.
+
+Install:
+
+```bash
+cd /absolute/path/to/obsidian-cli-memory-bank-skill
+chmod +x scripts/install_codex_notify_hook.sh scripts/codex_notify_hook.py
+./scripts/install_codex_notify_hook.sh
+```
+
+Then verify:
+
+```bash
+python3 scripts/obsidian_memory.py doctor
+```
+
+What it does:
+
+- reads Codex notify payload (`cwd`, `input-messages`, `last-assistant-message`)
+- resolves vault mapping for that workspace
+- writes a `record-run` note automatically
+- runs `audit` automatically every N runs (configurable via `set-audit-frequency`)
+- skips silently if no vault mapping exists for the workspace
 
 ## Install In Claude / Gemini CLI / Other Agents
 
@@ -109,7 +144,7 @@ Short answer: partial, unless your agent platform supports prompt hooks.
 
 - The script itself is persistent for vault mapping (`state/vault_config.json`), so once set, future runs can reuse the same vault for that workspace.
 - Triggering the skill on every prompt depends on your agent runtime:
-  - Codex: add a standing instruction in your global/project instructions to always call this workflow at task start/end.
+  - Codex: use native `notify` hook (included here) for automatic post-turn logging, and keep standing instructions for pre-task retrieval behavior.
   - Claude (Code): include SKILL.md in project instructions and define a reusable slash command/macro that wraps every task.
   - Gemini CLI: wrap your normal command in a shell script that runs `show-vault`/`record-run` before and after model calls.
 - Without native hooks, true automatic “every prompt” execution is not guaranteed by the model alone.

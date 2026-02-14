@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from scripts.obsidian_memory import (
+    DEFAULT_AUDIT_EVERY_RUNS,
     PROJECTS_INDEX_PATH,
     _contains_cli_error,
     ConfigStore,
@@ -73,6 +74,27 @@ class ObsidianMemoryTests(unittest.TestCase):
 
             raw = json.loads(state_file.read_text(encoding="utf-8"))
             self.assertEqual(raw["default_vault_path"], str(vault.resolve()))
+
+    def test_config_store_audit_frequency_and_counter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_file = tmp_path / "vault_config.json"
+            workspace = tmp_path / "workspace"
+            workspace.mkdir(parents=True, exist_ok=True)
+            store = ConfigStore(state_file=state_file)
+
+            self.assertEqual(store.get_audit_every_runs(), DEFAULT_AUDIT_EVERY_RUNS)
+            store.set_audit_every_runs(3)
+            self.assertEqual(store.get_audit_every_runs(), 3)
+
+            first = store.bump_run_counter(workspace, "sequency")
+            second = store.bump_run_counter(workspace, "sequency")
+            self.assertEqual(first, 1)
+            self.assertEqual(second, 2)
+
+            store.reset_run_counter(workspace, "sequency")
+            reset = store.bump_run_counter(workspace, "sequency")
+            self.assertEqual(reset, 1)
 
 
 if __name__ == "__main__":

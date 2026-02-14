@@ -108,6 +108,15 @@ This runs:
 - `obsidian deadends`
 - `obsidian backlinks path="<project-home-note>" counts`
 
+Automatic behavior: `record-run` triggers auto-audit every N runs (default `5`).
+Change cadence:
+
+```bash
+python3 scripts/obsidian_memory.py set-audit-frequency --runs 5
+```
+
+Set `--runs 0` to disable auto-audit.
+
 ### 6) Health-check setup
 
 Run:
@@ -126,6 +135,17 @@ Use this pattern to behave as “always-on” memory:
 2. At task start, run `search` for key topic terms before proposing changes.
 3. At task end, run `record-run` with summary + rationale.
 4. Run `audit` periodically (or after major refactors).
+
+### Codex Hook Integration
+
+Codex supports a native `notify` hook for `agent-turn-complete`. Enable automatic post-turn logging:
+
+```bash
+chmod +x scripts/install_codex_notify_hook.sh scripts/codex_notify_hook.py
+./scripts/install_codex_notify_hook.sh
+```
+
+The hook auto-runs `record-run` for mapped workspaces and no-ops when a mapping is missing.
 
 ## Rules
 

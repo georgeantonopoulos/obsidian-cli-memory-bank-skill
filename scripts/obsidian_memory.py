@@ -20,6 +20,7 @@ STATE_DIR = SKILL_ROOT / "state"
 STATE_FILE = STATE_DIR / "vault_config.json"
 PROJECT_ROOT = "Project Memory"
 PROJECTS_INDEX_PATH = Path(PROJECT_ROOT) / "Projects Index.md"
+DEFAULT_AUDIT_EVERY_RUNS = 5
 
 
 def slugify(value: str) -> str:
@@ -40,13 +41,22 @@ class ConfigStore:
 
     def load(self) -> Dict[str, object]:
         if not self.state_file.exists():
-            return {"default_vault_path": "", "workspace_vaults": {}}
+            return {
+                "default_vault_path": "",
+                "workspace_vaults": {},
+                "audit_every_runs": DEFAULT_AUDIT_EVERY_RUNS,
+                "run_counters": {},
+            }
         with self.state_file.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
         if "workspace_vaults" not in data or not isinstance(data["workspace_vaults"], dict):
             data["workspace_vaults"] = {}
         if "default_vault_path" not in data:
             data["default_vault_path"] = ""
+        if "audit_every_runs" not in data or not isinstance(data["audit_every_runs"], int):
+            data["audit_every_runs"] = DEFAULT_AUDIT_EVERY_RUNS
+        if "run_counters" not in data or not isinstance(data["run_counters"], dict):
+            data["run_counters"] = {}
         return data
 
     def save(self, data: Dict[str, object]) -> None:
@@ -76,6 +86,41 @@ class ConfigStore:
                 if key in workspace_map:
                     return workspace_map[key]
         return str(data.get("default_vault_path", ""))
+
+    def get_audit_every_runs(self) -> int:
+        data = self.load()
+        value = data.get("audit_every_runs", DEFAULT_AUDIT_EVERY_RUNS)
+        if not isinstance(value, int):
+            return DEFAULT_AUDIT_EVERY_RUNS
+        return max(0, value)
+
+    def set_audit_every_runs(self, runs: int) -> None:
+        data = self.load()
+        data["audit_every_runs"] = max(0, runs)
+        self.save(data)
+
+    def bump_run_counter(self, workspace: Path, project_slug: str) -> int:
+        data = self.load()
+        counters: Dict[str, int] = data.get("run_counters", {})  # type: ignore[assignment]
+        key = self._counter_key(workspace, project_slug)
+        next_value = int(counters.get(key, 0)) + 1
+        counters[key] = next_value
+        data["run_counters"] = counters
+        self.save(data)
+        return next_value
+
+    def reset_run_counter(self, workspace: Path, project_slug: str) -> None:
+        data = self.load()
+        counters: Dict[str, int] = data.get("run_counters", {})  # type: ignore[assignment]
+        key = self._counter_key(workspace, project_slug)
+        if key in counters:
+            del counters[key]
+            data["run_counters"] = counters
+            self.save(data)
+
+    @staticmethod
+    def _counter_key(workspace: Path, project_slug: str) -> str:
+        return f"{normalize_workspace(workspace)}::{project_slug}"
 
 
 @dataclass
@@ -379,6 +424,11 @@ def bootstrap_project(cli: ObsidianCLI, project: str) -> NotePaths:
     return paths
 
 
+def resolve_workspace_path(workspace_arg: Optional[str]) -> Path:
+    workspace = Path(workspace_arg).expanduser() if workspace_arg else Path.cwd()
+    return workspace.resolve()
+
+
 def cmd_set_vault(args: argparse.Namespace) -> None:
     store = ConfigStore()
     vault_path = Path(args.vault_path).expanduser()
@@ -390,7 +440,7 @@ def cmd_set_vault(args: argparse.Namespace) -> None:
 
 def resolve_vault_or_exit(workspace_arg: Optional[str]) -> Path:
     store = ConfigStore()
-    workspace = Path(workspace_arg).expanduser() if workspace_arg else Path.cwd()
+    workspace = resolve_workspace_path(workspace_arg)
     vault = store.resolve_vault(workspace=workspace)
     if not vault:
         raise SystemExit(
@@ -415,6 +465,8 @@ def cmd_bootstrap(args: argparse.Namespace) -> None:
 
 
 def cmd_record_run(args: argparse.Namespace) -> None:
+    store = ConfigStore()
+    workspace = resolve_workspace_path(args.workspace)
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
     project = args.project.strip()
@@ -467,6 +519,16 @@ def cmd_record_run(args: argparse.Namespace) -> None:
     if args.questions:
         cli.append(paths.questions, f"- [[{run_note_path.stem}]]: {args.questions.strip()}")
     print(f"Recorded run note: {run_note_path.as_posix()}")
+    audit_every = store.get_audit_every_runs()
+    if audit_every <= 0:
+        return
+    run_count = store.bump_run_counter(workspace, paths.project_slug)
+    if run_count < audit_every:
+        print(f"Auto-audit: skipped ({run_count}/{audit_every} runs).")
+        return
+    print(f"Auto-audit: threshold reached ({run_count}/{audit_every}), running audit.")
+    run_audit_checks(cli, paths)
+    store.reset_run_counter(workspace, paths.project_slug)
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -489,6 +551,10 @@ def cmd_audit(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
     paths = build_note_paths(args.project.strip())
+    run_audit_checks(cli, paths)
+
+
+def run_audit_checks(cli: ObsidianCLI, paths: NotePaths) -> None:
     checks = [
         ("unresolved", ["counts", "verbose"]),
         ("orphans", []),
@@ -530,10 +596,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(f"Workspace: {workspace.resolve()}")
     store = ConfigStore()
     mapped = store.resolve_vault(workspace)
+    audit_every = store.get_audit_every_runs()
     if mapped:
         print(f"Mapped vault: {mapped}")
     else:
         print("Mapped vault: <none>")
+    print(f"Auto-audit frequency: every {audit_every} run(s)")
     try:
         version = subprocess.run(
             ["obsidian", "version"],
@@ -568,6 +636,12 @@ def os_access(path: Path) -> bool:
         return True
     except OSError:
         return False
+
+
+def cmd_set_audit_frequency(args: argparse.Namespace) -> None:
+    store = ConfigStore()
+    store.set_audit_every_runs(args.runs)
+    print(f"Saved auto-audit frequency: every {max(0, args.runs)} run(s).")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -634,6 +708,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser_doctor = subparsers.add_parser("doctor", help="Validate CLI/vault readiness")
     parser_doctor.add_argument("--workspace", help="Workspace path override")
     parser_doctor.set_defaults(func=cmd_doctor)
+
+    parser_audit_frequency = subparsers.add_parser(
+        "set-audit-frequency",
+        help="Set automatic audit cadence for record-run (0 disables auto-audit)",
+    )
+    parser_audit_frequency.add_argument(
+        "--runs",
+        required=True,
+        type=int,
+        help="Run interval for automatic audit (e.g., 5 means every 5 runs)",
+    )
+    parser_audit_frequency.set_defaults(func=cmd_set_audit_frequency)
 
     return parser
 
