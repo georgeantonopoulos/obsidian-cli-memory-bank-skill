@@ -14,7 +14,7 @@ It helps an agent:
 - `SKILL.md` - main skill instructions
 - `scripts/obsidian_memory.py` - helper CLI for vault mapping + note automation
 - `scripts/hook_common.py` - shared helper runtime for notify adapters
-- `scripts/codex_notify_hook.py` - Codex notify adapter
+- `scripts/codex_notify_hook.py` - Codex notify adapter (optional)
 - `scripts/claude_notify_hook.py` - Claude Code adapter
 - `scripts/cursor_notify_hook.py` - Cursor adapter
 - `scripts/antigravity_notify_hook.py` - Antigravity adapter
@@ -68,12 +68,15 @@ cd obsidian-cli-memory-bank-skill
 Resolve skill path robustly (works even if `CODEX_HOME` is unset):
 
 ```bash
-if [ -n "${CODEX_HOME:-}" ] && [ -d "$CODEX_HOME/skills/obsidian-cli-memory-bank" ]; then
+if [ -f "./scripts/obsidian_memory.py" ]; then
+  SKILL_DIR="$(pwd)"
+elif [ -n "${CODEX_HOME:-}" ] && [ -d "$CODEX_HOME/skills/obsidian-cli-memory-bank" ]; then
   SKILL_DIR="$CODEX_HOME/skills/obsidian-cli-memory-bank"
 elif [ -d "$HOME/.codex/skills/obsidian-cli-memory-bank" ]; then
   SKILL_DIR="$HOME/.codex/skills/obsidian-cli-memory-bank"
 else
-  SKILL_DIR="$(pwd)"
+  echo "Set SKILL_DIR to your local obsidian-cli-memory-bank path"
+  exit 1
 fi
 ```
 
@@ -129,7 +132,7 @@ python3 "$SKILL_DIR/scripts/obsidian_memory.py" set-audit-frequency --runs 5
 
 Set `--runs 0` to disable automatic audits.
 
-## Install In Codex
+## Codex (Optional)
 
 Copy or symlink the skill into your Codex skills directory:
 
@@ -251,6 +254,10 @@ Not all agents expose native hooks. Use this fallback:
 2. Load `SKILL.md` into your agent's system prompt/project instructions.
 3. Execute `scripts/obsidian_memory.py` manually before/after major tasks.
 4. Use the relevant adapter script if your runtime can emit event JSON.
+
+This project is intentionally usable without Codex-specific features:
+- primary interface: `obmem ...` (or `python3 scripts/obsidian_memory.py ...`)
+- hooks/adapters are additive, not required
 
 Suggested prompt snippet:
 

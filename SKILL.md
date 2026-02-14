@@ -1,6 +1,6 @@
 ---
 name: obsidian-cli-memory-bank
-description: Build and maintain project-specific Obsidian knowledge bases through Obsidian CLI. Use when Codex needs to (1) ask once for a vault and persist it for a workspace, (2) capture prompt/run context as structured Markdown notes, (3) auto-link notes with wikilinks for strong backlink coverage, (4) retrieve context quickly via Obsidian CLI search/read commands, or (5) audit graph hygiene with unresolved/orphan/dead-end link checks.
+description: Build and maintain project-specific Obsidian knowledge bases through Obsidian CLI. Use when an agent needs to (1) ask once for a vault and persist it for a workspace, (2) capture prompt/run context as structured Markdown notes, (3) auto-link notes with wikilinks for strong backlink coverage, (4) retrieve context quickly via Obsidian CLI search/read commands, or (5) audit graph hygiene with unresolved/orphan/dead-end link checks.
 ---
 
 # Obsidian Cli Memory Bank
@@ -18,15 +18,15 @@ Persist the vault path once, then bootstrap/update project notes on every releva
 
 ## Workflow
 
-Resolve the skill path first. Do **not** assume `$CODEX_HOME` is set:
+Resolve the skill path first. Do **not** assume any one agent runtime path:
 
 ```bash
-if [ -n "${CODEX_HOME:-}" ] && [ -d "$CODEX_HOME/skills/obsidian-cli-memory-bank" ]; then
+if [ -f "./scripts/obsidian_memory.py" ]; then
+  SKILL_DIR="$(pwd)"
+elif [ -n "${CODEX_HOME:-}" ] && [ -d "$CODEX_HOME/skills/obsidian-cli-memory-bank" ]; then
   SKILL_DIR="$CODEX_HOME/skills/obsidian-cli-memory-bank"
 elif [ -d "$HOME/.codex/skills/obsidian-cli-memory-bank" ]; then
   SKILL_DIR="$HOME/.codex/skills/obsidian-cli-memory-bank"
-elif [ -f "./scripts/obsidian_memory.py" ]; then
-  SKILL_DIR="$(pwd)"
 else
   echo "Need absolute path to obsidian-cli-memory-bank skill directory."
   exit 1
@@ -110,7 +110,6 @@ python3 "$SKILL_DIR/scripts/obsidian_memory.py" search --project "Sequency" --qu
 
 # inspect a key note
 python3 "$SKILL_DIR/scripts/obsidian_memory.py" read-note \
-  --project "Sequency" \
   --path "Project Memory/sequency/Decisions.md"
 ```
 
@@ -157,9 +156,11 @@ Use this pattern to behave as “always-on” memory:
 3. At task end, run `record-run` with summary + rationale.
 4. Run `audit` periodically (or after major refactors).
 
-### Codex Hook Integration
+### Hook Integration (Optional)
 
-Codex supports a native `notify` hook for `agent-turn-complete`. Enable automatic post-turn logging:
+For runtimes that support hook events, use the matching adapter script.
+
+Codex supports a native `notify` hook for `agent-turn-complete`. To enable it:
 
 ```bash
 chmod +x scripts/install_codex_notify_hook.sh scripts/codex_notify_hook.py
