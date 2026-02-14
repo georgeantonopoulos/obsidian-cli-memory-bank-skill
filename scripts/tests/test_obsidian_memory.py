@@ -13,6 +13,7 @@ from scripts.obsidian_memory import (
     build_seed_notes,
     ensure_project_dirs,
     parse_tags,
+    sanitize_note_title_component,
     slugify,
 )
 
@@ -31,6 +32,17 @@ class ObsidianMemoryTests(unittest.TestCase):
         self.assertEqual(paths.project_slug, "sequency")
         self.assertEqual(paths.project_dir.as_posix(), "Project Memory/sequency")
         self.assertTrue(paths.home.as_posix().endswith("/Sequency Home.md"))
+
+    def test_note_paths_sanitize_project_name(self) -> None:
+        paths = build_note_paths("../../Secrets")
+        self.assertTrue(paths.home.as_posix().startswith("Project Memory/secrets/"))
+        self.assertNotIn("..", paths.home.as_posix())
+        self.assertNotIn("/", paths.home.name.replace("Project Memory", ""))
+
+    def test_sanitize_note_title_component(self) -> None:
+        self.assertEqual(sanitize_note_title_component("../../evil"), "evil")
+        self.assertEqual(sanitize_note_title_component("A/B\\\\C"), "A B C")
+        self.assertEqual(sanitize_note_title_component(""), "Project")
 
     def test_seed_notes_include_interlinks(self) -> None:
         paths = build_note_paths("Sequency")
@@ -95,6 +107,21 @@ class ObsidianMemoryTests(unittest.TestCase):
             store.reset_run_counter(workspace, "sequency")
             reset = store.bump_run_counter(workspace, "sequency")
             self.assertEqual(reset, 1)
+
+    def test_config_store_state_file_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_file = tmp_path / "vault_config.json"
+            workspace = tmp_path / "workspace"
+            workspace.mkdir(parents=True, exist_ok=True)
+            vault = tmp_path / "vault"
+            vault.mkdir(parents=True, exist_ok=True)
+
+            store = ConfigStore(state_file=state_file)
+            store.set_vault(vault_path=vault, workspace=workspace)
+
+            mode = state_file.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
 
 
 if __name__ == "__main__":

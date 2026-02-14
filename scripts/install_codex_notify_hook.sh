@@ -38,11 +38,13 @@ if grep -Fq "${START_MARKER}" "${CONFIG_PATH}"; then
   mv "${CONFIG_PATH}.tmp" "${CONFIG_PATH}"
 fi
 
-# Remove existing top-level notify assignments to avoid duplicate TOML keys.
-PREVIOUS_NOTIFY_LINES="$(grep -E '^[[:space:]]*notify[[:space:]]*=' "${CONFIG_PATH}" || true)"
-if [[ -n "${PREVIOUS_NOTIFY_LINES}" ]]; then
-  awk '!/^[[:space:]]*notify[[:space:]]*=/' "${CONFIG_PATH}" > "${CONFIG_PATH}.tmp"
-  mv "${CONFIG_PATH}.tmp" "${CONFIG_PATH}"
+# Safety: do not delete unrelated notify settings owned by other tools.
+EXISTING_NOTIFY_LINES="$(grep -E '^[[:space:]]*notify[[:space:]]*=' "${CONFIG_PATH}" || true)"
+if [[ -n "${EXISTING_NOTIFY_LINES}" ]] && ! grep -Fq "${START_MARKER}" "${CONFIG_PATH}"; then
+  echo "Refusing to overwrite existing notify setting in ${CONFIG_PATH}."
+  echo "Please manually merge this managed block or remove the existing notify line first:"
+  echo "${BLOCK}"
+  exit 1
 fi
 
 FIRST_TABLE_LINE="$(grep -n '^[[:space:]]*\[' "${CONFIG_PATH}" | head -n 1 | cut -d: -f1 || true)"
@@ -54,12 +56,6 @@ else
 fi
 
 echo "" >> "${TMP_PATH}"
-if [[ -n "${PREVIOUS_NOTIFY_LINES}" ]]; then
-  while IFS= read -r line; do
-    [[ -z "${line}" ]] && continue
-    echo "# previous notify (replaced by installer): ${line}" >> "${TMP_PATH}"
-  done <<< "${PREVIOUS_NOTIFY_LINES}"
-fi
 echo "${BLOCK}" >> "${TMP_PATH}"
 echo "" >> "${TMP_PATH}"
 

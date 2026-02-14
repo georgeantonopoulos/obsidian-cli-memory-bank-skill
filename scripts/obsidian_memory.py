@@ -30,6 +30,16 @@ def slugify(value: str) -> str:
     return normalized.strip("-")
 
 
+def sanitize_note_title_component(value: str, fallback: str = "Project") -> str:
+    # Keep note titles readable while blocking path traversal/separator injection.
+    sanitized = value.strip()
+    sanitized = sanitized.replace("/", " ").replace("\\", " ")
+    sanitized = sanitized.replace("..", " ")
+    sanitized = re.sub(r"[:*?\"<>|]+", " ", sanitized)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip()
+    return sanitized or fallback
+
+
 def normalize_workspace(path: Path) -> str:
     return str(path.resolve())
 
@@ -38,6 +48,8 @@ class ConfigStore:
     def __init__(self, state_file: Path = STATE_FILE) -> None:
         self.state_file = state_file
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        if self.state_file.exists():
+            self._harden_permissions()
 
     def load(self) -> Dict[str, object]:
         if not self.state_file.exists():
@@ -63,6 +75,7 @@ class ConfigStore:
         with self.state_file.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2, sort_keys=True)
             handle.write("\n")
+        self._harden_permissions()
 
     def set_vault(self, vault_path: Path, workspace: Optional[Path]) -> Dict[str, object]:
         data = self.load()
@@ -122,6 +135,13 @@ class ConfigStore:
     def _counter_key(workspace: Path, project_slug: str) -> str:
         return f"{normalize_workspace(workspace)}::{project_slug}"
 
+    def _harden_permissions(self) -> None:
+        try:
+            self.state_file.chmod(0o600)
+        except OSError:
+            # Best-effort on filesystems that may not support chmod semantics.
+            pass
+
 
 @dataclass
 class NotePaths:
@@ -138,7 +158,8 @@ class NotePaths:
 def build_note_paths(project_name: str) -> NotePaths:
     project_slug = slugify(project_name) or "project"
     project_dir = Path(PROJECT_ROOT) / project_slug
-    project_home_name = f"{project_name.strip()} Home".strip()
+    project_display_name = sanitize_note_title_component(project_name, fallback="Project")
+    project_home_name = f"{project_display_name} Home".strip()
     if project_home_name == "Home":
         project_home_name = "Project Home"
     home = project_dir / f"{project_home_name}.md"

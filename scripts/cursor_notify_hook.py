@@ -9,10 +9,12 @@ Cursor background-agent webhooks include payload fields such as:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from scripts.hook_common import (
     content_to_text,
@@ -24,11 +26,43 @@ from scripts.hook_common import (
 )
 
 
-def _load_payload(raw_json: Optional[str]) -> Optional[Dict[str, Any]]:
+def _load_payload(raw_json: Optional[str]) -> Tuple[Optional[Dict[str, Any]], str]:
     raw = raw_json if raw_json is not None else sys.stdin.read().strip()
     if not raw:
-        return None
-    return read_json_payload(raw)
+        return None, ""
+    return read_json_payload(raw), raw
+
+
+def _extract_signature(payload: Dict[str, Any]) -> str:
+    # Signatures are often passed via HTTP headers in wrapper scripts.
+    for env_name in ["CURSOR_WEBHOOK_SIGNATURE", "CURSOR_SIGNATURE"]:
+        value = os.environ.get(env_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    value = payload.get("signature")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return ""
+
+
+def _validate_signature(raw_payload: str, payload: Dict[str, Any]) -> bool:
+    secret = os.environ.get("CURSOR_WEBHOOK_SECRET", "").strip()
+    if not secret:
+        # Optional by design for local/dev usage.
+        return True
+
+    signature = _extract_signature(payload)
+    if not signature:
+        hook_notice("obsidian-memory-hook-cursor", "missing webhook signature while CURSOR_WEBHOOK_SECRET is set; skipping")
+        return False
+
+    if signature.startswith("sha256="):
+        signature = signature.split("=", 1)[1]
+    expected = hmac.new(secret.encode("utf-8"), raw_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        hook_notice("obsidian-memory-hook-cursor", "webhook signature mismatch; skipping")
+        return False
+    return True
 
 
 def _messages(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -98,9 +132,11 @@ def main() -> int:
     parser.add_argument("event_json", nargs="?", help="Optional JSON payload (stdin is the default)")
     args = parser.parse_args()
 
-    payload = _load_payload(args.event_json)
+    payload, raw_payload = _load_payload(args.event_json)
     if payload is None:
         hook_notice("obsidian-memory-hook-cursor", "received empty/invalid JSON payload; skipping")
+        return 0
+    if not _validate_signature(raw_payload, payload):
         return 0
 
     event_name = str(payload.get("event") or payload.get("type") or "").strip()

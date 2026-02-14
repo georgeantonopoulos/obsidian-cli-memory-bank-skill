@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+import hashlib
+import hmac
+import os
 import unittest
 
-from scripts.cursor_notify_hook import extract_prompt, extract_summary
+from scripts.cursor_notify_hook import _validate_signature, extract_prompt, extract_summary
 
 
 class CursorNotifyHookTests(unittest.TestCase):
@@ -19,6 +22,31 @@ class CursorNotifyHookTests(unittest.TestCase):
         payload = {"assistant_message": "Added fallback logs and updated tests."}
         out = extract_summary(payload)
         self.assertEqual(out, "Added fallback logs and updated tests.")
+
+    def test_validate_signature_allows_when_secret_unset(self) -> None:
+        os.environ.pop("CURSOR_WEBHOOK_SECRET", None)
+        payload = {"event": "agent.update"}
+        self.assertTrue(_validate_signature("{}", payload))
+
+    def test_validate_signature_rejects_missing_signature_with_secret(self) -> None:
+        os.environ["CURSOR_WEBHOOK_SECRET"] = "test-secret"
+        os.environ.pop("CURSOR_WEBHOOK_SIGNATURE", None)
+        payload = {"event": "agent.update"}
+        self.assertFalse(_validate_signature("{}", payload))
+        os.environ.pop("CURSOR_WEBHOOK_SECRET", None)
+
+    def test_validate_signature_accepts_valid_hmac(self) -> None:
+        secret = "test-secret"
+        raw = '{"event":"agent.update","id":"abc"}'
+        sig = hmac.new(secret.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        os.environ["CURSOR_WEBHOOK_SECRET"] = secret
+        os.environ["CURSOR_WEBHOOK_SIGNATURE"] = f"sha256={sig}"
+        payload = {"event": "agent.update", "id": "abc"}
+        self.assertTrue(_validate_signature(raw, payload))
+
+        os.environ.pop("CURSOR_WEBHOOK_SECRET", None)
+        os.environ.pop("CURSOR_WEBHOOK_SIGNATURE", None)
 
 
 if __name__ == "__main__":

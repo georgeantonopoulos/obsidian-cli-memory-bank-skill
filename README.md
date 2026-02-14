@@ -159,6 +159,10 @@ Then verify:
 python3 scripts/obsidian_memory.py doctor
 ```
 
+Security note:
+- installer is intentionally non-destructive and will refuse to overwrite unmanaged existing `notify = ...` settings in `~/.codex/config.toml`
+- if you already have another notify hook, merge the managed block manually
+
 ## Claude Code Integration
 
 Reference docs:
@@ -195,6 +199,11 @@ The adapter supports documented webhook fields like:
 
 If your webhook payload does not include a local workspace path, set one via env var:
 - `CURSOR_WORKSPACE` or `CURSOR_PROJECT_DIR`
+
+Security hardening (recommended for webhook deployments):
+- set `CURSOR_WEBHOOK_SECRET` to require HMAC-SHA256 verification
+- pass signature via `CURSOR_WEBHOOK_SIGNATURE` (or include `signature` in payload)
+- accepted signature formats: raw hex digest or `sha256=<hex>`
 
 ## Antigravity Integration
 
