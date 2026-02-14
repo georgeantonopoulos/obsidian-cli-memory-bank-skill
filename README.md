@@ -31,28 +31,40 @@ git clone https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill.g
 cd obsidian-cli-memory-bank-skill
 ```
 
+Resolve skill path robustly (works even if `CODEX_HOME` is unset):
+
+```bash
+if [ -n "${CODEX_HOME:-}" ] && [ -d "$CODEX_HOME/skills/obsidian-cli-memory-bank" ]; then
+  SKILL_DIR="$CODEX_HOME/skills/obsidian-cli-memory-bank"
+elif [ -d "$HOME/.codex/skills/obsidian-cli-memory-bank" ]; then
+  SKILL_DIR="$HOME/.codex/skills/obsidian-cli-memory-bank"
+else
+  SKILL_DIR="$(pwd)"
+fi
+```
+
 2. Set the vault path once for your current workspace:
 
 ```bash
-python3 scripts/obsidian_memory.py set-vault --vault-path "/absolute/path/to/your/vault"
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" set-vault --vault-path "/absolute/path/to/your/vault"
 ```
 
 3. Bootstrap a project memory tree:
 
 ```bash
-python3 scripts/obsidian_memory.py bootstrap --project "My Project"
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" bootstrap --project "My Project"
 ```
 
 Or do one-step initialization:
 
 ```bash
-python3 scripts/obsidian_memory.py init-project --project "My Project" --with-stub
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" init-project --project "My Project" --with-stub
 ```
 
 4. Record each meaningful run:
 
 ```bash
-python3 scripts/obsidian_memory.py record-run \
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" record-run \
   --project "My Project" \
   --title "Implement queue retry" \
   --prompt "User asked for per-item retry in export queue" \
@@ -66,19 +78,19 @@ python3 scripts/obsidian_memory.py record-run \
 5. Audit graph hygiene:
 
 ```bash
-python3 scripts/obsidian_memory.py audit --project "My Project"
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" audit --project "My Project"
 ```
 
 6. Run readiness checks:
 
 ```bash
-python3 scripts/obsidian_memory.py doctor
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" doctor
 ```
 
 7. Configure automatic audit cadence (default is every 5 runs):
 
 ```bash
-python3 scripts/obsidian_memory.py set-audit-frequency --runs 5
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" set-audit-frequency --runs 5
 ```
 
 Set `--runs 0` to disable automatic audits.

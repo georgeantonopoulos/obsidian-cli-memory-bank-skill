@@ -10,12 +10,33 @@ description: Build and maintain project-specific Obsidian knowledge bases throug
 Use this skill to maintain a per-project "memory bank" inside Obsidian with consistent note structure, dense wikilinking, and CLI-first retrieval.
 Persist the vault path once, then bootstrap/update project notes on every relevant run.
 
+## Communication Style
+
+- Be friendly and conversational 🙂.
+- Use light emojis to keep updates engaging (`✅`, `🧠`, `🔎`, `🛠️`).
+- Avoid noisy failure narration when a safe fallback exists (for example missing optional env vars).
+
 ## Workflow
 
-From any workspace, run helper commands from this skill folder first:
+Resolve the skill path first. Do **not** assume `$CODEX_HOME` is set:
 
 ```bash
-cd "$CODEX_HOME/skills/obsidian-cli-memory-bank"
+if [ -n "${CODEX_HOME:-}" ] && [ -d "$CODEX_HOME/skills/obsidian-cli-memory-bank" ]; then
+  SKILL_DIR="$CODEX_HOME/skills/obsidian-cli-memory-bank"
+elif [ -d "$HOME/.codex/skills/obsidian-cli-memory-bank" ]; then
+  SKILL_DIR="$HOME/.codex/skills/obsidian-cli-memory-bank"
+elif [ -f "./scripts/obsidian_memory.py" ]; then
+  SKILL_DIR="$(pwd)"
+else
+  echo "Need absolute path to obsidian-cli-memory-bank skill directory."
+  exit 1
+fi
+```
+
+Run all helper commands as:
+
+```bash
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" <command> ...
 ```
 
 ### 1) Resolve vault first
@@ -23,7 +44,7 @@ cd "$CODEX_HOME/skills/obsidian-cli-memory-bank"
 Run:
 
 ```bash
-python3 scripts/obsidian_memory.py show-vault
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" show-vault
 ```
 
 If no vault is set for the current workspace:
@@ -32,7 +53,7 @@ If no vault is set for the current workspace:
 2. Save it:
 
 ```bash
-python3 scripts/obsidian_memory.py set-vault --vault-path "/absolute/path/to/vault"
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" set-vault --vault-path "/absolute/path/to/vault"
 ```
 
 Use `--workspace "/path/to/project"` when setting or resolving a different workspace than the current directory.
@@ -42,13 +63,13 @@ Use `--workspace "/path/to/project"` when setting or resolving a different works
 Create core notes once per project:
 
 ```bash
-python3 scripts/obsidian_memory.py bootstrap --project "Sequency"
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" bootstrap --project "Sequency"
 ```
 
 Or run the one-command initializer:
 
 ```bash
-python3 scripts/obsidian_memory.py init-project --project "Sequency" --with-stub
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" init-project --project "Sequency" --with-stub
 ```
 
 This creates:
@@ -66,7 +87,7 @@ All seed notes include wikilinks to each other so backlinks are available immedi
 After a task, add a run note:
 
 ```bash
-python3 scripts/obsidian_memory.py record-run \
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" record-run \
   --project "Sequency" \
   --title "Fix MXF progress regression" \
   --summary "Updated progress to use true frame counts." \
@@ -85,10 +106,10 @@ Use CLI retrieval first:
 
 ```bash
 # search by topic
-python3 scripts/obsidian_memory.py search --project "Sequency" --query "MXF fallback routing"
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" search --project "Sequency" --query "MXF fallback routing"
 
 # inspect a key note
-python3 scripts/obsidian_memory.py read-note \
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" read-note \
   --project "Sequency" \
   --path "Project Memory/sequency/Decisions.md"
 ```
@@ -98,7 +119,7 @@ python3 scripts/obsidian_memory.py read-note \
 Run periodic audits:
 
 ```bash
-python3 scripts/obsidian_memory.py audit --project "Sequency"
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" audit --project "Sequency"
 ```
 
 This runs:
@@ -112,7 +133,7 @@ Automatic behavior: `record-run` triggers auto-audit every N runs (default `5`).
 Change cadence:
 
 ```bash
-python3 scripts/obsidian_memory.py set-audit-frequency --runs 5
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" set-audit-frequency --runs 5
 ```
 
 Set `--runs 0` to disable auto-audit.
@@ -122,7 +143,7 @@ Set `--runs 0` to disable auto-audit.
 Run:
 
 ```bash
-python3 scripts/obsidian_memory.py doctor
+python3 "$SKILL_DIR/scripts/obsidian_memory.py" doctor
 ```
 
 This validates Obsidian CLI availability, app reachability, workspace-to-vault mapping, and vault write access.
@@ -142,7 +163,7 @@ Codex supports a native `notify` hook for `agent-turn-complete`. Enable automati
 
 ```bash
 chmod +x scripts/install_codex_notify_hook.sh scripts/codex_notify_hook.py
-./scripts/install_codex_notify_hook.sh
+"$SKILL_DIR/scripts/install_codex_notify_hook.sh"
 ```
 
 The hook auto-runs `record-run` for mapped workspaces and no-ops when a mapping is missing.
