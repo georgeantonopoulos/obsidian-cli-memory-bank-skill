@@ -27,6 +27,35 @@ It helps an agent:
 - Obsidian desktop with Obsidian CLI enabled
 - Obsidian CLI available in `PATH` as `obsidian`
 
+## Install In 30 Seconds (Recommended)
+
+Use `pipx` so users get a clean isolated CLI install:
+
+```bash
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+pipx install git+https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill.git
+```
+
+Then use:
+
+```bash
+obmem --help
+obmem doctor
+```
+
+Update later:
+
+```bash
+pipx upgrade obsidian-cli-memory-bank
+```
+
+Uninstall:
+
+```bash
+pipx uninstall obsidian-cli-memory-bank
+```
+
 ## Quick Start (Universal)
 
 1. Clone this repo:

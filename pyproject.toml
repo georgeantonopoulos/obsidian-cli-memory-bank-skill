@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsidian-cli-memory-bank"
+version = "0.1.0"
+description = "CLI helper to maintain project memory banks in Obsidian via Obsidian CLI."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "George Antonopoulos" }
+]
+keywords = ["obsidian", "cli", "memory", "notes", "agent"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: Other/Proprietary License",
+  "Operating System :: OS Independent"
+]
+
+[project.urls]
+Homepage = "https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill"
+Repository = "https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill"
+Issues = "https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill/issues"
+
+[project.scripts]
+obmem = "scripts.obsidian_memory:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["scripts*"]
