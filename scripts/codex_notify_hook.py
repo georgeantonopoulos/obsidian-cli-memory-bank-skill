@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+def hook_notice(message: str) -> None:
+    # Keep hook execution transparent in Codex logs without breaking runtime flow.
+    print(f"[obsidian-memory-hook] {message}", file=sys.stderr, flush=True)
+
+
 def truncate(text: str, limit: int) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= limit:
@@ -84,6 +89,13 @@ def run_obsidian_memory(skill_repo: Path, args: List[str]) -> subprocess.Complet
     return subprocess.run(cmd, text=True, capture_output=True, check=False)
 
 
+def extract_recorded_note_path(output: str) -> str:
+    for line in output.splitlines():
+        if line.startswith("Recorded run note:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Codex notify hook for Obsidian memory bank")
     parser.add_argument("--skill-repo", required=True, help="Path to obsidian-cli-memory-bank-skill repo")
@@ -93,10 +105,13 @@ def main() -> int:
     try:
         payload = json.loads(args.event_json)
     except json.JSONDecodeError:
+        hook_notice("received invalid JSON payload; skipping")
         return 0
     if not isinstance(payload, dict):
+        hook_notice("received non-dict payload; skipping")
         return 0
     if payload.get("type") != "agent-turn-complete":
+        hook_notice("event is not agent-turn-complete; skipping")
         return 0
 
     workspace = payload.get("cwd")
@@ -104,13 +119,15 @@ def main() -> int:
         workspace = "."
     workspace_path = str(Path(workspace).resolve())
     skill_repo = Path(args.skill_repo).resolve()
+    hook_notice(f"running for workspace: {workspace_path}")
 
     show = run_obsidian_memory(
         skill_repo,
         ["show-vault", "--workspace", workspace_path],
     )
     if show.returncode != 0:
-        # No vault mapping for this workspace; skip silently.
+        # No vault mapping for this workspace.
+        hook_notice("no vault mapping found; skipping")
         return 0
 
     project_name = Path(workspace_path).name or "Project"
@@ -141,7 +158,13 @@ def main() -> int:
     )
     # Never block Codex execution on hook issues.
     if record.returncode != 0:
+        hook_notice("record-run failed; continuing without blocking")
         return 0
+    note_path = extract_recorded_note_path(record.stdout)
+    if note_path:
+        hook_notice(f"logged run note: {note_path}")
+    else:
+        hook_notice("logged run note")
     return 0
 
 
