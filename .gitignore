@@ -1,0 +1,15 @@
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local runtime state (can contain vault paths)
+state/
+
+# Env and local config
+.env
+.env.*
+
+# macOS
+.DS_Store
