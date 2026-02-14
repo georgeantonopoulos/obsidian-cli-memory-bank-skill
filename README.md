@@ -13,6 +13,11 @@ It helps an agent:
 
 - `SKILL.md` - main skill instructions
 - `scripts/obsidian_memory.py` - helper CLI for vault mapping + note automation
+- `scripts/hook_common.py` - shared helper runtime for notify adapters
+- `scripts/codex_notify_hook.py` - Codex notify adapter
+- `scripts/claude_notify_hook.py` - Claude Code adapter
+- `scripts/cursor_notify_hook.py` - Cursor adapter
+- `scripts/antigravity_notify_hook.py` - Antigravity adapter
 - `references/obsidian-cli-patterns.md` - Obsidian command patterns
 - `agents/openai.yaml` - UI metadata for systems that support it
 
@@ -125,24 +130,62 @@ Then verify:
 python3 scripts/obsidian_memory.py doctor
 ```
 
-What it does:
+## Claude Code Integration
 
-- reads Codex notify payload (`cwd`, `input-messages`, `last-assistant-message`)
-- resolves vault mapping for that workspace
-- writes a `record-run` note automatically
-- runs `audit` automatically every N runs (configurable via `set-audit-frequency`)
-- skips silently if no vault mapping exists for the workspace
+Claude Code hook/event payload formats can vary by environment. Use this adapter as the stable bridge:
 
-## Install In Claude / Gemini CLI / Other Agents
+```bash
+python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/claude_notify_hook.py \
+  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill \
+  '{"type":"turn-complete","workspace":"/path/to/project","messages":[{"role":"user","content":"..."}],"assistant":"..."}'
+```
 
-Not all agents support the same native "skill" format. Use this universal fallback:
+Recommended setup:
+- Configure your Claude Code post-turn hook to call `scripts/claude_notify_hook.py`.
+- Pass the full event JSON string as the final positional argument.
+
+## Cursor Integration
+
+For Cursor, wire a post-response event to call:
+
+```bash
+python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/cursor_notify_hook.py \
+  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill \
+  '<cursor-event-json>'
+```
+
+The adapter accepts common Cursor-like keys such as `workspace`, `messages`/`conversation`, and `assistant_message`/`response`.
+
+## Antigravity Integration
+
+For Antigravity environments, wire post-turn notifications to:
+
+```bash
+python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/antigravity_notify_hook.py \
+  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill \
+  '<antigravity-event-json>'
+```
+
+The adapter supports nested payloads under `data`, `event`, or `payload` and resolves common message/summary fields.
+
+## Hook Behavior
+
+All notify adapters share the same behavior:
+- resolve workspace vault mapping
+- create a `record-run` note automatically
+- stay non-blocking (never fail your agent turn)
+- print visible status messages like `[obsidian-memory-hook-*] running ...` and `[... ] logged run note ...`
+
+## Install In Other Agents (Fallback)
+
+Not all agents expose native hooks. Use this fallback:
 
 1. Keep this repository on disk.
-2. Load `SKILL.md` into your agent's system prompt, workspace instructions, or reusable command profile.
-3. Allow the agent to execute `scripts/obsidian_memory.py` commands from this repo.
-4. Keep `references/obsidian-cli-patterns.md` available for retrieval patterns.
+2. Load `SKILL.md` into your agent's system prompt/project instructions.
+3. Execute `scripts/obsidian_memory.py` manually before/after major tasks.
+4. Use the relevant adapter script if your runtime can emit event JSON.
 
-Suggested agent prompt snippet:
+Suggested prompt snippet:
 
 ```text
 Use the Obsidian CLI Memory Bank workflow from SKILL.md in this repository.
@@ -152,14 +195,9 @@ append run logs, and run periodic audit checks (unresolved/orphans/deadends/back
 
 ## Persistence And “Always Use It” Behavior
 
-Short answer: partial, unless your agent platform supports prompt hooks.
-
-- The script itself is persistent for vault mapping (`state/vault_config.json`), so once set, future runs can reuse the same vault for that workspace.
-- Triggering the skill on every prompt depends on your agent runtime:
-  - Codex: use native `notify` hook (included here) for automatic post-turn logging, and keep standing instructions for pre-task retrieval behavior.
-  - Claude (Code): include SKILL.md in project instructions and define a reusable slash command/macro that wraps every task.
-  - Gemini CLI: wrap your normal command in a shell script that runs `show-vault`/`record-run` before and after model calls.
-- Without native hooks, true automatic “every prompt” execution is not guaranteed by the model alone.
+- Vault mappings persist in `state/vault_config.json`.
+- Automatic per-turn behavior depends on your agent runtime exposing hooks/events.
+- Adapters in this repo are designed to be resilient to minor payload shape differences.
 
 ## Optional: Shell Alias
 
@@ -183,7 +221,7 @@ obmem bootstrap --project "My Project"
 ## Run Tests
 
 ```bash
-python3 -m unittest scripts.tests.test_obsidian_memory -v
+python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 ```
 
 ## License
