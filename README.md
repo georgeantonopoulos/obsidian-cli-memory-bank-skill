@@ -171,9 +171,20 @@ If your webhook payload does not include a local workspace path, set one via env
 
 Current status:
 - no stable public hook payload specification was found for Antigravity during implementation
+- default recommendation is to use rules/skills + manual `record-run` calls
 - this adapter is best-effort and designed for nested payloads seen in local agent tooling
 
-For Antigravity environments, wire post-turn notifications to:
+Recommended default in Antigravity:
+
+```bash
+python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/obsidian_memory.py record-run \
+  --project "Your Project" \
+  --title "Task summary" \
+  --summary "What changed and why"
+```
+
+Only use the adapter below if your setup actually emits machine-readable turn events
+(for example when running through an embedded Claude Code extension hook flow):
 
 ```bash
 python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/antigravity_notify_hook.py \
@@ -184,11 +195,15 @@ The adapter supports nested payloads under `data`, `event`, or `payload` and res
 
 ## Hook Behavior
 
-All notify adapters share the same behavior:
+Claude/Cursor adapters share the same behavior:
 - resolve workspace vault mapping
 - create a `record-run` note automatically
 - stay non-blocking (never fail your agent turn)
 - print visible status messages like `[obsidian-memory-hook-*] running ...` and `[... ] logged run note ...`
+
+Antigravity adapter behavior:
+- same runtime behavior as above when a compatible JSON event is provided
+- may no-op in setups that do not expose hook events
 
 ## Install In Other Agents (Fallback)
 

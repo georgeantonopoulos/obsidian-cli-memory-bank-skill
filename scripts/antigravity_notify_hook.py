@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Antigravity hook adapter for Obsidian memory logging.
 
-Note: this adapter is best-effort because no stable public hook payload
-spec was found during implementation.
+Important:
+- Antigravity does not currently expose a stable public hook payload spec
+  comparable to Claude/Cursor docs.
+- This adapter is best-effort and should be used only when your runtime
+  actually emits JSON turn events.
+- Default recommendation in Antigravity is rules/skills + manual record-run.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ def _load_payload(raw_json: Optional[str]) -> Optional[Dict[str, Any]]:
 
 
 def _event_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    # Some runners nest event data under "event" or "data".
+    # Some Antigravity-hosted runners nest event data under these keys.
     for key in ["data", "event", "payload"]:
         value = payload.get(key)
         if isinstance(value, dict):
