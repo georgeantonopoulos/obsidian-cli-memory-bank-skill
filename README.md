@@ -132,38 +132,52 @@ python3 scripts/obsidian_memory.py doctor
 
 ## Claude Code Integration
 
-Claude Code hook/event payload formats can vary by environment. Use this adapter as the stable bridge:
+Reference docs:
+- https://docs.anthropic.com/en/docs/claude-code/hooks
+
+Claude Code hooks send JSON to the hook command via `stdin`.
+Use this adapter as the bridge:
 
 ```bash
 python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/claude_notify_hook.py \
-  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill \
-  '{"type":"turn-complete","workspace":"/path/to/project","messages":[{"role":"user","content":"..."}],"assistant":"..."}'
+  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill
 ```
 
 Recommended setup:
 - Configure your Claude Code post-turn hook to call `scripts/claude_notify_hook.py`.
-- Pass the full event JSON string as the final positional argument.
+- Let Claude pipe the native hook payload JSON on stdin.
+- The adapter recognizes documented `hook_event_name` values (for example `UserPromptSubmit`, `PostToolUse`, `SessionEnd`).
 
 ## Cursor Integration
 
-For Cursor, wire a post-response event to call:
+Reference docs:
+- https://docs.cursor.com/background-agent/webhooks
+
+For Cursor background-agent webhooks, pass the webhook payload JSON to:
 
 ```bash
 python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/cursor_notify_hook.py \
-  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill \
-  '<cursor-event-json>'
+  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill
 ```
 
-The adapter accepts common Cursor-like keys such as `workspace`, `messages`/`conversation`, and `assistant_message`/`response`.
+The adapter supports documented webhook fields like:
+- `event`, `status`, `id`, `summary`, `source`, and `target`
+- optional transcript-style fields (`messages`/`conversation`) when available
+
+If your webhook payload does not include a local workspace path, set one via env var:
+- `CURSOR_WORKSPACE` or `CURSOR_PROJECT_DIR`
 
 ## Antigravity Integration
+
+Current status:
+- no stable public hook payload specification was found for Antigravity during implementation
+- this adapter is best-effort and designed for nested payloads seen in local agent tooling
 
 For Antigravity environments, wire post-turn notifications to:
 
 ```bash
 python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/antigravity_notify_hook.py \
-  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill \
-  '<antigravity-event-json>'
+  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill
 ```
 
 The adapter supports nested payloads under `data`, `event`, or `payload` and resolves common message/summary fields.

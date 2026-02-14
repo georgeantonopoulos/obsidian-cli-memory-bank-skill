@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Claude Code hook adapter for Obsidian memory logging."""
+"""Claude Code hook adapter for Obsidian memory logging.
+
+Docs reference: https://docs.anthropic.com/en/docs/claude-code/hooks
+Claude hook payloads are sent to hook commands as JSON via stdin.
+"""
 
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from scripts.hook_common import (
     content_to_text,
@@ -31,30 +35,48 @@ def _extract_messages(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return []
 
 
+def _load_payload(raw_json: Optional[str]) -> Optional[Dict[str, Any]]:
+    raw = raw_json if raw_json is not None else sys.stdin.read().strip()
+    if not raw:
+        return None
+    return read_json_payload(raw)
+
+
 def extract_prompt(payload: Dict[str, Any]) -> str:
+    # Claude's UserPromptSubmit hooks may provide prompt-like fields directly.
+    for key in ["prompt", "user_prompt", "message", "input"]:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return truncate(value, 3000)
+
     messages = _extract_messages(payload)
     user_text: List[str] = []
     for msg in messages:
         role = str(msg.get("role", "")).lower()
         if role in {"user", "human"}:
             user_text.append(content_to_text(msg.get("content")))
-    if not user_text and isinstance(payload.get("prompt"), str):
-        user_text = [payload["prompt"]]
+
     text = "\n\n".join([t for t in user_text if t.strip()])
     return truncate(text or "No user prompt captured.", 3000)
 
 
 def extract_summary(payload: Dict[str, Any]) -> str:
-    for key in ["last_assistant_message", "assistant", "response", "output"]:
+    for key in ["last_assistant_message", "assistant", "response", "output", "tool_response"]:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return truncate(value, 500)
+
+    tool_name = payload.get("tool_name")
+    if isinstance(tool_name, str) and tool_name.strip():
+        return truncate(f"Claude hook event for tool: {tool_name}", 500)
+
     messages = _extract_messages(payload)
     assistant_bits: List[str] = []
     for msg in messages:
         role = str(msg.get("role", "")).lower()
         if role in {"assistant", "ai"}:
             assistant_bits.append(content_to_text(msg.get("content")))
+
     text = "\n\n".join([t for t in assistant_bits if t.strip()])
     return truncate(text or "No assistant summary captured.", 500)
 
@@ -62,25 +84,41 @@ def extract_summary(payload: Dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Claude Code notify hook for Obsidian memory bank")
     parser.add_argument("--skill-repo", required=True, help="Path to obsidian-cli-memory-bank-skill repo")
-    parser.add_argument("event_json", help="JSON payload from Claude Code hook")
+    parser.add_argument("event_json", nargs="?", help="Optional JSON payload (stdin is the default)")
     args = parser.parse_args()
 
-    payload = read_json_payload(args.event_json)
+    payload = _load_payload(args.event_json)
     if payload is None:
-        hook_notice("obsidian-memory-hook-claude", "received invalid JSON payload; skipping")
+        hook_notice("obsidian-memory-hook-claude", "received empty/invalid JSON payload; skipping")
         return 0
 
-    event_type = str(payload.get("type", payload.get("event", ""))).lower()
-    if event_type and "turn" not in event_type and "message" not in event_type and "complete" not in event_type:
-        hook_notice("obsidian-memory-hook-claude", "event is not a completion/turn event; skipping")
+    event_name = str(payload.get("hook_event_name") or payload.get("type") or payload.get("event") or "").strip()
+    if not event_name:
+        hook_notice("obsidian-memory-hook-claude", "missing event name; skipping")
         return 0
 
-    workspace = payload.get("cwd") or payload.get("workspace") or payload.get("project_path")
-    workspace_path = resolve_path(workspace)
+    # Keep parity with Claude docs: hooks are event-driven by hook_event_name.
+    allowed = {
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Notification",
+        "Stop",
+        "SubagentStop",
+        "PreCompact",
+        "SessionStart",
+        "SessionEnd",
+    }
+    if event_name not in allowed:
+        hook_notice("obsidian-memory-hook-claude", f"unsupported event '{event_name}'; skipping")
+        return 0
+
+    workspace_path = resolve_path(payload.get("cwd") or payload.get("workspace") or payload.get("project_path"))
     skill_repo = Path(args.skill_repo).resolve()
 
     project_name = Path(workspace_path).name or "Project"
-    turn_id = str(payload.get("turn_id") or payload.get("turn-id") or payload.get("id") or "unknown-turn")
+    session_id = str(payload.get("session_id") or payload.get("sessionId") or "unknown-session")
+    turn_id = f"{session_id}:{event_name}"
 
     return log_turn(
         prefix="obsidian-memory-hook-claude",
@@ -90,7 +128,7 @@ def main() -> int:
         turn_id=turn_id,
         prompt=extract_prompt(payload),
         summary=extract_summary(payload),
-        actions="Auto-captured from Claude Code hook.",
+        actions=f"Auto-captured from Claude Code hook event '{event_name}'.",
         tags="claude,auto-log",
     )
 

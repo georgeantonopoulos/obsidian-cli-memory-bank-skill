@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Antigravity hook adapter for Obsidian memory logging."""
+"""Antigravity hook adapter for Obsidian memory logging.
+
+Note: this adapter is best-effort because no stable public hook payload
+spec was found during implementation.
+"""
 
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from scripts.hook_common import (
     content_to_text,
@@ -16,6 +20,13 @@ from scripts.hook_common import (
     resolve_path,
     truncate,
 )
+
+
+def _load_payload(raw_json: Optional[str]) -> Optional[Dict[str, Any]]:
+    raw = raw_json if raw_json is not None else sys.stdin.read().strip()
+    if not raw:
+        return None
+    return read_json_payload(raw)
 
 
 def _event_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -68,12 +79,12 @@ def extract_summary(payload: Dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Antigravity hook for Obsidian memory bank")
     parser.add_argument("--skill-repo", required=True, help="Path to obsidian-cli-memory-bank-skill repo")
-    parser.add_argument("event_json", help="JSON payload from Antigravity hook")
+    parser.add_argument("event_json", nargs="?", help="Optional JSON payload (stdin is the default)")
     args = parser.parse_args()
 
-    outer = read_json_payload(args.event_json)
+    outer = _load_payload(args.event_json)
     if outer is None:
-        hook_notice("obsidian-memory-hook-antigravity", "received invalid JSON payload; skipping")
+        hook_notice("obsidian-memory-hook-antigravity", "received empty/invalid JSON payload; skipping")
         return 0
 
     payload = _event_payload(outer)
@@ -97,7 +108,7 @@ def main() -> int:
         turn_id=turn_id,
         prompt=extract_prompt(payload),
         summary=extract_summary(payload),
-        actions="Auto-captured from Antigravity hook.",
+        actions="Auto-captured from Antigravity hook (best-effort schema support).",
         tags="antigravity,auto-log",
     )
 

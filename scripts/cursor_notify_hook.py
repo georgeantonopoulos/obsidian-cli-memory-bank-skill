@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Cursor hook adapter for Obsidian memory logging."""
+"""Cursor webhook adapter for Obsidian memory logging.
+
+Docs reference: https://docs.cursor.com/background-agent/webhooks
+Cursor background-agent webhooks include payload fields such as:
+- event, status, timestamp, id, source, target, summary
+"""
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from scripts.hook_common import (
     content_to_text,
@@ -16,6 +22,13 @@ from scripts.hook_common import (
     resolve_path,
     truncate,
 )
+
+
+def _load_payload(raw_json: Optional[str]) -> Optional[Dict[str, Any]]:
+    raw = raw_json if raw_json is not None else sys.stdin.read().strip()
+    if not raw:
+        return None
+    return read_json_payload(raw)
 
 
 def _messages(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -28,6 +41,20 @@ def _messages(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return []
 
 
+def _repo_name_from_source(payload: Dict[str, Any]) -> str:
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        return ""
+    repo = source.get("repository")
+    if not isinstance(repo, str) or not repo.strip():
+        return ""
+    # e.g., "owner/repo" or URL ending in repo
+    repo = repo.strip().rstrip("/")
+    if "/" in repo:
+        return repo.split("/")[-1] or ""
+    return repo
+
+
 def extract_prompt(payload: Dict[str, Any]) -> str:
     msgs = _messages(payload)
     user_parts: List[str] = []
@@ -35,17 +62,26 @@ def extract_prompt(payload: Dict[str, Any]) -> str:
         role = str(msg.get("role", msg.get("author", ""))).lower()
         if role in {"user", "human"}:
             user_parts.append(content_to_text(msg.get("content") or msg.get("text")))
+
     prompt = "\n\n".join([t for t in user_parts if t.strip()])
     if not prompt and isinstance(payload.get("prompt"), str):
         prompt = payload["prompt"]
+    if not prompt and isinstance(payload.get("summary"), str):
+        # Cursor webhooks commonly provide summary when raw chat transcript is absent.
+        prompt = payload["summary"]
+
     return truncate(prompt or "No user prompt captured.", 3000)
 
 
 def extract_summary(payload: Dict[str, Any]) -> str:
-    for key in ["assistant_message", "last_assistant_message", "response", "output"]:
+    for key in ["assistant_message", "last_assistant_message", "response", "output", "summary"]:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
+            status = payload.get("status")
+            if isinstance(status, str) and status.strip() and key == "summary":
+                return truncate(f"{value} (status: {status})", 500)
             return truncate(value, 500)
+
     msgs = _messages(payload)
     assistant_parts: List[str] = []
     for msg in msgs:
@@ -57,27 +93,31 @@ def extract_summary(payload: Dict[str, Any]) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Cursor hook for Obsidian memory bank")
+    parser = argparse.ArgumentParser(description="Cursor webhook adapter for Obsidian memory bank")
     parser.add_argument("--skill-repo", required=True, help="Path to obsidian-cli-memory-bank-skill repo")
-    parser.add_argument("event_json", help="JSON payload from Cursor hook")
+    parser.add_argument("event_json", nargs="?", help="Optional JSON payload (stdin is the default)")
     args = parser.parse_args()
 
-    payload = read_json_payload(args.event_json)
+    payload = _load_payload(args.event_json)
     if payload is None:
-        hook_notice("obsidian-memory-hook-cursor", "received invalid JSON payload; skipping")
+        hook_notice("obsidian-memory-hook-cursor", "received empty/invalid JSON payload; skipping")
         return 0
 
-    event_type = str(payload.get("type", payload.get("event", ""))).lower()
-    if event_type and all(token not in event_type for token in ["turn", "message", "complete"]):
-        hook_notice("obsidian-memory-hook-cursor", "event is not a completion/turn event; skipping")
+    event_name = str(payload.get("event") or payload.get("type") or "").strip()
+    if not event_name:
+        hook_notice("obsidian-memory-hook-cursor", "missing event/type; skipping")
         return 0
 
     workspace = payload.get("workspace") or payload.get("cwd") or payload.get("project")
+    if not workspace:
+        workspace = os.environ.get("CURSOR_WORKSPACE") or os.environ.get("CURSOR_PROJECT_DIR")
+
     workspace_path = resolve_path(workspace)
     skill_repo = Path(args.skill_repo).resolve()
 
-    project_name = Path(workspace_path).name or "Project"
-    turn_id = str(payload.get("turnId") or payload.get("turn_id") or payload.get("id") or "unknown-turn")
+    repo_name = _repo_name_from_source(payload)
+    project_name = repo_name or Path(workspace_path).name or "Project"
+    turn_id = str(payload.get("id") or payload.get("turnId") or payload.get("turn_id") or "unknown-turn")
 
     return log_turn(
         prefix="obsidian-memory-hook-cursor",
@@ -87,7 +127,7 @@ def main() -> int:
         turn_id=turn_id,
         prompt=extract_prompt(payload),
         summary=extract_summary(payload),
-        actions="Auto-captured from Cursor hook.",
+        actions=f"Auto-captured from Cursor webhook event '{event_name}'.",
         tags="cursor,auto-log",
     )
 
