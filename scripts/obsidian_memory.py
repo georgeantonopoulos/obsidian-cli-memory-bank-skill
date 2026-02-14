@@ -19,6 +19,7 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 STATE_DIR = SKILL_ROOT / "state"
 STATE_FILE = STATE_DIR / "vault_config.json"
 PROJECT_ROOT = "Project Memory"
+PROJECTS_INDEX_PATH = Path(PROJECT_ROOT) / "Projects Index.md"
 
 
 def slugify(value: str) -> str:
@@ -130,7 +131,9 @@ class ObsidianCLI:
             capture_output=True,
             check=False,
         )
-        if completed.returncode != 0:
+        if completed.returncode != 0 or _contains_cli_error(completed.stdout) or _contains_cli_error(
+            completed.stderr
+        ):
             raise RuntimeError(
                 f"Obsidian CLI failed ({completed.returncode}) for: {' '.join(cmd)}\n"
                 f"stdout:\n{completed.stdout}\n"
@@ -322,6 +325,60 @@ def ensure_vault_ready(vault_path: Path) -> None:
         raise SystemExit(f"Vault path is not a directory: {vault_path}")
 
 
+def _contains_cli_error(text: str) -> bool:
+    lowered = text.lower()
+    return re.search(r"(^|\n)\s*error[:\s]", lowered) is not None
+
+
+def ensure_project_dirs(vault_path: Path, paths: NotePaths, dry_run: bool) -> None:
+    targets = [vault_path / paths.project_dir, vault_path / paths.runs_dir]
+    for target in targets:
+        if dry_run:
+            print(f"[dry-run] mkdir -p {target}")
+            continue
+        target.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_projects_index(cli: ObsidianCLI, paths: NotePaths) -> None:
+    entry = f"- [[{paths.home.stem}]] (`{paths.project_slug}`)"
+    index_content = "\n".join(
+        [
+            build_frontmatter(
+                note_type="projects-index",
+                project="Global",
+                tags=["projects", "index"],
+            ),
+            "",
+            "# Projects Index",
+            "",
+            "Master index of project homes in this vault.",
+            "",
+            "## Projects",
+            entry,
+        ]
+    )
+    cli.ensure_note(PROJECTS_INDEX_PATH, index_content)
+    index_abs = cli.vault_path / PROJECTS_INDEX_PATH
+    if not index_abs.exists():
+        return
+    existing = index_abs.read_text(encoding="utf-8")
+    if entry in existing:
+        return
+    cli.append(PROJECTS_INDEX_PATH, entry)
+
+
+def bootstrap_project(cli: ObsidianCLI, project: str) -> NotePaths:
+    paths = build_note_paths(project)
+    ensure_project_dirs(cli.vault_path, paths, cli.dry_run)
+    notes = build_seed_notes(project, paths)
+    print(f"Bootstrapping project memory in vault: {cli.vault_path}")
+    for relative_path, content in notes.items():
+        result = cli.ensure_note(relative_path, content)
+        print(f"- {relative_path.as_posix()}: {result or 'created'}")
+    ensure_projects_index(cli, paths)
+    return paths
+
+
 def cmd_set_vault(args: argparse.Namespace) -> None:
     store = ConfigStore()
     vault_path = Path(args.vault_path).expanduser()
@@ -354,22 +411,14 @@ def cmd_bootstrap(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
     project = args.project.strip()
-    paths = build_note_paths(project)
-    notes = build_seed_notes(project, paths)
-    print(f"Bootstrapping project memory in vault: {vault_path}")
-    for relative_path, content in notes.items():
-        result = cli.ensure_note(relative_path, content)
-        print(f"- {relative_path.as_posix()}: {result or 'created'}")
+    bootstrap_project(cli, project)
 
 
 def cmd_record_run(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
     project = args.project.strip()
-    paths = build_note_paths(project)
-    notes = build_seed_notes(project, paths)
-    for relative_path, content in notes.items():
-        cli.ensure_note(relative_path, content)
+    paths = bootstrap_project(cli, project)
 
     run_slug = slugify(args.title) or "run"
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
@@ -453,6 +502,74 @@ def cmd_audit(args: argparse.Namespace) -> None:
         print("")
 
 
+def cmd_init_project(args: argparse.Namespace) -> None:
+    vault_path = resolve_vault_or_exit(args.workspace)
+    cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
+    project = args.project.strip()
+    bootstrap_project(cli, project)
+    if args.with_stub:
+        class StubArgs:
+            pass
+
+        stub = StubArgs()
+        stub.project = project
+        stub.title = "Initial memory bank setup"
+        stub.prompt = "Initialize project knowledge base from blank state."
+        stub.summary = "Created seed notes and projects index entry."
+        stub.actions = "Bootstrapped project structure and linked anchor notes."
+        stub.decisions = "Adopt per-project folder under Project Memory."
+        stub.questions = "Define topic-specific notes next."
+        stub.tags = "setup,memory-bank"
+        stub.workspace = args.workspace
+        stub.dry_run = args.dry_run
+        cmd_record_run(stub)
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    workspace = Path(args.workspace).expanduser() if args.workspace else Path.cwd()
+    print(f"Workspace: {workspace.resolve()}")
+    store = ConfigStore()
+    mapped = store.resolve_vault(workspace)
+    if mapped:
+        print(f"Mapped vault: {mapped}")
+    else:
+        print("Mapped vault: <none>")
+    try:
+        version = subprocess.run(
+            ["obsidian", "version"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        raise SystemExit("Doctor failed: obsidian CLI is not installed or not in PATH.")
+    if version.returncode != 0 or _contains_cli_error(version.stdout) or _contains_cli_error(version.stderr):
+        raise SystemExit(
+            "Doctor failed: obsidian CLI could not reach app successfully.\n"
+            f"stdout:\n{version.stdout}\n"
+            f"stderr:\n{version.stderr}"
+        )
+    print("Obsidian CLI: OK")
+    if not mapped:
+        print("Vault mapping: MISSING (run set-vault)")
+        return
+    vault_path = Path(mapped).expanduser()
+    ensure_vault_ready(vault_path)
+    if os_access(vault_path):
+        print("Vault path access: OK")
+    else:
+        print("Vault path access: NOT WRITABLE")
+
+
+def os_access(path: Path) -> bool:
+    try:
+        test_dir = path / PROJECT_ROOT
+        test_dir.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Obsidian project memory bank helper")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -471,6 +588,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser_bootstrap.add_argument("--workspace", help="Workspace path override")
     parser_bootstrap.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser_bootstrap.set_defaults(func=cmd_bootstrap)
+
+    parser_init = subparsers.add_parser(
+        "init-project",
+        help="Initialize project folders, seed notes, and optional first run stub",
+    )
+    parser_init.add_argument("--project", required=True, help="Project display name")
+    parser_init.add_argument("--workspace", help="Workspace path override")
+    parser_init.add_argument("--with-stub", action="store_true", help="Create starter run note")
+    parser_init.add_argument("--dry-run", action="store_true", help="Print commands only")
+    parser_init.set_defaults(func=cmd_init_project)
 
     parser_run = subparsers.add_parser("record-run", help="Create a run note and append indexes")
     parser_run.add_argument("--project", required=True, help="Project display name")
@@ -503,6 +630,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser_audit.add_argument("--workspace", help="Workspace path override")
     parser_audit.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser_audit.set_defaults(func=cmd_audit)
+
+    parser_doctor = subparsers.add_parser("doctor", help="Validate CLI/vault readiness")
+    parser_doctor.add_argument("--workspace", help="Workspace path override")
+    parser_doctor.set_defaults(func=cmd_doctor)
 
     return parser
 

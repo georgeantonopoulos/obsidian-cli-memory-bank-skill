@@ -5,9 +5,12 @@ import unittest
 from pathlib import Path
 
 from scripts.obsidian_memory import (
+    PROJECTS_INDEX_PATH,
+    _contains_cli_error,
     ConfigStore,
     build_note_paths,
     build_seed_notes,
+    ensure_project_dirs,
     parse_tags,
     slugify,
 )
@@ -35,6 +38,22 @@ class ObsidianMemoryTests(unittest.TestCase):
         moc = notes[paths.moc]
         self.assertIn("[[MOC]]", home)
         self.assertIn("[[Sequency Home]]", moc)
+
+    def test_contains_cli_error(self) -> None:
+        self.assertTrue(_contains_cli_error("Error: failed to open file"))
+        self.assertTrue(_contains_cli_error("some info\nERROR cannot continue"))
+        self.assertFalse(_contains_cli_error("Created: note.md"))
+
+    def test_ensure_project_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Sequency")
+            ensure_project_dirs(vault, paths, dry_run=False)
+            self.assertTrue((vault / "Project Memory" / "sequency").is_dir())
+            self.assertTrue((vault / "Project Memory" / "sequency" / "Runs").is_dir())
+
+    def test_projects_index_path(self) -> None:
+        self.assertEqual(PROJECTS_INDEX_PATH.as_posix(), "Project Memory/Projects Index.md")
 
     def test_config_store_workspace_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -43,6 +43,12 @@ python3 scripts/obsidian_memory.py set-vault --vault-path "/absolute/path/to/you
 python3 scripts/obsidian_memory.py bootstrap --project "My Project"
 ```
 
+Or do one-step initialization:
+
+```bash
+python3 scripts/obsidian_memory.py init-project --project "My Project" --with-stub
+```
+
 4. Record each meaningful run:
 
 ```bash
@@ -61,6 +67,12 @@ python3 scripts/obsidian_memory.py record-run \
 
 ```bash
 python3 scripts/obsidian_memory.py audit --project "My Project"
+```
+
+6. Run readiness checks:
+
+```bash
+python3 scripts/obsidian_memory.py doctor
 ```
 
 ## Install In Codex
@@ -90,6 +102,17 @@ Use the Obsidian CLI Memory Bank workflow from SKILL.md in this repository.
 Always resolve or ask for vault path first, persist it, create interlinked notes with wikilinks,
 append run logs, and run periodic audit checks (unresolved/orphans/deadends/backlinks).
 ```
+
+## Persistence And “Always Use It” Behavior
+
+Short answer: partial, unless your agent platform supports prompt hooks.
+
+- The script itself is persistent for vault mapping (`state/vault_config.json`), so once set, future runs can reuse the same vault for that workspace.
+- Triggering the skill on every prompt depends on your agent runtime:
+  - Codex: add a standing instruction in your global/project instructions to always call this workflow at task start/end.
+  - Claude (Code): include SKILL.md in project instructions and define a reusable slash command/macro that wraps every task.
+  - Gemini CLI: wrap your normal command in a shell script that runs `show-vault`/`record-run` before and after model calls.
+- Without native hooks, true automatic “every prompt” execution is not guaranteed by the model alone.
 
 ## Optional: Shell Alias
 

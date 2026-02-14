@@ -45,6 +45,12 @@ Create core notes once per project:
 python3 scripts/obsidian_memory.py bootstrap --project "Sequency"
 ```
 
+Or run the one-command initializer:
+
+```bash
+python3 scripts/obsidian_memory.py init-project --project "Sequency" --with-stub
+```
+
 This creates:
 
 - `Project Memory/<project-slug>/<Project Home>.md`
@@ -101,6 +107,25 @@ This runs:
 - `obsidian orphans`
 - `obsidian deadends`
 - `obsidian backlinks path="<project-home-note>" counts`
+
+### 6) Health-check setup
+
+Run:
+
+```bash
+python3 scripts/obsidian_memory.py doctor
+```
+
+This validates Obsidian CLI availability, app reachability, workspace-to-vault mapping, and vault write access.
+
+## Persistence Mode
+
+Use this pattern to behave as “always-on” memory:
+
+1. At first action in a session, run `show-vault`; ask user only if missing.
+2. At task start, run `search` for key topic terms before proposing changes.
+3. At task end, run `record-run` with summary + rationale.
+4. Run `audit` periodically (or after major refactors).
 
 ## Rules
 
