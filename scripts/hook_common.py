@@ -15,6 +15,44 @@ def hook_notice(prefix: str, message: str) -> None:
     print(f"[{prefix}] {message}", file=sys.stderr, flush=True)
 
 
+_STOP_WORDS = frozenset(
+    "a an the is are was were be been being have has had do does did will would "
+    "shall should may might can could of in to for on with at by from as into "
+    "through about between after before above below up down out off over under "
+    "and or but not no nor so yet both either neither each every all any few "
+    "more most other some such than too very it its this that these those i me "
+    "my we our you your he him his she her they them their what which who whom "
+    "how when where why if then else let also just please tell check know make "
+    "sure need want like get go see look find use try keep take give show help "
+    "ok okay yes".split()
+)
+
+# Patterns stripped before keyword extraction.
+_FILE_PATH_RE = re.compile(r"@?(?:[A-Za-z]:)?(?:[/\\][\w.\-]+){2,}")
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_DATE_STAMP_RE = re.compile(r"\b\d{4}[-/]\d{2}[-/]\d{2}\b")
+_INLINE_CODE_RE = re.compile(r"`[^`]+`")
+_NON_ALPHA_RE = re.compile(r"[^A-Za-z0-9\s\-]")
+
+
+def sanitize_query(prompt: str, max_words: int = 8) -> str:
+    """Extract meaningful search keywords from a raw user prompt.
+
+    Strips file paths, @-mentions, URLs, date stamps, inline code, and
+    common stop words so that Obsidian CLI search receives only content
+    keywords likely to match note text.
+    """
+    text = prompt
+    for pattern in (_URL_RE, _FILE_PATH_RE, _DATE_STAMP_RE, _INLINE_CODE_RE):
+        text = pattern.sub(" ", text)
+    text = _NON_ALPHA_RE.sub(" ", text)
+    words = [w.lower() for w in text.split() if len(w) >= 2]
+    keywords = [w for w in words if w not in _STOP_WORDS]
+    if not keywords:
+        keywords = words[:max_words]
+    return " ".join(keywords[:max_words])
+
+
 def truncate(text: str, limit: int) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= limit:

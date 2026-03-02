@@ -11,9 +11,45 @@ Requires: obmem CLI installed via pipx.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Query sanitization (self-contained so the hook file works standalone)
+# ---------------------------------------------------------------------------
+
+_STOP_WORDS = frozenset(
+    "a an the is are was were be been being have has had do does did will would "
+    "shall should may might can could of in to for on with at by from as into "
+    "through about between after before above below up down out off over under "
+    "and or but not no nor so yet both either neither each every all any few "
+    "more most other some such than too very it its this that these those i me "
+    "my we our you your he him his she her they them their what which who whom "
+    "how when where why if then else let also just please tell check know make "
+    "sure need want like get go see look find use try keep take give show help "
+    "ok okay yes".split()
+)
+
+_FILE_PATH_RE = re.compile(r"@?(?:[A-Za-z]:)?(?:[/\\][\w.\-]+){2,}")
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_DATE_STAMP_RE = re.compile(r"\b\d{4}[-/]\d{2}[-/]\d{2}\b")
+_INLINE_CODE_RE = re.compile(r"`[^`]+`")
+_NON_ALPHA_RE = re.compile(r"[^A-Za-z0-9\s\-]")
+
+
+def _sanitize_query(prompt: str, max_words: int = 8) -> str:
+    """Extract meaningful search keywords from a raw user prompt."""
+    text = prompt
+    for pattern in (_URL_RE, _FILE_PATH_RE, _DATE_STAMP_RE, _INLINE_CODE_RE):
+        text = pattern.sub(" ", text)
+    text = _NON_ALPHA_RE.sub(" ", text)
+    words = [w.lower() for w in text.split() if len(w) >= 2]
+    keywords = [w for w in words if w not in _STOP_WORDS]
+    if not keywords:
+        keywords = words[:max_words]
+    return " ".join(keywords[:max_words])
 
 
 def main() -> int:
@@ -58,8 +94,8 @@ def main() -> int:
         # No vault mapped — silently skip
         return 0
 
-    # Build a short search query from the first ~100 chars of prompt
-    query = prompt[:100].strip()
+    # Extract meaningful keywords instead of passing raw prompt
+    query = _sanitize_query(prompt)
     if not query:
         return 0
 
