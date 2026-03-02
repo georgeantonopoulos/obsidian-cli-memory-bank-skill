@@ -34,13 +34,18 @@ class SanitizeQueryTests(unittest.TestCase):
         self.assertIn("hue", result)
         self.assertIn("widget", result)
 
-    def test_strips_inline_code(self) -> None:
+    def test_extracts_words_from_inline_code(self) -> None:
         prompt = "Fix the `_push_curve_to_huecorrect` function in widget"
         result = sanitize_query(prompt)
         self.assertNotIn("`", result)
-        self.assertIn("fix", result)
-        self.assertIn("function", result)
-        self.assertIn("widget", result)
+        # Words from the identifier should be extracted
+        self.assertIn("huecorrect", result)
+
+    def test_splits_camelCase_identifiers(self) -> None:
+        prompt = "What does `handleKnobChanged` do?"
+        result = sanitize_query(prompt)
+        self.assertIn("knob", result)
+        self.assertIn("changed", result)
 
     def test_removes_stop_words(self) -> None:
         result = sanitize_query("please help me find the bug in this code")
@@ -55,6 +60,21 @@ class SanitizeQueryTests(unittest.TestCase):
         prompt = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima"
         result = sanitize_query(prompt, max_words=5)
         self.assertLessEqual(len(result.split()), 5)
+
+    def test_default_max_words_is_four(self) -> None:
+        prompt = "alpha bravo charlie delta echo foxtrot golf hotel"
+        result = sanitize_query(prompt)
+        self.assertLessEqual(len(result.split()), 4)
+
+    def test_prefers_longer_words(self) -> None:
+        prompt = "fix implementation architecture bug"
+        result = sanitize_query(prompt)
+        words = result.split()
+        # "architecture" and "implementation" (both 14 chars) should come before
+        # shorter words like "fix" (3) and "bug" (3)
+        self.assertIn(words[0], ("architecture", "implementation"))
+        self.assertIn(words[1], ("architecture", "implementation"))
+        self.assertNotIn("bug", words[:2])
 
     def test_empty_prompt_returns_empty(self) -> None:
         self.assertEqual(sanitize_query(""), "")

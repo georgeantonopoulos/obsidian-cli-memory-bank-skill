@@ -37,18 +37,30 @@ _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _DATE_STAMP_RE = re.compile(r"\b\d{4}[-/]\d{2}[-/]\d{2}\b")
 _INLINE_CODE_RE = re.compile(r"`[^`]+`")
 _NON_ALPHA_RE = re.compile(r"[^A-Za-z0-9\s\-]")
+_CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
-def _sanitize_query(prompt: str, max_words: int = 8) -> str:
+def _split_identifier(name: str) -> str:
+    """Split a code identifier into words (underscores and camelCase)."""
+    parts = name.replace("-", "_").split("_")
+    words: list[str] = []
+    for part in parts:
+        words.extend(_CAMEL_SPLIT_RE.sub(" ", part).split())
+    return " ".join(w for w in words if w)
+
+
+def _sanitize_query(prompt: str, max_words: int = 4) -> str:
     """Extract meaningful search keywords from a raw user prompt."""
     text = prompt
-    for pattern in (_URL_RE, _FILE_PATH_RE, _DATE_STAMP_RE, _INLINE_CODE_RE):
+    for pattern in (_URL_RE, _FILE_PATH_RE, _DATE_STAMP_RE):
         text = pattern.sub(" ", text)
+    text = _INLINE_CODE_RE.sub(lambda m: " " + _split_identifier(m.group()[1:-1]) + " ", text)
     text = _NON_ALPHA_RE.sub(" ", text)
     words = [w.lower() for w in text.split() if len(w) >= 2]
     keywords = [w for w in words if w not in _STOP_WORDS]
     if not keywords:
         keywords = words[:max_words]
+    keywords.sort(key=len, reverse=True)
     return " ".join(keywords[:max_words])
 
 
