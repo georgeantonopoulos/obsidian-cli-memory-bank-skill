@@ -11,11 +11,14 @@ It helps an agent:
 
 ## Repository Contents
 
-- `SKILL.md` - main skill instructions
+- `SKILL.md` - main skill instructions (Codex / universal)
+- `claude-code/SKILL.md` - Claude Code-native skill (uses `obmem` CLI directly)
+- `claude-code/hooks/` - Claude Code hook scripts (pre-prompt search + post-stop logging)
+- `claude-code/INSTALL.md` - Claude Code setup instructions
 - `scripts/obsidian_memory.py` - helper CLI for vault mapping + note automation
 - `scripts/hook_common.py` - shared helper runtime for notify adapters
 - `scripts/codex_notify_hook.py` - Codex notify adapter (optional)
-- `scripts/claude_notify_hook.py` - Claude Code adapter
+- `scripts/claude_notify_hook.py` - Claude Code adapter (package-based, uses hook_common)
 - `scripts/cursor_notify_hook.py` - Cursor adapter
 - `scripts/antigravity_notify_hook.py` - Antigravity adapter
 - `references/obsidian-cli-patterns.md` - Obsidian command patterns
@@ -168,21 +171,23 @@ Security note:
 
 ## Claude Code Integration
 
-Reference docs:
-- https://docs.anthropic.com/en/docs/claude-code/hooks
+See [`claude-code/INSTALL.md`](claude-code/INSTALL.md) for full setup instructions.
 
-Claude Code hooks send JSON to the hook command via `stdin`.
-Use this adapter as the bridge:
+Quick summary:
 
-```bash
-python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/claude_notify_hook.py \
-  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill
-```
+1. Install CLI: `pipx install git+https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill.git`
+2. Copy skill: `cp claude-code/SKILL.md ~/.claude/skills/obsidian-cli-memory-bank/SKILL.md`
+3. Copy hooks: `cp claude-code/hooks/*.py ~/.claude/hooks/`
+4. Add hook entries to `~/.claude/settings.json` (see INSTALL.md for JSON snippet)
 
-Recommended setup:
-- Configure your Claude Code post-turn hook to call `scripts/claude_notify_hook.py`.
-- Let Claude pipe the native hook payload JSON on stdin.
-- The adapter recognizes documented `hook_event_name` values (for example `UserPromptSubmit`, `PostToolUse`, `SessionEnd`).
+The `claude-code/` directory contains standalone hook scripts that call `obmem` directly (no package imports needed). Two hooks are provided:
+
+- **UserPromptSubmit**: Searches Obsidian for prior context before Claude answers
+- **Stop**: Logs a structured run note after each agent stop
+
+Both hooks silently no-op when no vault is mapped for the current workspace.
+
+The original `scripts/claude_notify_hook.py` adapter (package-based, uses `hook_common`) is still available for users who prefer the pipx-installed package import path.
 
 ## Cursor Integration
 
