@@ -1,0 +1,2 @@
+[console_scripts]
+obmem = scripts.obsidian_memory:main

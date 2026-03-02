@@ -118,8 +118,19 @@ def main() -> int:
         check=False,
     )
 
-    if result.returncode == 0 and result.stdout.strip():
-        print(f"[obsidian-memory] Prior context from Obsidian vault:\n{result.stdout.strip()}")
+    output = result.stdout.strip() if result.returncode == 0 else ""
+    has_results = output and "No matches found" not in output
+
+    # Always tell the LLM what keywords were searched so it can refine
+    # with its own domain knowledge (e.g. searching for "Nuke" or "oklch").
+    header = f"[obsidian-memory] Searched Obsidian vault (project: {project_name}) with keywords: {query}"
+    if has_results:
+        print(f"{header}\nMatching notes:\n{output}")
+    else:
+        print(
+            f"{header}\nNo matches. Consider using the obmem skill to search "
+            f"with domain-specific keywords (e.g. project name, technology, feature names)."
+        )
 
     return 0
 
