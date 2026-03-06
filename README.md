@@ -1,308 +1,218 @@
-# Obsidian CLI Memory Bank Skill
+# Obsidian CLI Memory Bank
 
-A portable skill/prompt-pack for maintaining a project knowledge base in Obsidian using the Obsidian CLI.
+A portable skill that gives AI coding agents persistent, structured memory inside Obsidian. Works across runtimes — Claude Code, Codex, Cursor, Antigravity, or anything that can shell out to a CLI.
 
-It helps an agent:
-- ask for and persist a vault path,
-- create structured interlinked notes,
-- append run logs and decision trails,
-- retrieve context quickly from previous runs,
-- audit wikilink graph quality (unresolved links, orphans, deadends, backlinks).
+Each project gets its own interlinked note graph: a home page, a map of content, a decision log, a run log, and timestamped session notes — all wired together with wikilinks so Obsidian's backlink graph becomes a navigable project history.
 
-## Repository Contents
+## What It Does
 
-- `SKILL.md` - main skill instructions (Codex / universal)
-- `claude-code/SKILL.md` - Claude Code-native skill (uses `obmem` CLI directly)
-- `claude-code/hooks/` - Claude Code hook scripts (pre-prompt search + post-stop logging)
-- `claude-code/INSTALL.md` - Claude Code setup instructions
-- `scripts/obsidian_memory.py` - helper CLI for vault mapping + note automation
-- `scripts/hook_common.py` - shared helper runtime for notify adapters
-- `scripts/codex_notify_hook.py` - Codex notify adapter (optional)
-- `scripts/claude_notify_hook.py` - Claude Code adapter (package-based, uses hook_common)
-- `scripts/cursor_notify_hook.py` - Cursor adapter
-- `scripts/antigravity_notify_hook.py` - Antigravity adapter
-- `references/obsidian-cli-patterns.md` - Obsidian command patterns
-- `agents/openai.yaml` - UI metadata for systems that support it
+- **Vault mapping** — Associates a workspace directory with an Obsidian vault path. Ask once, persist forever.
+- **Project scaffolding** — Creates `Project Memory/<project>/` with Home, MOC, Run Log, Decisions, and Open Questions notes, pre-linked to each other.
+- **Run logging** — Records each agent session as a structured note: what was asked, what changed, why, and what's still open.
+- **Context retrieval** — Searches the vault before answering so prior decisions and context surface automatically.
+- **Graph hygiene** — Audits for unresolved links, orphan notes, dead ends, and backlink coverage.
 
-## Requirements
-
-- Python 3.10+
-- Obsidian desktop with Obsidian CLI enabled
-- Obsidian CLI available in `PATH` as `obsidian`
-
-## Install In 30 Seconds (Recommended)
-
-Use `pipx` so users get a clean isolated CLI install:
+## Install
 
 ```bash
-python3 -m pip install --user pipx
-python3 -m pipx ensurepath
+# Install the CLI (isolated via pipx)
+brew install pipx && pipx ensurepath
 pipx install git+https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill.git
-```
 
-Then use:
-
-```bash
-obmem --help
+# Verify
 obmem doctor
 ```
 
-Update later:
+**Requirements**: Python 3.10+, Obsidian desktop with [Obsidian CLI](https://github.com/Vinzent03/obsidian-advanced-uri) enabled, `obsidian` in PATH.
+
+## Quick Start
 
 ```bash
-pipx upgrade obsidian-cli-memory-bank
-```
+# 1. Map your workspace to a vault
+obmem set-vault --vault-path "/path/to/your/obsidian/vault"
 
-Uninstall:
+# 2. Bootstrap a project
+obmem init-project --project "My Project" --with-stub
 
-```bash
-pipx uninstall obsidian-cli-memory-bank
-```
-
-## Quick Start (Universal)
-
-1. Clone this repo:
-
-```bash
-git clone https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill.git
-cd obsidian-cli-memory-bank-skill
-```
-
-Resolve skill path robustly (works even if `CODEX_HOME` is unset):
-
-```bash
-if [ -f "./scripts/obsidian_memory.py" ]; then
-  SKILL_DIR="$(pwd)"
-elif [ -n "${CODEX_HOME:-}" ] && [ -d "$CODEX_HOME/skills/obsidian-cli-memory-bank" ]; then
-  SKILL_DIR="$CODEX_HOME/skills/obsidian-cli-memory-bank"
-elif [ -d "$HOME/.codex/skills/obsidian-cli-memory-bank" ]; then
-  SKILL_DIR="$HOME/.codex/skills/obsidian-cli-memory-bank"
-else
-  echo "Set SKILL_DIR to your local obsidian-cli-memory-bank path"
-  exit 1
-fi
-```
-
-2. Set the vault path once for your current workspace:
-
-```bash
-python3 "$SKILL_DIR/scripts/obsidian_memory.py" set-vault --vault-path "/absolute/path/to/your/vault"
-```
-
-3. Bootstrap a project memory tree:
-
-```bash
-python3 "$SKILL_DIR/scripts/obsidian_memory.py" bootstrap --project "My Project"
-```
-
-Or do one-step initialization:
-
-```bash
-python3 "$SKILL_DIR/scripts/obsidian_memory.py" init-project --project "My Project" --with-stub
-```
-
-4. Record each meaningful run:
-
-```bash
-python3 "$SKILL_DIR/scripts/obsidian_memory.py" record-run \
+# 3. Record a session
+obmem record-run \
   --project "My Project" \
   --title "Implement queue retry" \
-  --prompt "User asked for per-item retry in export queue" \
-  --summary "Added retry model and queue wiring" \
+  --summary "Added retry model and queue wiring." \
+  --prompt "User asked for per-item retry in export queue." \
   --actions "Updated queue item state, manager logic, and UI actions." \
   --decisions "Retry count defaults to 2 for safety." \
-  --questions "Should retries be exponential backoff?" \
   --tags "queue,retry"
+
+# 4. Search for prior context
+obmem search --project "My Project" --query "retry queue"
+
+# 5. Audit graph health
+obmem audit --project "My Project"
 ```
 
-5. Audit graph hygiene:
+## Runtime Integrations
+
+The skill works anywhere an agent can run shell commands. For runtimes with lifecycle hooks, adapter scripts automate the memory operations at the right moments:
+
+| Lifecycle Point | What Happens | Claude Code | Codex |
+|----------------|-------------|-------------|-------|
+| Session start | Health-check vault connectivity | `SessionStart` | — |
+| Before response | Search vault for relevant context | `UserPromptSubmit` | — |
+| After response | Log a structured run note | `Stop` | `agent-turn-complete` |
+| Before compaction | Persist transcript before context compression | `PreCompact` | — |
+| After memory write | Mirror `MEMORY.md` to vault | `PostToolUse` | — |
+
+### Claude Code
+
+Full integration with 5 lifecycle hooks. See [`claude-code/INSTALL.md`](claude-code/INSTALL.md) for setup.
 
 ```bash
-python3 "$SKILL_DIR/scripts/obsidian_memory.py" audit --project "My Project"
+# 1. Install CLI (if not done above)
+pipx install git+https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill.git
+
+# 2. Install the skill
+mkdir -p ~/.claude/skills/obsidian-cli-memory-bank
+cp claude-code/SKILL.md ~/.claude/skills/obsidian-cli-memory-bank/SKILL.md
+
+# 3. Install hooks
+cp claude-code/hooks/*.py ~/.claude/hooks/
+chmod +x ~/.claude/hooks/obsidian_*.py
+
+# 4. Add hook entries to ~/.claude/settings.json (see INSTALL.md for JSON)
 ```
 
-6. Run readiness checks:
+**Hooks provided:**
+
+| Script | Event | Purpose |
+|--------|-------|---------|
+| `obsidian_sessionstart_hook.py` | `SessionStart` | Validates vault health once per session |
+| `obsidian_preprompt_hook.py` | `UserPromptSubmit` | Searches Obsidian before each response |
+| `obsidian_poststop_hook.py` | `Stop` | Logs a run note after each agent stop |
+| `obsidian_precompact_hook.py` | `PreCompact` | Saves transcript summary before context compression |
+| `obsidian_memory_sync_hook.py` | `PostToolUse` | Mirrors `MEMORY.md` writes to vault |
+
+All hooks silently no-op when no vault is mapped for the current workspace.
+
+### Codex
 
 ```bash
-python3 "$SKILL_DIR/scripts/obsidian_memory.py" doctor
-```
-
-7. Configure automatic audit cadence (default is every 5 runs):
-
-```bash
-python3 "$SKILL_DIR/scripts/obsidian_memory.py" set-audit-frequency --runs 5
-```
-
-Set `--runs 0` to disable automatic audits.
-
-## Codex (Optional)
-
-Copy or symlink the skill into your Codex skills directory:
-
-```bash
+# Install the skill
 mkdir -p "$CODEX_HOME/skills"
 cp -R ./ "$CODEX_HOME/skills/obsidian-cli-memory-bank"
-```
 
-Then trigger it by mentioning `obsidian-cli-memory-bank` in your task.
-
-### Codex Native Hook (notify)
-
-Codex supports a `notify` command hook that runs when a turn completes (`agent-turn-complete` payload).
-This repository includes a ready-to-install hook that auto-logs each Codex turn into the project memory bank.
-
-Install:
-
-```bash
-cd /absolute/path/to/obsidian-cli-memory-bank-skill
+# Install the notify hook (auto-logs each turn)
 chmod +x scripts/install_codex_notify_hook.sh scripts/codex_notify_hook.py
 ./scripts/install_codex_notify_hook.sh
 ```
 
-Then verify:
+The installer is non-destructive — it won't overwrite unmanaged `notify = ...` settings in `~/.codex/config.toml`.
+
+### Cursor
+
+For Cursor background-agent webhooks:
 
 ```bash
-python3 scripts/obsidian_memory.py doctor
+python3 /path/to/obsidian-cli-memory-bank-skill/scripts/cursor_notify_hook.py \
+  --skill-repo /path/to/obsidian-cli-memory-bank-skill
 ```
 
-Security note:
-- installer is intentionally non-destructive and will refuse to overwrite unmanaged existing `notify = ...` settings in `~/.codex/config.toml`
-- if you already have another notify hook, merge the managed block manually
+Supports webhook fields: `event`, `status`, `id`, `summary`, `source`, `target`, and optional transcript fields (`messages`/`conversation`).
 
-## Claude Code Integration
+**Optional security hardening:**
+- Set `CURSOR_WEBHOOK_SECRET` for HMAC-SHA256 verification
+- Pass signature via `CURSOR_WEBHOOK_SIGNATURE` or include `signature` in the payload
 
-See [`claude-code/INSTALL.md`](claude-code/INSTALL.md) for full setup instructions.
+If your payload lacks a workspace path, set `CURSOR_WORKSPACE` or `CURSOR_PROJECT_DIR`.
 
-Quick summary:
+### Antigravity
 
-1. Install CLI: `pipx install git+https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill.git`
-2. Copy skill: `cp claude-code/SKILL.md ~/.claude/skills/obsidian-cli-memory-bank/SKILL.md`
-3. Copy hooks: `cp claude-code/hooks/*.py ~/.claude/hooks/`
-4. Add hook entries to `~/.claude/settings.json` (see INSTALL.md for JSON snippet)
-
-The `claude-code/` directory contains standalone hook scripts that call `obmem` directly (no package imports needed). Two hooks are provided:
-
-- **UserPromptSubmit**: Searches Obsidian for prior context before Claude answers
-- **Stop**: Logs a structured run note after each agent stop
-
-Both hooks silently no-op when no vault is mapped for the current workspace.
-
-The original `scripts/claude_notify_hook.py` adapter (package-based, uses `hook_common`) is still available for users who prefer the pipx-installed package import path.
-
-## Cursor Integration
-
-Reference docs:
-- https://docs.cursor.com/background-agent/webhooks
-
-For Cursor background-agent webhooks, pass the webhook payload JSON to:
+No stable public hook spec exists for Antigravity yet. Use direct CLI calls:
 
 ```bash
-python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/cursor_notify_hook.py \
-  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill
+obmem record-run --project "Your Project" --title "Task summary" --summary "What changed and why"
 ```
 
-The adapter supports documented webhook fields like:
-- `event`, `status`, `id`, `summary`, `source`, and `target`
-- optional transcript-style fields (`messages`/`conversation`) when available
-
-If your webhook payload does not include a local workspace path, set one via env var:
-- `CURSOR_WORKSPACE` or `CURSOR_PROJECT_DIR`
-
-Security hardening (recommended for webhook deployments):
-- set `CURSOR_WEBHOOK_SECRET` to require HMAC-SHA256 verification
-- pass signature via `CURSOR_WEBHOOK_SIGNATURE` (or include `signature` in payload)
-- accepted signature formats: raw hex digest or `sha256=<hex>`
-
-## Antigravity Integration
-
-Current status:
-- no stable public hook payload specification was found for Antigravity during implementation
-- default recommendation is to use rules/skills + manual `record-run` calls
-- this adapter is best-effort and designed for nested payloads seen in local agent tooling
-
-Recommended default in Antigravity:
+If your setup emits machine-readable turn events (e.g. via an embedded extension hook flow), the adapter script handles nested payloads:
 
 ```bash
-python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/obsidian_memory.py record-run \
-  --project "Your Project" \
-  --title "Task summary" \
-  --summary "What changed and why"
+python3 /path/to/obsidian-cli-memory-bank-skill/scripts/antigravity_notify_hook.py \
+  --skill-repo /path/to/obsidian-cli-memory-bank-skill
 ```
 
-Only use the adapter below if your setup actually emits machine-readable turn events
-(for example when running through an embedded Claude Code extension hook flow):
+### Other Runtimes
+
+For any agent that can run shell commands:
+
+1. Load `SKILL.md` into your agent's system prompt or project instructions.
+2. Run `obmem` commands before/after tasks.
+3. If the runtime exposes lifecycle events, adapt the hook scripts in `claude-code/hooks/` or `scripts/` — the pattern is always: parse the event payload, call `obmem` with the right arguments.
+
+## Repository Structure
+
+```
+├── SKILL.md                          # Universal skill instructions (all runtimes)
+├── claude-code/
+│   ├── SKILL.md                      # Claude Code-native skill (uses obmem CLI)
+│   ├── INSTALL.md                    # Claude Code setup guide
+│   └── hooks/                        # 5 lifecycle hook scripts
+├── scripts/
+│   ├── obsidian_memory.py            # Core CLI (also available as obmem via pipx)
+│   ├── hook_common.py                # Shared hook runtime helpers
+│   ├── codex_notify_hook.py          # Codex adapter
+│   ├── claude_notify_hook.py         # Claude Code adapter (package-based alternative)
+│   ├── cursor_notify_hook.py         # Cursor webhook adapter
+│   ├── antigravity_notify_hook.py    # Antigravity adapter (best-effort)
+│   ├── install_codex_notify_hook.sh  # Codex hook installer
+│   └── tests/                        # Unit tests for all adapters
+├── references/
+│   └── obsidian-cli-patterns.md      # Obsidian CLI command reference
+└── agents/
+    └── openai.yaml                   # UI metadata for compatible systems
+```
+
+## CLI Reference
 
 ```bash
-python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/antigravity_notify_hook.py \
-  --skill-repo /absolute/path/to/obsidian-cli-memory-bank-skill
+obmem show-vault                      # Display mapped vault for current workspace
+obmem set-vault --vault-path "..."    # Map workspace to vault
+obmem doctor                          # Health check (CLI, app, vault, permissions)
+obmem bootstrap --project "Name"      # Create project note structure
+obmem init-project --project "Name"   # Bootstrap + stub content in one step
+obmem record-run --project "Name" ... # Log a session note
+obmem search --project "Name" -q "x"  # Search vault by keyword
+obmem read-note --path "..."          # Read a specific note
+obmem audit --project "Name"          # Check graph hygiene
+obmem set-audit-frequency --runs N    # Auto-audit every N runs (0 = off)
 ```
 
-The adapter supports nested payloads under `data`, `event`, or `payload` and resolves common message/summary fields.
+Use `--workspace "/path"` on any command to target a different workspace.
 
-## Hook Behavior
+## Persistence
 
-Claude/Cursor adapters share the same behavior:
-- resolve workspace vault mapping
-- create a `record-run` note automatically
-- stay non-blocking (never fail your agent turn)
-- print visible status messages like `[obsidian-memory-hook-*] running ...` and `[... ] logged run note ...`
+- Vault mappings persist in `state/vault_config.json` (git-ignored).
+- Auto-audit triggers every 5 runs by default (configurable via `set-audit-frequency`).
+- Hook adapters are additive — the skill works fine without any hooks installed.
 
-Antigravity adapter behavior:
-- same runtime behavior as above when a compatible JSON event is provided
-- may no-op in setups that do not expose hook events
-
-## Install In Other Agents (Fallback)
-
-Not all agents expose native hooks. Use this fallback:
-
-1. Keep this repository on disk.
-2. Load `SKILL.md` into your agent's system prompt/project instructions.
-3. Execute `scripts/obsidian_memory.py` manually before/after major tasks.
-4. Use the relevant adapter script if your runtime can emit event JSON.
-
-This project is intentionally usable without Codex-specific features:
-- primary interface: `obmem ...` (or `python3 scripts/obsidian_memory.py ...`)
-- hooks/adapters are additive, not required
-
-Suggested prompt snippet:
-
-```text
-Use the Obsidian CLI Memory Bank workflow from SKILL.md in this repository.
-Always resolve or ask for vault path first, persist it, create interlinked notes with wikilinks,
-append run logs, and run periodic audit checks (unresolved/orphans/deadends/backlinks).
-```
-
-## Persistence And “Always Use It” Behavior
-
-- Vault mappings persist in `state/vault_config.json`.
-- Automatic per-turn behavior depends on your agent runtime exposing hooks/events.
-- Adapters in this repo are designed to be resilient to minor payload shape differences.
-
-## Optional: Shell Alias
-
-```bash
-alias obmem='python3 /absolute/path/to/obsidian-cli-memory-bank-skill/scripts/obsidian_memory.py'
-```
-
-Example:
-
-```bash
-obmem show-vault
-obmem bootstrap --project "My Project"
-```
-
-## Security Notes
-
-- The local `state/` folder can include vault paths; it is git-ignored.
-- `.env*`, caches, and platform artifacts are git-ignored.
-- Review command output before sharing logs publicly.
-
-## Run Tests
+## Tests
 
 ```bash
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 ```
 
+## Security Notes
+
+- The `state/` directory may contain vault paths; it is git-ignored.
+- `.env*`, caches, and platform artifacts are git-ignored.
+- Review command output before sharing logs publicly.
+
+## Update / Uninstall
+
+```bash
+pipx upgrade obsidian-cli-memory-bank
+pipx uninstall obsidian-cli-memory-bank
+```
+
 ## License
 
-No explicit license file is included yet. Add one if you plan to distribute broadly.
+No license file included yet. Add one before distributing broadly.
