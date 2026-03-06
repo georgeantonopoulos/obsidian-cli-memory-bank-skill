@@ -1,5 +1,5 @@
 ---
-name: obsidian-memory
+name: obsidian-cli-memory-bank
 description: Build and maintain project-specific Obsidian knowledge bases via the obmem CLI. Use when an agent needs to (1) persist a vault mapping for a workspace, (2) capture prompt/run context as structured Markdown notes, (3) auto-link notes with wikilinks for backlink coverage, (4) retrieve context via search/read commands, or (5) audit graph hygiene with unresolved/orphan/dead-end link checks.
 ---
 
@@ -125,10 +125,11 @@ Use this pattern to behave as "always-on" memory:
 
 ### Hook Integration (Optional)
 
-Claude Code hooks provide four automatic integration points:
+Claude Code hooks provide five automatic integration points:
 
 | Hook | Event | Purpose |
 |------|-------|---------|
+| `obsidian_sessionstart_hook.py` | `SessionStart` | Validate vault connectivity at session start |
 | `obsidian_preprompt_hook.py` | `UserPromptSubmit` | Search Obsidian for relevant notes before each response |
 | `obsidian_poststop_hook.py` | `Stop` | Log a structured run note after each agent stop |
 | `obsidian_precompact_hook.py` | `PreCompact` | Persist session context to Obsidian before context compaction |

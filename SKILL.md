@@ -158,16 +158,28 @@ Use this pattern to behave as “always-on” memory:
 
 ### Hook Integration (Optional)
 
-For runtimes that support hook events, use the matching adapter script.
+For runtimes that support hook events, adapter scripts automate memory operations at key lifecycle points:
 
-Codex supports a native `notify` hook for `agent-turn-complete`. To enable it:
+| Lifecycle Point | Purpose | Claude Code | Codex |
+|----------------|---------|-------------|-------|
+| Session start | Health-check vault connectivity | `SessionStart` | — |
+| Before response | Search vault for relevant context | `UserPromptSubmit` | — |
+| After response | Log structured run note | `Stop` | `agent-turn-complete` |
+| Before compaction | Persist transcript before context compression | `PreCompact` | — |
+| After memory write | Mirror MEMORY.md to vault | `PostToolUse` | — |
+
+**Claude Code**: See `claude-code/INSTALL.md` for full setup (5 hooks with settings.json entries).
+
+**Codex**: Install the notify hook:
 
 ```bash
 chmod +x scripts/install_codex_notify_hook.sh scripts/codex_notify_hook.py
 "$SKILL_DIR/scripts/install_codex_notify_hook.sh"
 ```
 
-The hook auto-runs `record-run` for mapped workspaces and no-ops when a mapping is missing.
+**Other runtimes** (Cursor, Antigravity, etc.): Adapt the scripts in `claude-code/hooks/` or `scripts/` to the runtime's hook format. The core pattern is the same — call `obmem` CLI commands at the appropriate lifecycle point.
+
+All hooks silently no-op when no vault is mapped for the current workspace.
 
 ## Rules
 
