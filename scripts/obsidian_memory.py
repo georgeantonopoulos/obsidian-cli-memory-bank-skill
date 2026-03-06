@@ -9,6 +9,7 @@ import argparse
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -185,38 +186,50 @@ class ObsidianCLI:
         self.vault_path = vault_path
         self.dry_run = dry_run
 
-    def run(self, command: str, *args: str) -> str:
+    def run(self, command: str, *args: str, retries: int = 2) -> str:
         cmd = ["obsidian", command, *args]
         if self.dry_run:
             printable = " ".join(cmd)
             return f"[dry-run] {printable}"
-        completed = subprocess.run(
-            cmd,
-            cwd=self.vault_path,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if completed.returncode != 0 or _contains_cli_error(completed.stdout) or _contains_cli_error(
-            completed.stderr
-        ):
-            raise RuntimeError(
+        last_error: RuntimeError | None = None
+        for attempt in range(1 + retries):
+            completed = subprocess.run(
+                cmd,
+                cwd=self.vault_path,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if completed.returncode == 0 and not _contains_cli_error(
+                completed.stdout
+            ) and not _contains_cli_error(completed.stderr):
+                return completed.stdout.strip()
+            last_error = RuntimeError(
                 f"Obsidian CLI failed ({completed.returncode}) for: {' '.join(cmd)}\n"
                 f"stdout:\n{completed.stdout}\n"
                 f"stderr:\n{completed.stderr}"
             )
-        return completed.stdout.strip()
+            if _is_transient_ipc_error(completed) and attempt < retries:
+                time.sleep(1)
+                continue
+            break
+        raise last_error  # type: ignore[misc]
 
     def ensure_note(self, relative_path: Path, content: str) -> str:
         absolute = self.vault_path / relative_path
         if absolute.exists():
             return f"exists:{relative_path.as_posix()}"
-        return self.run(
-            "create",
-            f"path={relative_path.as_posix()}",
-            f"content={content}",
-            "silent",
-        )
+        try:
+            return self.run(
+                "create",
+                f"path={relative_path.as_posix()}",
+                f"content={content}",
+                "silent",
+            )
+        except RuntimeError:
+            absolute.parent.mkdir(parents=True, exist_ok=True)
+            absolute.write_text(content, encoding="utf-8")
+            return f"created (direct write):{relative_path.as_posix()}"
 
     def append(self, relative_path: Path, content: str) -> str:
         return self.run(
@@ -394,6 +407,11 @@ def ensure_vault_ready(vault_path: Path) -> None:
 def _contains_cli_error(text: str) -> bool:
     lowered = text.lower()
     return re.search(r"(^|\n)\s*error[:\s]", lowered) is not None
+
+
+def _is_transient_ipc_error(result: subprocess.CompletedProcess[str]) -> bool:
+    combined = (result.stdout or "") + (result.stderr or "")
+    return "unable to connect to main process" in combined.lower()
 
 
 def ensure_project_dirs(vault_path: Path, paths: NotePaths, dry_run: bool) -> None:
