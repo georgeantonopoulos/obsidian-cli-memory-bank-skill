@@ -39,7 +39,9 @@ Copy the hook scripts:
 mkdir -p ~/.claude/hooks
 cp claude-code/hooks/obsidian_preprompt_hook.py ~/.claude/hooks/
 cp claude-code/hooks/obsidian_poststop_hook.py ~/.claude/hooks/
-chmod +x ~/.claude/hooks/obsidian_preprompt_hook.py ~/.claude/hooks/obsidian_poststop_hook.py
+cp claude-code/hooks/obsidian_precompact_hook.py ~/.claude/hooks/
+cp claude-code/hooks/obsidian_memory_sync_hook.py ~/.claude/hooks/
+chmod +x ~/.claude/hooks/obsidian_*.py
 ```
 
 Add hook entries to `~/.claude/settings.json` under the `"hooks"` key:
@@ -66,6 +68,27 @@ Add hook entries to `~/.claude/settings.json` under the `"hooks"` key:
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/obsidian_precompact_hook.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/obsidian_memory_sync_hook.py"
+          }
+        ]
+      }
     ]
   }
 }
@@ -77,8 +100,10 @@ If you already have hooks configured for these events, append the new hook group
 
 - **UserPromptSubmit** (pre-prompt): Searches Obsidian for notes relevant to your prompt before Claude answers. Surfaces prior context automatically.
 - **Stop** (post-stop): Logs a structured run note to Obsidian after each agent stop. Captures what was asked and what was done.
+- **PreCompact** (pre-compaction): Saves a transcript summary to Obsidian before context compression. Prevents knowledge loss when conversations hit context limits.
+- **PostToolUse** (post-write/edit): Mirrors MEMORY.md writes to Obsidian vault. Fires only on `Write` or `Edit` tool calls targeting memory files (`*/memory/*` or `*MEMORY.md`).
 
-Both hooks silently no-op when no vault is mapped for the current workspace.
+All hooks silently no-op when no vault is mapped for the current workspace.
 
 ## 4) First-time setup
 

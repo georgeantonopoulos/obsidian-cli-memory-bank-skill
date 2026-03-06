@@ -125,7 +125,19 @@ Use this pattern to behave as "always-on" memory:
 
 ### Hook Integration (Optional)
 
-Claude Code hooks auto-search Obsidian before each prompt and auto-log after each stop.
+Claude Code hooks provide four automatic integration points:
+
+| Hook | Event | Purpose |
+|------|-------|---------|
+| `obsidian_preprompt_hook.py` | `UserPromptSubmit` | Search Obsidian for relevant notes before each response |
+| `obsidian_poststop_hook.py` | `Stop` | Log a structured run note after each agent stop |
+| `obsidian_precompact_hook.py` | `PreCompact` | Persist session context to Obsidian before context compaction |
+| `obsidian_memory_sync_hook.py` | `PostToolUse` | Mirror MEMORY.md writes to Obsidian vault |
+
+The **PreCompact** hook is especially valuable: when the context window fills up, Claude compresses prior messages. This hook captures a transcript summary as an Obsidian note *before* that compression happens, so project knowledge survives context boundaries.
+
+The **PostToolUse** hook watches for `Write` or `Edit` calls targeting `*/memory/*` or `*MEMORY.md` paths. When Claude saves auto-memory, the hook syncs the content to Obsidian so the same knowledge is searchable across tools.
+
 See `claude-code/INSTALL.md` for setup instructions.
 
 ## Rules
