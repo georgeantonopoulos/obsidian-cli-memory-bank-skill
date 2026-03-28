@@ -153,6 +153,10 @@ class NotePaths:
     run_log: Path
     decisions: Path
     questions: Path
+    architecture: Path
+    roadmap: Path
+    debugging_notes: Path
+    release_notes: Path
     runs_dir: Path
 
 
@@ -168,6 +172,10 @@ def build_note_paths(project_name: str) -> NotePaths:
     run_log = project_dir / "Run Log.md"
     decisions = project_dir / "Decisions.md"
     questions = project_dir / "Open Questions.md"
+    architecture = project_dir / "Architecture.md"
+    roadmap = project_dir / "Roadmap.md"
+    debugging_notes = project_dir / "Debugging Notes.md"
+    release_notes = project_dir / "Release Notes.md"
     runs_dir = project_dir / "Runs"
     return NotePaths(
         project_slug=project_slug,
@@ -177,6 +185,10 @@ def build_note_paths(project_name: str) -> NotePaths:
         run_log=run_log,
         decisions=decisions,
         questions=questions,
+        architecture=architecture,
+        roadmap=roadmap,
+        debugging_notes=debugging_notes,
+        release_notes=release_notes,
         runs_dir=runs_dir,
     )
 
@@ -299,6 +311,10 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
             f"- [[{paths.decisions.stem}]]",
             f"- [[{paths.questions.stem}]]",
             f"- [[{paths.run_log.stem}]]",
+            f"- [[{paths.architecture.stem}]]",
+            f"- [[{paths.roadmap.stem}]]",
+            f"- [[{paths.debugging_notes.stem}]]",
+            f"- [[{paths.release_notes.stem}]]",
             "",
             "## Retrieval Cues",
             "- Add stable keywords for high-value searches.",
@@ -327,6 +343,9 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
             f"- [[{paths.decisions.stem}]]",
             f"- [[{paths.questions.stem}]]",
             f"- [[{paths.run_log.stem}]]",
+            "",
+            "## Recent Runs",
+            "- Add the latest execution notes here for quick traversal.",
         ]
     )
 
@@ -381,12 +400,108 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
         ]
     )
 
+    architecture = "\n".join(
+        [
+            build_frontmatter(
+                note_type="architecture",
+                project=project_name,
+                tags=["architecture", paths.project_slug],
+            ),
+            "",
+            f"# {paths.architecture.stem}",
+            "",
+            f"Parent note: [[{project_home_title}]]",
+            f"MOC: [[{paths.moc.stem}]]",
+            "",
+            "## Current Shape",
+            "- Capture the key systems, boundaries, and integration points.",
+            "",
+            "## Linked Context",
+            f"- [[{paths.roadmap.stem}]]",
+            f"- [[{paths.debugging_notes.stem}]]",
+            f"- [[{paths.release_notes.stem}]]",
+        ]
+    )
+
+    roadmap = "\n".join(
+        [
+            build_frontmatter(
+                note_type="roadmap",
+                project=project_name,
+                tags=["roadmap", paths.project_slug],
+            ),
+            "",
+            f"# {paths.roadmap.stem}",
+            "",
+            f"Parent note: [[{project_home_title}]]",
+            f"MOC: [[{paths.moc.stem}]]",
+            "",
+            "## Current Priorities",
+            "- Track near-term milestones and larger follow-up work.",
+            "",
+            "## Linked Context",
+            f"- [[{paths.architecture.stem}]]",
+            f"- [[{paths.questions.stem}]]",
+            f"- [[{paths.release_notes.stem}]]",
+        ]
+    )
+
+    debugging_notes = "\n".join(
+        [
+            build_frontmatter(
+                note_type="debugging-notes",
+                project=project_name,
+                tags=["debugging", paths.project_slug],
+            ),
+            "",
+            f"# {paths.debugging_notes.stem}",
+            "",
+            f"Parent note: [[{project_home_title}]]",
+            f"MOC: [[{paths.moc.stem}]]",
+            "",
+            "## Current Investigations",
+            "- Capture active failures, root-cause notes, and reproduction details.",
+            "",
+            "## Linked Context",
+            f"- [[{paths.architecture.stem}]]",
+            f"- [[{paths.questions.stem}]]",
+            f"- [[{paths.run_log.stem}]]",
+        ]
+    )
+
+    release_notes = "\n".join(
+        [
+            build_frontmatter(
+                note_type="release-notes",
+                project=project_name,
+                tags=["release-notes", paths.project_slug],
+            ),
+            "",
+            f"# {paths.release_notes.stem}",
+            "",
+            f"Parent note: [[{project_home_title}]]",
+            f"MOC: [[{paths.moc.stem}]]",
+            "",
+            "## Shipped Changes",
+            "- Summarize notable releases, migrations, and rollout concerns.",
+            "",
+            "## Linked Context",
+            f"- [[{paths.roadmap.stem}]]",
+            f"- [[{paths.architecture.stem}]]",
+            f"- [[{paths.run_log.stem}]]",
+        ]
+    )
+
     return {
         paths.home: home,
         paths.moc: moc,
         paths.run_log: run_log,
         paths.decisions: decisions,
         paths.questions: questions,
+        paths.architecture: architecture,
+        paths.roadmap: roadmap,
+        paths.debugging_notes: debugging_notes,
+        paths.release_notes: release_notes,
     }
 
 
@@ -529,6 +644,7 @@ def cmd_record_run(args: argparse.Namespace) -> None:
             "",
             f"Parent note: [[{paths.home.stem}]]",
             f"MOC: [[{paths.moc.stem}]]",
+            f"Run log: [[{paths.run_log.stem}]]",
             f"Decision register: [[{paths.decisions.stem}]]",
             f"Question log: [[{paths.questions.stem}]]",
             "",
@@ -551,6 +667,10 @@ def cmd_record_run(args: argparse.Namespace) -> None:
     cli.ensure_note(run_note_path, run_note)
     cli.append(
         paths.run_log,
+        f"- [[{run_note_path.stem}]]: {args.summary.strip()}",
+    )
+    cli.append(
+        paths.moc,
         f"- [[{run_note_path.stem}]]: {args.summary.strip()}",
     )
     if args.decisions:

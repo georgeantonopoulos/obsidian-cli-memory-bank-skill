@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,8 +51,25 @@ class ObsidianMemoryTests(unittest.TestCase):
         notes = build_seed_notes("Sequency", paths)
         home = notes[paths.home]
         moc = notes[paths.moc]
+        architecture = notes[paths.architecture]
+        roadmap = notes[paths.roadmap]
         self.assertIn("[[MOC]]", home)
         self.assertIn("[[Sequency Home]]", moc)
+        self.assertIn("[[Architecture]]", home)
+        self.assertIn("[[Roadmap]]", home)
+        self.assertIn("[[Architecture]]", moc)
+        self.assertIn("[[MOC]]", architecture)
+        self.assertIn("[[Debugging Notes]]", architecture)
+        self.assertIn("[[Release Notes]]", roadmap)
+
+    def test_seed_notes_create_topic_note_files(self) -> None:
+        paths = build_note_paths("Sequency")
+        notes = build_seed_notes("Sequency", paths)
+        self.assertIn(paths.architecture, notes)
+        self.assertIn(paths.roadmap, notes)
+        self.assertIn(paths.debugging_notes, notes)
+        self.assertIn(paths.release_notes, notes)
+        self.assertEqual(len(notes), 9)
 
     def test_contains_cli_error(self) -> None:
         self.assertTrue(_contains_cli_error("Error: failed to open file"))
@@ -68,6 +86,31 @@ class ObsidianMemoryTests(unittest.TestCase):
 
     def test_projects_index_path(self) -> None:
         self.assertEqual(PROJECTS_INDEX_PATH.as_posix(), "Project Memory/Projects Index.md")
+
+    def test_hook_scripts_run_directly_without_import_errors(self) -> None:
+        skill_root = Path(__file__).resolve().parents[2]
+        scripts = [
+            "codex_notify_hook.py",
+            "claude_notify_hook.py",
+            "cursor_notify_hook.py",
+            "antigravity_notify_hook.py",
+        ]
+        for script_name in scripts:
+            with self.subTest(script=script_name):
+                completed = subprocess.run(
+                    [
+                        "python3",
+                        str(skill_root / "scripts" / script_name),
+                        "--skill-repo",
+                        str(skill_root),
+                        "{",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertNotIn("ModuleNotFoundError", completed.stderr)
 
     def test_config_store_workspace_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
