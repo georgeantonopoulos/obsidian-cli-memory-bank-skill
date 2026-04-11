@@ -8,15 +8,23 @@ from pathlib import Path
 from scripts.obsidian_memory import (
     DEFAULT_AUDIT_EVERY_RUNS,
     PROJECTS_INDEX_PATH,
+    _append_to_related_section,
     _build_or_query,
     _contains_cli_error,
+    _has_link_to,
+    _parse_related_arg,
+    _parse_search_output_paths,
     ConfigStore,
+    ObsidianCLI,
     build_note_paths,
     build_seed_notes,
     ensure_project_dirs,
+    ensure_related_link,
     parse_tags,
+    resolve_note_path,
     sanitize_note_title_component,
     slugify,
+    weave_bidirectional,
 )
 
 
@@ -177,6 +185,145 @@ class ObsidianMemoryTests(unittest.TestCase):
 
     def test_build_or_query_empty(self) -> None:
         self.assertEqual(_build_or_query(""), "")
+
+
+class BidirectionalLinkTests(unittest.TestCase):
+    def test_parse_related_arg_handles_commas_and_newlines(self) -> None:
+        self.assertEqual(_parse_related_arg("a, b,\nc"), ["a", "b", "c"])
+        self.assertEqual(_parse_related_arg(""), [])
+        self.assertEqual(_parse_related_arg(None), [])
+
+    def test_has_link_to(self) -> None:
+        body = "Some text [[alpha]] and [[beta|display]] done."
+        self.assertTrue(_has_link_to(body, "alpha"))
+        self.assertTrue(_has_link_to(body, "beta"))
+        self.assertFalse(_has_link_to(body, "gamma"))
+        # Partial names must not match.
+        self.assertFalse(_has_link_to(body, "alph"))
+
+    def test_append_to_related_section_creates_section(self) -> None:
+        body = "# Note\n\nBody text.\n"
+        result = _append_to_related_section(body, "- [[neighbor]] — reason")
+        self.assertIn("## Related", result)
+        self.assertIn("- [[neighbor]] — reason", result)
+        # Section must not appear twice.
+        self.assertEqual(result.count("## Related"), 1)
+
+    def test_append_to_related_section_extends_existing(self) -> None:
+        body = (
+            "# Note\n\n"
+            "Body.\n\n"
+            "## Related\n\n"
+            "- [[first]]\n\n"
+            "## Later Heading\n\n"
+            "More text.\n"
+        )
+        result = _append_to_related_section(body, "- [[second]]")
+        self.assertEqual(result.count("## Related"), 1)
+        # New entry must come after existing entry but before the next heading.
+        related_idx = result.index("## Related")
+        later_idx = result.index("## Later Heading")
+        second_idx = result.index("- [[second]]")
+        first_idx = result.index("- [[first]]")
+        self.assertLess(related_idx, first_idx)
+        self.assertLess(first_idx, second_idx)
+        self.assertLess(second_idx, later_idx)
+
+    def test_resolve_note_path_by_stem_and_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("TestProj")
+            runs_dir = vault / paths.runs_dir
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            note = runs_dir / "2026-04-11-1530-foo.md"
+            note.write_text("# Foo\n", encoding="utf-8")
+
+            # Resolve by stem.
+            resolved = resolve_note_path(vault, paths, "2026-04-11-1530-foo")
+            self.assertIsNotNone(resolved)
+            self.assertEqual(resolved, note.relative_to(vault))
+
+            # Resolve by wikilink form.
+            resolved_wiki = resolve_note_path(vault, paths, "[[2026-04-11-1530-foo]]")
+            self.assertEqual(resolved_wiki, note.relative_to(vault))
+
+            # Resolve by full relative path.
+            resolved_full = resolve_note_path(
+                vault, paths, note.relative_to(vault).as_posix()
+            )
+            self.assertEqual(resolved_full, note.relative_to(vault))
+
+            # Missing → None.
+            self.assertIsNone(resolve_note_path(vault, paths, "ghost-note"))
+
+    def test_ensure_related_link_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("TestProj")
+            runs_dir = vault / paths.runs_dir
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            target = runs_dir / "target.md"
+            target.write_text("# Target\n\nBody.\n", encoding="utf-8")
+
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            rel = target.relative_to(vault)
+
+            first = ensure_related_link(cli, rel, "neighbor", reason="because")
+            self.assertTrue(first.startswith("linked:"))
+            body1 = target.read_text(encoding="utf-8")
+            self.assertIn("## Related", body1)
+            self.assertIn("- [[neighbor]] — because", body1)
+
+            # Second call with same target must be a no-op.
+            second = ensure_related_link(cli, rel, "neighbor", reason="because")
+            self.assertTrue(second.startswith("skipped:"))
+            self.assertEqual(target.read_text(encoding="utf-8"), body1)
+
+            # Self-link must be rejected.
+            self_result = ensure_related_link(cli, rel, "target", reason=None)
+            self.assertTrue(self_result.startswith("self:"))
+
+    def test_weave_bidirectional_creates_both_sides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("TestProj")
+            runs_dir = vault / paths.runs_dir
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            a = runs_dir / "note-a.md"
+            b = runs_dir / "note-b.md"
+            a.write_text("# A\n", encoding="utf-8")
+            b.write_text("# B\n", encoding="utf-8")
+
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            results = weave_bidirectional(
+                cli,
+                a.relative_to(vault),
+                [b.relative_to(vault)],
+                reason="test edge",
+            )
+            # Two status lines per neighbor (forward + reverse).
+            self.assertEqual(len(results), 2)
+            body_a = a.read_text(encoding="utf-8")
+            body_b = b.read_text(encoding="utf-8")
+            self.assertIn("[[note-b]]", body_a)
+            self.assertIn("[[note-a]]", body_b)
+
+    def test_parse_search_output_paths(self) -> None:
+        output = (
+            "Found 3 hits:\n"
+            "  Project Memory/sequency/Runs/2026-04-11-a.md (score 12)\n"
+            '  "Project Memory/sequency/Runs/2026-04-11-b.md"\n'
+            "  unrelated.txt\n"
+            "  Project Memory/sequency/Runs/2026-04-11-a.md  (duplicate)\n"
+        )
+        result = _parse_search_output_paths(output)
+        self.assertEqual(
+            result,
+            [
+                "Project Memory/sequency/Runs/2026-04-11-a.md",
+                "Project Memory/sequency/Runs/2026-04-11-b.md",
+            ],
+        )
 
 
 if __name__ == "__main__":

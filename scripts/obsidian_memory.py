@@ -583,6 +583,224 @@ def resolve_workspace_path(workspace_arg: Optional[str]) -> Path:
     return workspace.resolve()
 
 
+# ---------------------------------------------------------------------------
+# Bidirectional linking helpers
+# ---------------------------------------------------------------------------
+
+RELATED_HEADING = "## Related"
+
+
+def _parse_related_arg(raw: Optional[str]) -> List[str]:
+    """Parse a comma/newline-separated list of note references."""
+    if not raw:
+        return []
+    parts = re.split(r"[,\n]+", raw)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def resolve_note_path(vault_path: Path, paths: NotePaths, reference: str) -> Optional[Path]:
+    """Resolve a note reference to an existing vault-relative path.
+
+    Accepts:
+      - ``Project Memory/project/Runs/2026-04-11-1530-foo.md`` (full relative path)
+      - ``2026-04-11-1530-foo`` (file stem, searched under the project)
+      - ``Decisions`` / ``MOC`` / ``Project Home`` (hub short names)
+      - ``[[2026-04-11-1530-foo]]`` (wikilink form)
+    Returns ``None`` when nothing matches; callers should warn but not abort.
+    """
+    raw = reference.strip()
+    if not raw:
+        return None
+    # Strip wikilink wrappers if provided.
+    wikilink_match = re.match(r"^\[\[(.+?)\]\]$", raw)
+    if wikilink_match:
+        raw = wikilink_match.group(1).strip()
+    # Full relative path under Project Memory/.
+    candidate = Path(raw)
+    if candidate.suffix.lower() == ".md":
+        absolute = vault_path / candidate
+        if absolute.exists():
+            return candidate
+    else:
+        # Try as relative path with .md appended.
+        with_ext = Path(raw + ".md")
+        if (vault_path / with_ext).exists():
+            return with_ext
+
+    # Treat as short name — search within the project directory by stem.
+    project_abs = vault_path / paths.project_dir
+    if not project_abs.exists():
+        return None
+    target_stem = raw
+    for md_file in project_abs.rglob("*.md"):
+        if md_file.stem == target_stem:
+            return md_file.relative_to(vault_path)
+    return None
+
+
+def _related_entry(target_stem: str, reason: Optional[str]) -> str:
+    base = f"- [[{target_stem}]]"
+    if reason and reason.strip():
+        return f"{base} — {reason.strip()}"
+    return base
+
+
+def _has_link_to(body: str, target_stem: str) -> bool:
+    """Return True if ``body`` already contains a wikilink to ``target_stem``."""
+    pattern = re.compile(r"\[\[" + re.escape(target_stem) + r"(?:\|[^\]]*)?\]\]")
+    return pattern.search(body) is not None
+
+
+def _append_to_related_section(body: str, entry: str) -> str:
+    """Insert ``entry`` into an existing ``## Related`` section, or append a new one.
+
+    The function is idempotent for the section itself — duplicate entries are
+    filtered by the caller via ``_has_link_to``.
+    """
+    if RELATED_HEADING in body:
+        # Insert the entry at the end of the Related section (before the next
+        # heading or EOF). We split once on the heading, locate the section's
+        # end, and splice the new line in.
+        head, _, tail = body.partition(RELATED_HEADING)
+        lines = tail.splitlines()
+        # Find the first subsequent heading (## or #) that terminates the section.
+        end_index = len(lines)
+        for idx, line in enumerate(lines[1:], start=1):  # skip the heading line itself
+            stripped = line.lstrip()
+            if stripped.startswith("## ") or stripped.startswith("# "):
+                end_index = idx
+                break
+        # Trim trailing blank lines inside the section so the new entry sits flush.
+        insert_at = end_index
+        while insert_at > 1 and lines[insert_at - 1].strip() == "":
+            insert_at -= 1
+        new_lines = lines[:insert_at] + [entry] + lines[insert_at:]
+        return head + RELATED_HEADING + "\n".join(new_lines)
+    # No section yet — append one at EOF with a blank line before it.
+    separator = "" if body.endswith("\n\n") else ("\n" if body.endswith("\n") else "\n\n")
+    return body + separator + RELATED_HEADING + "\n\n" + entry + "\n"
+
+
+def ensure_related_link(
+    cli: ObsidianCLI,
+    note_path: Path,
+    target_stem: str,
+    reason: Optional[str],
+) -> str:
+    """Ensure ``note_path`` contains a ``## Related`` link to ``target_stem``.
+
+    Idempotent: if the link already exists anywhere in the note, returns
+    ``skipped``. Uses direct file writes (not Obsidian CLI append) because the
+    operation needs to read, parse sections, and write atomically.
+    """
+    absolute = cli.vault_path / note_path
+    if not absolute.exists():
+        return f"missing:{note_path.as_posix()}"
+    if target_stem == note_path.stem:
+        return f"self:{note_path.as_posix()}"
+    if cli.dry_run:
+        return f"[dry-run] weave {note_path.as_posix()} ← [[{target_stem}]]"
+    body = absolute.read_text(encoding="utf-8")
+    if _has_link_to(body, target_stem):
+        return f"skipped:{note_path.as_posix()} (already linked)"
+    updated = _append_to_related_section(body, _related_entry(target_stem, reason))
+    if not updated.endswith("\n"):
+        updated += "\n"
+    absolute.write_text(updated, encoding="utf-8")
+    return f"linked:{note_path.as_posix()} ← [[{target_stem}]]"
+
+
+def weave_bidirectional(
+    cli: ObsidianCLI,
+    source_path: Path,
+    neighbor_paths: List[Path],
+    reason: Optional[str] = None,
+) -> List[str]:
+    """Create A↔B edges between ``source_path`` and each neighbor.
+
+    Returns a list of human-readable status strings (one per edge attempt,
+    two statuses per neighbor: forward + reverse).
+    """
+    results: List[str] = []
+    source_stem = source_path.stem
+    for neighbor in neighbor_paths:
+        neighbor_stem = neighbor.stem
+        forward = ensure_related_link(cli, source_path, neighbor_stem, reason)
+        results.append(f"→ {forward}")
+        reverse = ensure_related_link(cli, neighbor, source_stem, reason)
+        results.append(f"← {reverse}")
+    return results
+
+
+def _parse_search_output_paths(output: str) -> List[str]:
+    """Extract vault-relative note paths from Obsidian CLI search output.
+
+    The Obsidian CLI ``search`` command prints result lines that include the
+    matching file path. Formats have varied across versions, so this parser
+    accepts any line containing a ``.md`` token under ``Project Memory/``.
+    """
+    paths: List[str] = []
+    seen = set()
+    for line in output.splitlines():
+        match = re.search(r"(Project Memory/[^\s\"'`]+\.md)", line)
+        if not match:
+            continue
+        candidate = match.group(1)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        paths.append(candidate)
+    return paths
+
+
+def auto_discover_neighbors(
+    cli: ObsidianCLI,
+    paths: NotePaths,
+    query: str,
+    limit: int,
+    exclude: Optional[Path] = None,
+) -> List[Path]:
+    """Run an Obsidian search scoped to the project and return the top N notes.
+
+    ``exclude`` is used so a just-written run note never links to itself.
+    Hub notes (Project Home, MOC, Run Log, Decisions, Open Questions) are
+    skipped because ``record-run`` already writes those in the header.
+    """
+    if not query.strip() or limit <= 0:
+        return []
+    or_query = _build_or_query(query)
+    scoped_query = f"{or_query} path:\"{PROJECT_ROOT}/{paths.project_slug}\""
+    try:
+        output = cli.run("search", f"query={scoped_query}")
+    except RuntimeError as exc:
+        print(f"auto-relate: search failed, skipping weave ({exc})")
+        return []
+    hub_stems = {
+        paths.home.stem,
+        paths.moc.stem,
+        paths.run_log.stem,
+        paths.decisions.stem,
+        paths.questions.stem,
+        paths.architecture.stem,
+        paths.roadmap.stem,
+        paths.debugging_notes.stem,
+        paths.release_notes.stem,
+    }
+    results: List[Path] = []
+    for raw_path in _parse_search_output_paths(output):
+        candidate = Path(raw_path)
+        if exclude and candidate == exclude:
+            continue
+        if candidate.stem in hub_stems:
+            continue
+        if not (cli.vault_path / candidate).exists():
+            continue
+        results.append(candidate)
+        if len(results) >= limit:
+            break
+    return results
+
+
 def cmd_set_vault(args: argparse.Namespace) -> None:
     store = ConfigStore()
     vault_path = Path(args.vault_path).expanduser()
@@ -678,6 +896,49 @@ def cmd_record_run(args: argparse.Namespace) -> None:
     if args.questions:
         cli.append(paths.questions, f"- [[{run_note_path.stem}]]: {args.questions.strip()}")
     print(f"Recorded run note: {run_note_path.as_posix()}")
+
+    # Bidirectional weaving — runs automatically unless explicitly disabled.
+    neighbor_paths: List[Path] = []
+    explicit_refs = _parse_related_arg(getattr(args, "related", None))
+    for ref in explicit_refs:
+        resolved = resolve_note_path(vault_path, paths, ref)
+        if resolved is None:
+            print(f"auto-relate: could not resolve '{ref}' — skipped")
+            continue
+        if resolved == run_note_path:
+            continue
+        if resolved not in neighbor_paths:
+            neighbor_paths.append(resolved)
+
+    auto_mode = not getattr(args, "no_auto_relate", False)
+    limit = int(getattr(args, "auto_relate_limit", 5) or 5)
+    if auto_mode and len(neighbor_paths) < limit:
+        query = getattr(args, "auto_relate_query", None)
+        if not query:
+            # Derive a query from the title + tags: strong lexical signal, cheap.
+            derived = [args.title.strip()]
+            if args.tags:
+                derived.append(args.tags.replace(",", " "))
+            query = " ".join(derived).strip()
+        remaining = limit - len(neighbor_paths)
+        discovered = auto_discover_neighbors(
+            cli,
+            paths,
+            query,
+            remaining,
+            exclude=run_note_path,
+        )
+        for candidate in discovered:
+            if candidate not in neighbor_paths:
+                neighbor_paths.append(candidate)
+
+    if neighbor_paths:
+        print(f"auto-relate: weaving {len(neighbor_paths)} neighbor(s)")
+        reason = args.summary.strip() or None
+        for status in weave_bidirectional(cli, run_note_path, neighbor_paths, reason):
+            print(f"  {status}")
+    elif auto_mode:
+        print("auto-relate: no neighbors found (run becomes a root node)")
     audit_every = store.get_audit_every_runs()
     if audit_every <= 0:
         return
@@ -721,6 +982,45 @@ def cmd_read_note(args: argparse.Namespace) -> None:
     print(output)
 
 
+def cmd_link_notes(args: argparse.Namespace) -> None:
+    """Weave bidirectional ``## Related`` links between existing notes.
+
+    Unlike ``record-run --auto-relate`` (which fires at creation time), this
+    command targets nodes that already exist — use it to retrofit a
+    star-shaped vault or to add edges discovered after the fact.
+    """
+    vault_path = resolve_vault_or_exit(args.workspace)
+    cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
+    paths = build_note_paths(args.project.strip())
+
+    source = resolve_note_path(vault_path, paths, args.source)
+    if source is None:
+        raise SystemExit(f"Source note not found: {args.source}")
+
+    target_refs = _parse_related_arg(args.target)
+    if not target_refs:
+        raise SystemExit("At least one --to target is required.")
+
+    neighbor_paths: List[Path] = []
+    for ref in target_refs:
+        resolved = resolve_note_path(vault_path, paths, ref)
+        if resolved is None:
+            print(f"link-notes: could not resolve '{ref}' — skipped")
+            continue
+        if resolved == source:
+            print(f"link-notes: '{ref}' is the source note — skipped")
+            continue
+        if resolved not in neighbor_paths:
+            neighbor_paths.append(resolved)
+
+    if not neighbor_paths:
+        raise SystemExit("No valid target notes to link.")
+
+    print(f"Weaving {len(neighbor_paths)} bidirectional link(s) from {source.as_posix()}")
+    for status in weave_bidirectional(cli, source, neighbor_paths, args.reason):
+        print(f"  {status}")
+
+
 def cmd_audit(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
@@ -748,20 +1048,22 @@ def cmd_init_project(args: argparse.Namespace) -> None:
     project = args.project.strip()
     bootstrap_project(cli, project)
     if args.with_stub:
-        class StubArgs:
-            pass
-
-        stub = StubArgs()
-        stub.project = project
-        stub.title = "Initial memory bank setup"
-        stub.prompt = "Initialize project knowledge base from blank state."
-        stub.summary = "Created seed notes and projects index entry."
-        stub.actions = "Bootstrapped project structure and linked anchor notes."
-        stub.decisions = "Adopt per-project folder under Project Memory."
-        stub.questions = "Define topic-specific notes next."
-        stub.tags = "setup,memory-bank"
-        stub.workspace = args.workspace
-        stub.dry_run = args.dry_run
+        stub = argparse.Namespace(
+            project=project,
+            title="Initial memory bank setup",
+            prompt="Initialize project knowledge base from blank state.",
+            summary="Created seed notes and projects index entry.",
+            actions="Bootstrapped project structure and linked anchor notes.",
+            decisions="Adopt per-project folder under Project Memory.",
+            questions="Define topic-specific notes next.",
+            tags="setup,memory-bank",
+            workspace=args.workspace,
+            dry_run=args.dry_run,
+            related=None,
+            no_auto_relate=True,  # init stub has no history to relate to
+            auto_relate_query=None,
+            auto_relate_limit=5,
+        )
         cmd_record_run(stub)
 
 
@@ -856,9 +1158,58 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--decisions", help="Decision summary")
     parser_run.add_argument("--questions", help="Open questions summary")
     parser_run.add_argument("--tags", default="", help="Comma-separated tags")
+    parser_run.add_argument(
+        "--related",
+        help=(
+            "Comma-separated list of neighbor notes to link bidirectionally. "
+            "Accepts file stems, short names, or vault-relative paths. "
+            "Combines with --auto-relate unless --no-auto-relate is passed."
+        ),
+    )
+    parser_run.add_argument(
+        "--no-auto-relate",
+        action="store_true",
+        help="Disable automatic neighbor discovery; only --related links are woven.",
+    )
+    parser_run.add_argument(
+        "--auto-relate-query",
+        help="Override the search query used for automatic neighbor discovery "
+             "(defaults to title + tags).",
+    )
+    parser_run.add_argument(
+        "--auto-relate-limit",
+        type=int,
+        default=5,
+        help="Maximum number of bidirectional neighbor links to create (default: 5).",
+    )
     parser_run.add_argument("--workspace", help="Workspace path override")
     parser_run.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser_run.set_defaults(func=cmd_record_run)
+
+    parser_link = subparsers.add_parser(
+        "link-notes",
+        help="Create bidirectional ## Related links between existing notes",
+    )
+    parser_link.add_argument("--project", required=True, help="Project display name")
+    parser_link.add_argument(
+        "--from",
+        dest="source",
+        required=True,
+        help="Source note (file stem, short name, or vault-relative path)",
+    )
+    parser_link.add_argument(
+        "--to",
+        dest="target",
+        required=True,
+        help="Target note(s) — comma-separated, same reference forms as --from",
+    )
+    parser_link.add_argument(
+        "--reason",
+        help="Optional short description appended to each '## Related' entry",
+    )
+    parser_link.add_argument("--workspace", help="Workspace path override")
+    parser_link.add_argument("--dry-run", action="store_true", help="Print planned edits only")
+    parser_link.set_defaults(func=cmd_link_notes)
 
     parser_search = subparsers.add_parser("search", help="Search project memory")
     parser_search.add_argument("--project", required=True, help="Project display name")
