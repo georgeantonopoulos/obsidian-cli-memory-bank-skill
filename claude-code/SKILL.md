@@ -13,8 +13,12 @@ Persist the vault path once per workspace, then bootstrap/update project notes o
 ## Prerequisites
 
 - `obmem` CLI installed via pipx (`pipx install git+https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill.git`)
-- Obsidian desktop running with Obsidian CLI enabled
-- `obsidian` CLI available in PATH
+- Write access to the configured Obsidian vault folder
+- Optional: `obsidian-cli` in PATH if you want external CLI/app conveniences
+
+`obmem` uses direct file-backed vault operations for its own create, append, read, search, and audit
+commands. Obsidian desktop does not need to be running, and the old `obsidian` app IPC bridge is no
+longer required for normal memory-bank work.
 
 ## Workflow
 

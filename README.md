@@ -23,7 +23,10 @@ pipx install git+https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-
 obmem doctor
 ```
 
-**Requirements**: Python 3.10+, Obsidian desktop with [Obsidian CLI](https://github.com/Vinzent03/obsidian-advanced-uri) enabled, `obsidian` in PATH.
+**Requirements**: Python 3.10+ and write access to the vault folder. `obmem` uses file-backed vault
+operations for create, append, read, search, and audit, so Obsidian desktop does not need to be
+running. If `obsidian-cli` is installed, `doctor` reports it as an optional helper, but the memory
+bank does not depend on the app IPC bridge.
 
 ## Quick Start
 

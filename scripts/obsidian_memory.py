@@ -8,12 +8,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -199,6 +200,10 @@ class ObsidianCLI:
         self.dry_run = dry_run
 
     def run(self, command: str, *args: str, retries: int = 2) -> str:
+        local_result = self.run_local(command, *args)
+        if local_result is not None:
+            return local_result
+
         cmd = ["obsidian", command, *args]
         if self.dry_run:
             printable = " ".join(cmd)
@@ -226,6 +231,149 @@ class ObsidianCLI:
                 continue
             break
         raise last_error  # type: ignore[misc]
+
+    def run_local(self, command: str, *args: str) -> Optional[str]:
+        if command == "create":
+            relative_path = _arg_value(args, "path")
+            content = _arg_value(args, "content") or ""
+            if not relative_path:
+                return None
+            return self.write_file(Path(relative_path), content, overwrite=False)
+        if command == "append":
+            relative_path = _arg_value(args, "path")
+            content = _arg_value(args, "content") or ""
+            if not relative_path:
+                return None
+            return self.append_file(Path(relative_path), content)
+        if command == "read":
+            relative_path = _arg_value(args, "path")
+            if not relative_path:
+                return None
+            return self.read_file(Path(relative_path))
+        if command == "search":
+            query = _arg_value(args, "query") or " ".join(args)
+            return self.search_files(query)
+        if command == "unresolved":
+            return self.audit_unresolved(verbose="verbose" in args)
+        if command == "orphans":
+            return self.audit_orphans()
+        if command == "deadends":
+            return self.audit_deadends()
+        if command == "backlinks":
+            relative_path = _arg_value(args, "path")
+            if not relative_path:
+                return None
+            return self.audit_backlinks(Path(relative_path), counts_only="counts" in args)
+        return None
+
+    def write_file(self, relative_path: Path, content: str, *, overwrite: bool) -> str:
+        absolute = self.vault_path / relative_path
+        if self.dry_run:
+            return f"[dry-run] write {relative_path.as_posix()}"
+        if absolute.exists() and not overwrite:
+            return f"exists:{relative_path.as_posix()}"
+        absolute.parent.mkdir(parents=True, exist_ok=True)
+        absolute.write_text(content, encoding="utf-8")
+        return f"created:{relative_path.as_posix()}"
+
+    def append_file(self, relative_path: Path, content: str) -> str:
+        absolute = self.vault_path / relative_path
+        if self.dry_run:
+            return f"[dry-run] append {relative_path.as_posix()}"
+        absolute.parent.mkdir(parents=True, exist_ok=True)
+        with absolute.open("a", encoding="utf-8") as handle:
+            handle.write(content)
+        return f"appended:{relative_path.as_posix()}"
+
+    def read_file(self, relative_path: Path) -> str:
+        absolute = self.vault_path / relative_path
+        if self.dry_run:
+            return f"[dry-run] read {relative_path.as_posix()}"
+        if not absolute.exists():
+            raise RuntimeError(f"Note not found: {relative_path.as_posix()}")
+        return absolute.read_text(encoding="utf-8")
+
+    def search_files(self, query: str) -> str:
+        scoped_path, terms = _parse_local_search_query(query)
+        root = self.vault_path / scoped_path if scoped_path else self.vault_path
+        if self.dry_run:
+            return f"[dry-run] search {query}"
+        if not root.exists():
+            return "Found 0 hits."
+
+        hits: List[Tuple[int, str]] = []
+        for note in root.rglob("*.md"):
+            try:
+                text = note.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            haystack = f"{note.stem}\n{text}".lower()
+            score = sum(haystack.count(term.lower()) for term in terms)
+            if not terms or score > 0:
+                relative = note.relative_to(self.vault_path).as_posix()
+                hits.append((score, relative))
+
+        hits.sort(key=lambda item: (-item[0], item[1]))
+        lines = [f"Found {len(hits)} hits."]
+        lines.extend(f"  {path} (score {score})" for score, path in hits[:25])
+        return "\n".join(lines)
+
+    def audit_unresolved(self, *, verbose: bool) -> str:
+        existing_stems = {note.stem for note in self.vault_path.rglob("*.md")}
+        counts: Dict[str, int] = {}
+        sources: Dict[str, List[str]] = {}
+        for note in self.vault_path.rglob("*.md"):
+            body = note.read_text(encoding="utf-8")
+            for target in _extract_wikilinks(body):
+                if target in existing_stems:
+                    continue
+                counts[target] = counts.get(target, 0) + 1
+                sources.setdefault(target, []).append(note.relative_to(self.vault_path).as_posix())
+
+        if not counts:
+            return "0 unresolved link target(s)."
+        lines = [f"{len(counts)} unresolved link target(s)."]
+        for target, count in sorted(counts.items()):
+            lines.append(f"- [[{target}]]: {count}")
+            if verbose:
+                for source in sources.get(target, [])[:5]:
+                    lines.append(f"  - {source}")
+        return "\n".join(lines)
+
+    def audit_orphans(self) -> str:
+        notes = list(self.vault_path.rglob("*.md"))
+        linked = _linked_note_stems(notes)
+        orphans = [note for note in notes if note.stem not in linked]
+        if not orphans:
+            return "0 orphan note(s)."
+        lines = [f"{len(orphans)} orphan note(s)."]
+        lines.extend(f"- {note.relative_to(self.vault_path).as_posix()}" for note in orphans)
+        return "\n".join(lines)
+
+    def audit_deadends(self) -> str:
+        deadends: List[Path] = []
+        for note in self.vault_path.rglob("*.md"):
+            if not _extract_wikilinks(note.read_text(encoding="utf-8")):
+                deadends.append(note)
+        if not deadends:
+            return "0 dead-end note(s)."
+        lines = [f"{len(deadends)} dead-end note(s)."]
+        lines.extend(f"- {note.relative_to(self.vault_path).as_posix()}" for note in deadends)
+        return "\n".join(lines)
+
+    def audit_backlinks(self, relative_path: Path, *, counts_only: bool) -> str:
+        target = (self.vault_path / relative_path).stem
+        backlinks: List[str] = []
+        for note in self.vault_path.rglob("*.md"):
+            if note.relative_to(self.vault_path) == relative_path:
+                continue
+            if target in _extract_wikilinks(note.read_text(encoding="utf-8")):
+                backlinks.append(note.relative_to(self.vault_path).as_posix())
+        if counts_only:
+            return f"{len(backlinks)} backlink(s) to [[{target}]]."
+        lines = [f"{len(backlinks)} backlink(s) to [[{target}]]."]
+        lines.extend(f"- {path}" for path in backlinks)
+        return "\n".join(lines)
 
     def ensure_note(self, relative_path: Path, content: str) -> str:
         absolute = self.vault_path / relative_path
@@ -527,6 +675,45 @@ def _contains_cli_error(text: str) -> bool:
 def _is_transient_ipc_error(result: subprocess.CompletedProcess[str]) -> bool:
     combined = (result.stdout or "") + (result.stderr or "")
     return "unable to connect to main process" in combined.lower()
+
+
+def _arg_value(args: Tuple[str, ...], key: str) -> Optional[str]:
+    prefix = f"{key}="
+    for arg in args:
+        if arg.startswith(prefix):
+            return arg[len(prefix) :]
+    return None
+
+
+def _parse_local_search_query(query: str) -> Tuple[Optional[Path], List[str]]:
+    path_match = re.search(r'path:"([^"]+)"', query)
+    scoped_path = Path(path_match.group(1)) if path_match else None
+    without_path = re.sub(r'path:"[^"]+"', " ", query)
+    tokens = re.findall(r"[A-Za-z0-9_#.+-]+", without_path)
+    ignored = {"or", "and", "not", "path"}
+    terms = [token for token in tokens if token.lower() not in ignored]
+    return scoped_path, terms
+
+
+def _extract_wikilinks(body: str) -> List[str]:
+    links: List[str] = []
+    seen = set()
+    for raw in re.findall(r"\[\[([^\]]+)\]\]", body):
+        target = raw.split("|", maxsplit=1)[0].split("#", maxsplit=1)[0].strip()
+        if not target:
+            continue
+        stem = Path(target).stem
+        if stem and stem not in seen:
+            seen.add(stem)
+            links.append(stem)
+    return links
+
+
+def _linked_note_stems(notes: List[Path]) -> set[str]:
+    linked: set[str] = set()
+    for note in notes:
+        linked.update(_extract_wikilinks(note.read_text(encoding="utf-8")))
+    return linked
 
 
 def ensure_project_dirs(vault_path: Path, paths: NotePaths, dry_run: bool) -> None:
@@ -1078,22 +1265,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     else:
         print("Mapped vault: <none>")
     print(f"Auto-audit frequency: every {audit_every} run(s)")
-    try:
-        version = subprocess.run(
-            ["obsidian", "version"],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        raise SystemExit("Doctor failed: obsidian CLI is not installed or not in PATH.")
-    if version.returncode != 0 or _contains_cli_error(version.stdout) or _contains_cli_error(version.stderr):
-        raise SystemExit(
-            "Doctor failed: obsidian CLI could not reach app successfully.\n"
-            f"stdout:\n{version.stdout}\n"
-            f"stderr:\n{version.stderr}"
-        )
-    print("Obsidian CLI: OK")
+    cli_path = shutil.which("obsidian-cli") or shutil.which("obsidian")
+    if cli_path:
+        print(f"Obsidian CLI executable: {cli_path} (optional; file-backed mode is available)")
+    else:
+        print("Obsidian CLI executable: not found (OK; file-backed mode is available)")
     if not mapped:
         print("Vault mapping: MISSING (run set-vault)")
         return
