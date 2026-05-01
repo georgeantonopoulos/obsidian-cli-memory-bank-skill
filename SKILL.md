@@ -157,6 +157,36 @@ obmem link-notes \
 
 Use `link-notes` inside a retrofitting loop: `obmem audit` → identify orphans/dead-ends → run `obmem search` to find candidates → `obmem link-notes` to weave.
 
+### 3c) Compact noisy run history into useful memory
+
+When a project has many run notes, stop treating `Runs/` as the primary memory surface. Run compaction:
+
+```bash
+obmem compact-project --project "ProjectName"
+```
+
+This creates or updates:
+
+- `Project Memory/<project>/Current Memory.md`
+- `Project Memory/<project>/Topics/*.md`
+- `Project Memory/<project>/Compactions/<timestamp>-compact-<project>.md`
+- `Project Memory/<project>/Archive/Runs/*.md`
+
+Compaction keeps raw run notes as evidence, but moves them out of active `Runs/`, marks them `status: "compacted"`, removes old graph-heavy `## Related` links and hub breadcrumbs, and gives each archived run sparse links to the compaction/topic notes that distilled it. Hub indexes are pruned so the active graph starts from `Current Memory` and topic notes instead of hundreds of run nodes.
+
+Use a bounded pass when you want to inspect first:
+
+```bash
+obmem compact-project --project "ProjectName" --max-runs 25 --dry-run
+```
+
+Use `--no-archive` only when you want to preview distilled notes while leaving active run nodes in place.
+Use `--include-archive` to re-distill already archived evidence after improving compaction rules:
+
+```bash
+obmem compact-project --project "ProjectName" --include-archive
+```
+
 ### 4) Retrieve context before answering
 
 ```bash
@@ -176,6 +206,7 @@ obmem audit --project "ProjectName"
 This runs unresolved-link counts, orphan detection, dead-end detection, and backlink counts on the project home note.
 
 Automatic behavior: `record-run` triggers auto-audit every N runs (default `5`).
+Search now ranks compacted notes (`Current Memory`, `Topics`, `Compactions`, Decisions, Questions, Architecture) before raw `Runs/` or `Archive/Runs/`, so run `compact-project` whenever search starts returning too many timestamped execution notes.
 Change cadence:
 
 ```bash

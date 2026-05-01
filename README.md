@@ -9,6 +9,7 @@ Each project gets its own interlinked note graph: a home page, a map of content,
 - **Vault mapping** — Associates a workspace directory with an Obsidian vault path. Ask once, persist forever.
 - **Project scaffolding** — Creates `Project Memory/<project>/` with Home, MOC, Run Log, Decisions, and Open Questions notes, pre-linked to each other.
 - **Run logging** — Records each agent session as a structured note: what was asked, what changed, why, and what's still open.
+- **Memory compaction** — Distills noisy `Runs/` history into `Current Memory`, topic notes, and archived evidence notes without deleting raw sources.
 - **Context retrieval** — Searches the vault before answering so prior decisions and context surface automatically.
 - **Graph hygiene** — Audits for unresolved links, orphan notes, dead ends, and backlink coverage.
 
@@ -52,6 +53,9 @@ obmem search --project "My Project" --query "retry queue"
 
 # 5. Audit graph health
 obmem audit --project "My Project"
+
+# 6. Compact noisy run history into useful memory
+obmem compact-project --project "My Project"
 ```
 
 ## Runtime Integrations
@@ -183,6 +187,8 @@ obmem doctor                          # Health check (CLI, app, vault, permissio
 obmem bootstrap --project "Name"      # Create project note structure
 obmem init-project --project "Name"   # Bootstrap + stub content in one step
 obmem record-run --project "Name" ... # Log a session note
+obmem compact-project --project "Name" # Distill Runs/ into Current Memory, Topics, and Archive/Runs
+obmem compact-project --project "Name" --include-archive # Re-distill archived evidence after improving rules
 obmem search --project "Name" -q "x"  # Search vault by keyword
 obmem read-note --path "..."          # Read a specific note
 obmem audit --project "Name"          # Check graph hygiene
@@ -195,6 +201,8 @@ Use `--workspace "/path"` on any command to target a different workspace.
 
 - Vault mappings persist in `state/vault_config.json` (git-ignored).
 - Auto-audit triggers every 5 runs by default (configurable via `set-audit-frequency`).
+- `compact-project` moves raw source notes from `Runs/` to `Archive/Runs/`, marks them `status: "compacted"`, prunes noisy run links from hub indexes, and writes the active memory surface to `Current Memory.md` plus `Topics/*.md`.
+- Search ranks compacted memory and topic notes ahead of raw run logs, so retrieval starts from distilled knowledge and falls back to archived evidence only when needed.
 - Hook adapters are additive — the skill works fine without any hooks installed.
 
 ## Tests

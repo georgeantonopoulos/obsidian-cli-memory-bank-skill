@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import argparse
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -10,10 +12,14 @@ from scripts.obsidian_memory import (
     PROJECTS_INDEX_PATH,
     _append_to_related_section,
     _build_or_query,
+    _build_topics,
+    _collect_uncompacted_runs,
+    _search_priority,
     _contains_cli_error,
     _has_link_to,
     _parse_related_arg,
     _parse_search_output_paths,
+    cmd_compact_project,
     ConfigStore,
     ObsidianCLI,
     build_note_paths,
@@ -65,7 +71,9 @@ class ObsidianMemoryTests(unittest.TestCase):
         self.assertIn("[[Sequency Home]]", moc)
         self.assertIn("[[Architecture]]", home)
         self.assertIn("[[Roadmap]]", home)
+        self.assertIn("[[Current Memory]]", home)
         self.assertIn("[[Architecture]]", moc)
+        self.assertIn("[[Current Memory]]", moc)
         self.assertIn("[[MOC]]", architecture)
         self.assertIn("[[Debugging Notes]]", architecture)
         self.assertIn("[[Release Notes]]", roadmap)
@@ -77,7 +85,8 @@ class ObsidianMemoryTests(unittest.TestCase):
         self.assertIn(paths.roadmap, notes)
         self.assertIn(paths.debugging_notes, notes)
         self.assertIn(paths.release_notes, notes)
-        self.assertEqual(len(notes), 9)
+        self.assertIn(paths.current_memory, notes)
+        self.assertEqual(len(notes), 10)
 
     def test_contains_cli_error(self) -> None:
         self.assertTrue(_contains_cli_error("Error: failed to open file"))
@@ -185,6 +194,16 @@ class ObsidianMemoryTests(unittest.TestCase):
 
     def test_build_or_query_empty(self) -> None:
         self.assertEqual(_build_or_query(""), "")
+
+    def test_search_priority_prefers_compacted_memory(self) -> None:
+        self.assertGreater(
+            _search_priority("Project Memory/demo/Current Memory.md"),
+            _search_priority("Project Memory/demo/Runs/2026-01-01-foo.md"),
+        )
+        self.assertGreater(
+            _search_priority("Project Memory/demo/Topics/Export.md"),
+            _search_priority("Project Memory/demo/Archive/Runs/2026-01-01-foo.md"),
+        )
 
 
 class BidirectionalLinkTests(unittest.TestCase):
@@ -324,6 +343,147 @@ class BidirectionalLinkTests(unittest.TestCase):
                 "Project Memory/sequency/Runs/2026-04-11-b.md",
             ],
         )
+
+
+class CompactionTests(unittest.TestCase):
+    def test_collect_and_group_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            runs_dir = vault / paths.runs_dir
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            (runs_dir / "2026-01-01-1000-export-fix.md").write_text(
+                "\n".join(
+                    [
+                        "---",
+                        'type: "run"',
+                        'project: "Demo"',
+                        "tags:",
+                        '  - "export"',
+                        '  - "run"',
+                        'title: "Export fix"',
+                        "---",
+                        "",
+                        "# Export fix",
+                        "",
+                        "## Prompt",
+                        "Fix export failure.",
+                        "",
+                        "## Summary",
+                        "Fixed export routing and verified output pixels.",
+                        "",
+                        "## Actions Taken",
+                        "Updated exporter path.",
+                        "",
+                        "## Decisions",
+                        "Prefer real output verification.",
+                        "",
+                        "## Open Questions",
+                        "None.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            runs = _collect_uncompacted_runs(vault, paths, limit=None)
+            self.assertEqual(len(runs), 1)
+            topics = _build_topics(paths, runs)
+            self.assertEqual(len(topics), 1)
+            self.assertEqual(topics[0].key, "export")
+
+    def test_compact_project_archives_runs_and_writes_hot_memory(self) -> None:
+        original_state_env = os.environ.get("OBMEM_STATE_FILE")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                vault = root / "vault"
+                workspace = root / "workspace"
+                os.environ["OBMEM_STATE_FILE"] = str(root / "state" / "vault_config.json")
+                vault.mkdir(parents=True)
+                workspace.mkdir(parents=True)
+                ConfigStore().set_vault(vault_path=vault, workspace=workspace)
+                paths = build_note_paths("Demo")
+                runs_dir = vault / paths.runs_dir
+                runs_dir.mkdir(parents=True, exist_ok=True)
+                for idx, topic in enumerate(["export", "export", "permissions"], start=1):
+                    stem = f"2026-01-01-100{idx}-{topic}-run"
+                    (runs_dir / f"{stem}.md").write_text(
+                        "\n".join(
+                            [
+                                "---",
+                                'type: "run"',
+                                'project: "Demo"',
+                                "tags:",
+                                f'  - "{topic}"',
+                                '  - "run"',
+                                f'title: "{topic} run"',
+                                "---",
+                                "",
+                                f"# {topic} run",
+                                "",
+                                "Parent note: [[Demo Home]]",
+                                "MOC: [[MOC]]",
+                                "Run log: [[Run Log]]",
+                                "",
+                                "## Prompt",
+                                f"Fix {topic} bug.",
+                                "",
+                                "## Summary",
+                                f"Fixed {topic} behavior and verified the real output path.",
+                                "",
+                                "## Actions Taken",
+                                f"Changed the {topic} implementation.",
+                                "",
+                                "## Decisions",
+                                "Prefer concrete proof before reporting success.",
+                                "",
+                                "## Open Questions",
+                                "None.",
+                                "",
+                                "## Related",
+                                "",
+                                "- [[old-noisy-neighbor]]",
+                            ]
+                        ),
+                        encoding="utf-8",
+                    )
+                (vault / paths.run_log).parent.mkdir(parents=True, exist_ok=True)
+                (vault / paths.run_log).write_text(
+                    "# Run Log\n\n## Entries\n"
+                    "- [[2026-01-01-1001-export-run]]: noisy\n"
+                    "- [[2026-01-01-1002-export-run]]: noisy\n",
+                    encoding="utf-8",
+                )
+
+                args = argparse.Namespace(
+                    project="Demo",
+                    max_runs=0,
+                    no_archive=False,
+                    include_archive=False,
+                    workspace=str(workspace),
+                    dry_run=False,
+                )
+                cmd_compact_project(args)
+
+                self.assertEqual(list(runs_dir.glob("*.md")), [])
+                archived = sorted((vault / paths.archived_runs_dir).glob("*.md"))
+                self.assertEqual(len(archived), 3)
+                self.assertTrue((vault / paths.current_memory).exists())
+                self.assertTrue((vault / paths.topics_dir / "Export.md").exists())
+                self.assertTrue((vault / paths.compactions_dir).is_dir())
+
+                archived_body = archived[0].read_text(encoding="utf-8")
+                self.assertIn('status: "compacted"', archived_body)
+                self.assertIn("## Archived Source", archived_body)
+                self.assertNotIn("[[old-noisy-neighbor]]", archived_body)
+                run_log = (vault / paths.run_log).read_text(encoding="utf-8")
+                self.assertNotIn("[[2026-01-01-1001-export-run]]: noisy", run_log)
+                self.assertIn("Compacted 3 run note(s)", run_log)
+        finally:
+            if original_state_env is None:
+                os.environ.pop("OBMEM_STATE_FILE", None)
+            else:
+                os.environ["OBMEM_STATE_FILE"] = original_state_env
 
 
 if __name__ == "__main__":
