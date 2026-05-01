@@ -419,7 +419,7 @@ class ObsidianCLI:
             return self.read_file(Path(relative_path))
         if command == "search":
             query = _arg_value(args, "query") or " ".join(args)
-            return self.search_files(query)
+            return self.search_files(query, include_archive="include-archive" in args)
         if command == "unresolved":
             return self.audit_unresolved(verbose="verbose" in args)
         if command == "orphans":
@@ -460,7 +460,7 @@ class ObsidianCLI:
             raise RuntimeError(f"Note not found: {relative_path.as_posix()}")
         return absolute.read_text(encoding="utf-8")
 
-    def search_files(self, query: str) -> str:
+    def search_files(self, query: str, *, include_archive: bool = False) -> str:
         scoped_path, terms = _parse_local_search_query(query)
         root = self.vault_path / scoped_path if scoped_path else self.vault_path
         if self.dry_run:
@@ -470,6 +470,9 @@ class ObsidianCLI:
 
         hits: List[Tuple[int, int, str]] = []
         for note in root.rglob("*.md"):
+            relative = note.relative_to(self.vault_path).as_posix()
+            if not include_archive and "/Archive/" in relative:
+                continue
             try:
                 text = note.read_text(encoding="utf-8")
             except UnicodeDecodeError:
@@ -477,7 +480,6 @@ class ObsidianCLI:
             haystack = f"{note.stem}\n{text}".lower()
             score = sum(haystack.count(term.lower()) for term in terms)
             if not terms or score > 0:
-                relative = note.relative_to(self.vault_path).as_posix()
                 hits.append((score, _search_priority(relative), relative))
 
         hits.sort(key=lambda item: (-item[1], -item[0], item[2]))
@@ -1987,7 +1989,10 @@ def cmd_search(args: argparse.Namespace) -> None:
     project_slug = slugify(args.project)
     or_query = _build_or_query(args.query)
     scoped_query = f"{or_query} path:\"{PROJECT_ROOT}/{project_slug}\""
-    output = cli.run("search", f"query={scoped_query}")
+    command_args = [f"query={scoped_query}"]
+    if getattr(args, "include_archive", False):
+        command_args.append("include-archive")
+    output = cli.run("search", *command_args)
     print(output)
 
 
@@ -2308,6 +2313,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser_search = subparsers.add_parser("search", help="Search project memory")
     parser_search.add_argument("--project", required=True, help="Project display name")
     parser_search.add_argument("--query", required=True, help="Search query")
+    parser_search.add_argument(
+        "--include-archive",
+        action="store_true",
+        help="Also search archived evidence notes under Archive/.",
+    )
     parser_search.add_argument("--workspace", help="Workspace path override")
     parser_search.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser_search.set_defaults(func=cmd_search)

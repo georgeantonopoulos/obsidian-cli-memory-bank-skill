@@ -205,6 +205,27 @@ class ObsidianMemoryTests(unittest.TestCase):
             _search_priority("Project Memory/demo/Archive/Runs/2026-01-01-foo.md"),
         )
 
+    def test_search_skips_archive_unless_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            active = vault / "Project Memory" / "demo" / "Current Memory.md"
+            archived = vault / "Project Memory" / "demo" / "Archive" / "Runs" / "old.md"
+            active.parent.mkdir(parents=True, exist_ok=True)
+            archived.parent.mkdir(parents=True, exist_ok=True)
+            active.write_text("needle active\n", encoding="utf-8")
+            archived.write_text("needle archived\n", encoding="utf-8")
+
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            default_output = cli.search_files('needle path:"Project Memory/demo"')
+            self.assertIn("Current Memory.md", default_output)
+            self.assertNotIn("Archive/Runs/old.md", default_output)
+
+            archive_output = cli.search_files(
+                'needle path:"Project Memory/demo"',
+                include_archive=True,
+            )
+            self.assertIn("Archive/Runs/old.md", archive_output)
+
 
 class BidirectionalLinkTests(unittest.TestCase):
     def test_parse_related_arg_handles_commas_and_newlines(self) -> None:

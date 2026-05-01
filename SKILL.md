@@ -193,6 +193,9 @@ obmem compact-project --project "ProjectName" --include-archive
 # search by topic
 obmem search --project "ProjectName" --query "MXF fallback routing"
 
+# include archived source evidence only when needed
+obmem search --project "ProjectName" --query "MXF fallback routing" --include-archive
+
 # inspect a key note
 obmem read-note --path "Project Memory/project-name/Decisions.md"
 ```
@@ -206,7 +209,7 @@ obmem audit --project "ProjectName"
 This runs unresolved-link counts, orphan detection, dead-end detection, and backlink counts on the project home note.
 
 Automatic behavior: `record-run` triggers auto-audit every N runs (default `5`).
-Search now ranks compacted notes (`Current Memory`, `Topics`, `Compactions`, Decisions, Questions, Architecture) before raw `Runs/` or `Archive/Runs/`, so run `compact-project` whenever search starts returning too many timestamped execution notes.
+Search now skips `Archive/` by default and ranks compacted notes (`Current Memory`, `Topics`, `Compactions`, Decisions, Questions, Architecture) before raw `Runs/`. Use `--include-archive` when you need to search archived source evidence. Run `compact-project` whenever search starts returning too many timestamped execution notes.
 Change cadence:
 
 ```bash

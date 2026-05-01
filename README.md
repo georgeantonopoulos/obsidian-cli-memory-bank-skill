@@ -189,7 +189,8 @@ obmem init-project --project "Name"   # Bootstrap + stub content in one step
 obmem record-run --project "Name" ... # Log a session note
 obmem compact-project --project "Name" # Distill Runs/ into Current Memory, Topics, and Archive/Runs
 obmem compact-project --project "Name" --include-archive # Re-distill archived evidence after improving rules
-obmem search --project "Name" -q "x"  # Search vault by keyword
+obmem search --project "Name" -q "x"  # Search active distilled memory by keyword
+obmem search --project "Name" -q "x" --include-archive # Include archived evidence in search
 obmem read-note --path "..."          # Read a specific note
 obmem audit --project "Name"          # Check graph hygiene
 obmem set-audit-frequency --runs N    # Auto-audit every N runs (0 = off)
@@ -202,7 +203,7 @@ Use `--workspace "/path"` on any command to target a different workspace.
 - Vault mappings persist in `state/vault_config.json` (git-ignored).
 - Auto-audit triggers every 5 runs by default (configurable via `set-audit-frequency`).
 - `compact-project` moves raw source notes from `Runs/` to `Archive/Runs/`, marks them `status: "compacted"`, prunes noisy run links from hub indexes, and writes the active memory surface to `Current Memory.md` plus `Topics/*.md`.
-- Search ranks compacted memory and topic notes ahead of raw run logs, so retrieval starts from distilled knowledge and falls back to archived evidence only when needed.
+- Search skips `Archive/` by default and ranks compacted memory and topic notes ahead of raw run logs, so retrieval starts from distilled knowledge. Use `--include-archive` when you need archived evidence.
 - Hook adapters are additive — the skill works fine without any hooks installed.
 
 ## Tests
