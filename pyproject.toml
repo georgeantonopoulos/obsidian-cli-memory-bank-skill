@@ -5,20 +5,36 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "obsidian-cli-memory-bank"
 version = "0.1.0"
-description = "CLI helper to maintain project memory banks in Obsidian via Obsidian CLI."
+description = "Local-first Obsidian memory bank CLI for AI coding agents, with run logging, linked project notes, compaction, and search."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
 authors = [
   { name = "George Antonopoulos" }
 ]
-keywords = ["obsidian", "cli", "memory", "notes", "agent"]
+keywords = [
+  "ai-agents",
+  "agent-memory",
+  "claude-code",
+  "codex",
+  "cursor",
+  "developer-tools",
+  "knowledge-base",
+  "markdown",
+  "memory-bank",
+  "obsidian",
+  "obsidian-vault",
+  "project-memory"
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "License :: Other/Proprietary License",
-  "Operating System :: OS Independent"
+  "Topic :: Documentation",
+  "Topic :: Software Development",
+  "Topic :: Text Processing :: Markup :: Markdown"
 ]
 
 [project.urls]

@@ -1,8 +1,29 @@
 # Obsidian CLI Memory Bank
 
+![Obsidian CLI Memory Bank header](assets/obmem-header.png)
+
+[![Tests](https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill/actions/workflows/tests.yml/badge.svg)](https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Obsidian](https://img.shields.io/badge/Obsidian-memory%20bank-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md/)
+[![Agent ready](https://img.shields.io/badge/AI%20agents-Codex%20%7C%20Claude%20Code%20%7C%20Cursor%20%7C%20Antigravity-111827)](#runtime-integrations)
+
 A portable skill that gives AI coding agents persistent, structured memory inside Obsidian. Works across runtimes — Claude Code, Codex, Cursor, Antigravity, or anything that can shell out to a CLI.
 
 Each project gets its own interlinked note graph: a home page, a map of content, a decision log, a run log, and timestamped session notes — all wired together with wikilinks so Obsidian's backlink graph becomes a navigable project history.
+
+**Use it when you want agents to remember the work, not just the chat window.**
+
+## Why People Use It
+
+- **Persistent project memory for AI coding agents** — Keep decisions, gotchas, commands, fixes, and open questions in a local Markdown vault.
+- **Obsidian-native knowledge graph** — Notes are real `.md` files with wikilinks, backlinks, and MOCs instead of a hidden database.
+- **Automatic memory compaction** — Turn hundreds of noisy run notes into a small active memory surface while archiving raw evidence.
+- **Local-first and portable** — Works with Codex, Claude Code, Cursor, Antigravity, shell scripts, cron jobs, or any tool that can call `obmem`.
+- **Search without the sludge** — Default search reads distilled active memory first and skips archived evidence unless you opt in.
+
+## Good For
+
+AI agent memory, Obsidian automation, local knowledge management, coding assistant context, Claude Code hooks, Codex hooks, Cursor webhook memory, project decision logs, Markdown knowledge graphs, developer notes, and long-running software projects.
 
 ## What It Does
 
@@ -12,6 +33,17 @@ Each project gets its own interlinked note graph: a home page, a map of content,
 - **Memory compaction** — Distills noisy `Runs/` history into `Current Memory`, topic notes, and archived evidence notes without deleting raw sources.
 - **Context retrieval** — Searches the vault before answering so prior decisions and context surface automatically.
 - **Graph hygiene** — Audits for unresolved links, orphan notes, dead ends, and backlink coverage.
+
+## How It Helps Discovery
+
+Most agent memory systems either disappear inside a product database or dump every turn into a pile of logs. This project takes a different path: every memory is a normal Obsidian note, compacted into a small active graph, linked with meaningful wikilinks, and searchable from the CLI.
+
+That makes it useful for:
+
+- agents that need project context before editing code;
+- teams that want durable decisions without another SaaS account;
+- developers who already live in Obsidian;
+- experiments with retrieval, compaction, and graph-shaped memory.
 
 ## Install
 
@@ -206,11 +238,27 @@ Use `--workspace "/path"` on any command to target a different workspace.
 - Search skips `Archive/` by default and ranks compacted memory and topic notes ahead of raw run logs, so retrieval starts from distilled knowledge. Use `--include-archive` when you need archived evidence.
 - Hook adapters are additive — the skill works fine without any hooks installed.
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=georgeantonopoulos/obsidian-cli-memory-bank-skill&type=Date)](https://www.star-history.com/#georgeantonopoulos/obsidian-cli-memory-bank-skill&Date)
+
 ## Tests
 
 ```bash
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 ```
+
+## Contributing
+
+Issues and small pull requests are welcome, especially around:
+
+- new runtime adapters and hook examples;
+- better compaction rules for large vaults;
+- safer graph hygiene checks;
+- README examples from real but sanitized workflows;
+- packaging and install improvements.
+
+Please keep examples free of private vault paths, company names, transcripts, tokens, or personal notes.
 
 ## Security Notes
 
@@ -227,4 +275,4 @@ pipx uninstall obsidian-cli-memory-bank
 
 ## License
 
-No license file included yet. Add one before distributing broadly.
+MIT. See [`LICENSE`](LICENSE).
