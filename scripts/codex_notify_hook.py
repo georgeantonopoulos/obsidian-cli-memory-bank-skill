@@ -8,7 +8,20 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+
+def _resolve_skill_repo_from_argv(argv: List[str]) -> Path | None:
+    for index, arg in enumerate(argv):
+        if arg == "--skill-repo" and index + 1 < len(argv):
+            return Path(argv[index + 1]).expanduser().resolve()
+        if arg.startswith("--skill-repo="):
+            return Path(arg.split("=", 1)[1]).expanduser().resolve()
+    return None
+
+
 if __package__ in {None, ""}:
+    skill_repo = _resolve_skill_repo_from_argv(sys.argv[1:])
+    if skill_repo is not None:
+        sys.path.insert(0, str(skill_repo))
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.hook_common import (
