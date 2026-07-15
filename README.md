@@ -67,10 +67,13 @@ bank does not depend on the app IPC bridge.
 # 1. Map your workspace to a vault
 obmem set-vault --vault-path "/path/to/your/obsidian/vault"
 
-# 2. Bootstrap a project
+# 2. Reuse an existing project identity when possible
+obmem list-projects
+
+# 3. Bootstrap a new project only when needed
 obmem init-project --project "My Project" --with-stub
 
-# 3. Record a session
+# 4. Record a session
 obmem record-run \
   --project "My Project" \
   --title "Implement queue retry" \
@@ -80,14 +83,14 @@ obmem record-run \
   --decisions "Retry count defaults to 2 for safety." \
   --tags "queue,retry"
 
-# 4. Search for prior context
+# 5. Search for prior context
 obmem search --project "My Project" --query "retry queue"
 
-# 5. Audit graph health
+# 6. Audit graph health for this project only
 obmem audit --project "My Project"
 
-# 6. Compact noisy run history into useful memory
-obmem compact-project --project "My Project"
+# 7. Preview compaction before moving or pruning notes
+obmem compact-project --project "My Project" --max-runs 25 --dry-run
 ```
 
 ## Runtime Integrations
@@ -215,7 +218,8 @@ For any agent that can run shell commands:
 ```bash
 obmem show-vault                      # Display mapped vault for current workspace
 obmem set-vault --vault-path "..."    # Map workspace to vault
-obmem doctor                          # Health check (CLI, app, vault, permissions)
+obmem doctor                          # Health check (optional CLI, vault mapping, permissions)
+obmem list-projects                   # List existing project memory folders
 obmem bootstrap --project "Name"      # Create project note structure
 obmem init-project --project "Name"   # Bootstrap + stub content in one step
 obmem record-run --project "Name" ... # Log a session note
@@ -224,7 +228,7 @@ obmem compact-project --project "Name" --include-archive # Re-distill archived e
 obmem search --project "Name" -q "x"  # Search active distilled memory by keyword
 obmem search --project "Name" -q "x" --include-archive # Include archived evidence in search
 obmem read-note --path "..."          # Read a specific note
-obmem audit --project "Name"          # Check graph hygiene
+obmem audit --project "Name"          # Check graph hygiene inside one project
 obmem set-audit-frequency --runs N    # Auto-audit every N runs (0 = off)
 ```
 
@@ -237,6 +241,9 @@ Use `--workspace "/path"` on any command to target a different workspace.
 - `compact-project` moves raw source notes from `Runs/` to `Archive/Runs/`, marks them `status: "compacted"`, prunes noisy run links from hub indexes, and writes the active memory surface to `Current Memory.md` plus `Topics/*.md`.
 - Search skips `Archive/` by default and ranks compacted memory and topic notes ahead of raw run logs, so retrieval starts from distilled knowledge. Use `--include-archive` when you need archived evidence.
 - Hook adapters are additive — the skill works fine without any hooks installed.
+- Obsidian desktop, its official bundled CLI, a separately installed `obsidian-cli`, and `obmem` have independent update paths. Core `obmem` operations remain file-backed.
+- Choose manual recording or hook recording for a task; using both creates duplicate memory.
+- Sanitize prompts and summaries before persistence. Never record secrets, credentials, access links, or unnecessary personal data.
 
 ## Star History
 

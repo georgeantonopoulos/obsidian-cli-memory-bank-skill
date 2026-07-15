@@ -41,7 +41,15 @@ obmem set-vault --vault-path "/absolute/path/to/vault"
 
 Use `--workspace "/path/to/project"` when setting or resolving a different workspace than the current directory.
 
-### 2) Bootstrap project memory structure
+### 2) Resolve project identity
+
+```bash
+obmem list-projects
+```
+
+Reuse an existing project when it matches. If multiple projects are plausible, ask one short question instead of creating another folder.
+
+### 3) Bootstrap project memory structure
 
 Create core notes once per project:
 
@@ -65,7 +73,7 @@ This creates:
 
 All seed notes include wikilinks to each other so backlinks are available immediately.
 
-### 3) Record each meaningful run
+### 4) Record each meaningful run
 
 After a task, add a run note:
 
@@ -83,7 +91,7 @@ obmem record-run \
 
 This creates a timestamped note in `Runs/`, appends it to `Run Log.md`, and links back to project anchor notes.
 
-### 4) Retrieve context before answering
+### 5) Retrieve context before answering
 
 ```bash
 # search by topic
@@ -93,13 +101,13 @@ obmem search --project "ProjectName" --query "MXF fallback routing"
 obmem read-note --path "Project Memory/project-name/Decisions.md"
 ```
 
-### 5) Keep graph hygiene high
+### 6) Keep graph hygiene high
 
 ```bash
 obmem audit --project "ProjectName"
 ```
 
-This runs unresolved-link counts, orphan detection, dead-end detection, and backlink counts on the project home note.
+This audits unresolved links, orphans, and dead ends inside the selected project, plus backlinks to its home note. Missing projects are rejected instead of returning a misleading clean result.
 
 Automatic behavior: `record-run` triggers auto-audit every N runs (default `5`).
 Change cadence:
@@ -110,13 +118,13 @@ obmem set-audit-frequency --runs 5
 
 Set `--runs 0` to disable auto-audit.
 
-### 6) Health-check setup
+### 7) Health-check setup
 
 ```bash
 obmem doctor
 ```
 
-Validates Obsidian CLI availability, app reachability, workspace-to-vault mapping, and vault write access.
+Reports optional CLI availability, workspace-to-vault mapping, audit cadence, and vault write access. Obsidian desktop does not need to be running.
 
 ## Persistence Mode
 
@@ -124,8 +132,8 @@ Use this pattern to behave as "always-on" memory:
 
 1. At first action in a session, run `show-vault`; ask user only if missing.
 2. At task start, run `search` for key topic terms before proposing changes.
-3. At task end, run `record-run` with summary + rationale.
-4. Run `audit` periodically (or after major refactors).
+3. In manual mode, run `record-run` once at task end with a sanitized summary and rationale. If a Stop hook records the task, do not duplicate it manually.
+4. Run project-scoped `audit` periodically (or after major refactors).
 
 ### Hook Integration (Optional)
 
@@ -152,6 +160,7 @@ See `claude-code/INSTALL.md` for setup instructions.
 3. Keep properties at the top of notes (`tags`, `created`, `updated`, `project`, `type`).
 4. Use short, stable note titles; avoid duplicate names in the same vault.
 5. Capture both outcome and rationale so later retrieval answers "what changed" and "why".
+6. Never persist secrets, credentials, access links, unnecessary personal data, or raw transcripts when a short sanitized summary is enough.
 
 ## Resources
 

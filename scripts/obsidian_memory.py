@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -421,17 +422,37 @@ class ObsidianCLI:
             query = _arg_value(args, "query") or " ".join(args)
             return self.search_files(query, include_archive="include-archive" in args)
         if command == "unresolved":
-            return self.audit_unresolved(verbose="verbose" in args)
+            return self.audit_unresolved(
+                verbose="verbose" in args,
+                scope=self._audit_scope(args),
+            )
         if command == "orphans":
-            return self.audit_orphans()
+            return self.audit_orphans(scope=self._audit_scope(args))
         if command == "deadends":
-            return self.audit_deadends()
+            return self.audit_deadends(scope=self._audit_scope(args))
         if command == "backlinks":
             relative_path = _arg_value(args, "path")
             if not relative_path:
                 return None
             return self.audit_backlinks(Path(relative_path), counts_only="counts" in args)
         return None
+
+    def _audit_scope(self, args: Tuple[str, ...]) -> Optional[Path]:
+        raw_scope = _arg_value(args, "scope")
+        return Path(raw_scope) if raw_scope else None
+
+    def _audit_notes(self, scope: Optional[Path]) -> List[Path]:
+        root = self.vault_path.resolve()
+        if scope is not None:
+            candidate = (self.vault_path / scope).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError as exc:
+                raise RuntimeError(f"Audit scope escapes vault: {scope.as_posix()}") from exc
+            root = candidate
+        if not root.exists():
+            return []
+        return list(root.rglob("*.md"))
 
     def write_file(self, relative_path: Path, content: str, *, overwrite: bool) -> str:
         absolute = self.vault_path / relative_path
@@ -487,17 +508,19 @@ class ObsidianCLI:
         lines.extend(f"  {path} (score {score})" for score, _priority, path in hits[:25])
         return "\n".join(lines)
 
-    def audit_unresolved(self, *, verbose: bool) -> str:
+    def audit_unresolved(self, *, verbose: bool, scope: Optional[Path] = None) -> str:
         existing_stems = {note.stem for note in self.vault_path.rglob("*.md")}
         counts: Dict[str, int] = {}
         sources: Dict[str, List[str]] = {}
-        for note in self.vault_path.rglob("*.md"):
+        for note in self._audit_notes(scope):
             body = note.read_text(encoding="utf-8")
             for target in _extract_wikilinks(body):
                 if target in existing_stems:
                     continue
                 counts[target] = counts.get(target, 0) + 1
-                sources.setdefault(target, []).append(note.relative_to(self.vault_path).as_posix())
+                sources.setdefault(target, []).append(
+                    note.relative_to(self.vault_path.resolve()).as_posix()
+                )
 
         if not counts:
             return "0 unresolved link target(s)."
@@ -509,25 +532,31 @@ class ObsidianCLI:
                     lines.append(f"  - {source}")
         return "\n".join(lines)
 
-    def audit_orphans(self) -> str:
-        notes = list(self.vault_path.rglob("*.md"))
-        linked = _linked_note_stems(notes)
-        orphans = [note for note in notes if note.stem not in linked]
+    def audit_orphans(self, *, scope: Optional[Path] = None) -> str:
+        all_notes = list(self.vault_path.rglob("*.md"))
+        linked = _linked_note_stems(all_notes)
+        orphans = [note for note in self._audit_notes(scope) if note.stem not in linked]
         if not orphans:
             return "0 orphan note(s)."
         lines = [f"{len(orphans)} orphan note(s)."]
-        lines.extend(f"- {note.relative_to(self.vault_path).as_posix()}" for note in orphans)
+        lines.extend(
+            f"- {note.relative_to(self.vault_path.resolve()).as_posix()}"
+            for note in orphans
+        )
         return "\n".join(lines)
 
-    def audit_deadends(self) -> str:
+    def audit_deadends(self, *, scope: Optional[Path] = None) -> str:
         deadends: List[Path] = []
-        for note in self.vault_path.rglob("*.md"):
+        for note in self._audit_notes(scope):
             if not _extract_wikilinks(note.read_text(encoding="utf-8")):
                 deadends.append(note)
         if not deadends:
             return "0 dead-end note(s)."
         lines = [f"{len(deadends)} dead-end note(s)."]
-        lines.extend(f"- {note.relative_to(self.vault_path).as_posix()}" for note in deadends)
+        lines.extend(
+            f"- {note.relative_to(self.vault_path.resolve()).as_posix()}"
+            for note in deadends
+        )
         return "\n".join(lines)
 
     def audit_backlinks(self, relative_path: Path, *, counts_only: bool) -> str:
@@ -1847,6 +1876,23 @@ def cmd_show_vault(args: argparse.Namespace) -> None:
     print(vault_path)
 
 
+def cmd_list_projects(args: argparse.Namespace) -> None:
+    vault_path = resolve_vault_or_exit(args.workspace)
+    project_root = vault_path / PROJECT_ROOT
+    projects = (
+        sorted(
+            path.name
+            for path in project_root.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        )
+        if project_root.exists()
+        else []
+    )
+    print(f"Found {len(projects)} project(s).")
+    for project in projects:
+        print(f"- {project}")
+
+
 def cmd_bootstrap(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
@@ -2135,14 +2181,22 @@ def cmd_audit(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
     paths = build_note_paths(args.project.strip())
+    project_dir = vault_path / paths.project_dir
+    if not project_dir.is_dir():
+        raise SystemExit(
+            f"Project memory not found: {paths.project_dir.as_posix()}. "
+            "Run 'obmem list-projects' and reuse an existing project name, "
+            "or initialize a new project first."
+        )
     run_audit_checks(cli, paths)
 
 
 def run_audit_checks(cli: ObsidianCLI, paths: NotePaths) -> None:
+    scope = f"scope={paths.project_dir.as_posix()}"
     checks = [
-        ("unresolved", ["counts", "verbose"]),
-        ("orphans", []),
-        ("deadends", []),
+        ("unresolved", ["counts", "verbose", scope]),
+        ("orphans", [scope]),
+        ("deadends", [scope]),
         ("backlinks", [f"path={paths.home.as_posix()}", "counts"]),
     ]
     for command, command_args in checks:
@@ -2190,9 +2244,22 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(f"Auto-audit frequency: every {audit_every} run(s)")
     cli_path = shutil.which("obsidian-cli") or shutil.which("obsidian")
     if cli_path:
-        print(f"Obsidian CLI executable: {cli_path} (optional; file-backed mode is available)")
+        print(f"PATH CLI executable: {cli_path} (optional; file-backed mode is available)")
     else:
-        print("Obsidian CLI executable: not found (OK; file-backed mode is available)")
+        print("PATH CLI executable: not found (OK; file-backed mode is available)")
+    bundled_cli = Path("/Applications/Obsidian.app/Contents/MacOS/obsidian-cli")
+    if bundled_cli.is_file():
+        version = "unknown"
+        info_plist = bundled_cli.parents[1] / "Info.plist"
+        try:
+            with info_plist.open("rb") as handle:
+                version = str(plistlib.load(handle).get("CFBundleShortVersionString", "unknown"))
+        except (OSError, plistlib.InvalidFileException):
+            pass
+        print(f"Obsidian desktop: {version}")
+        print(f"Bundled Obsidian CLI executable: {bundled_cli}")
+        if cli_path and Path(cli_path).resolve() != bundled_cli.resolve():
+            print("CLI distinction: PATH resolves to a separate executable, not the bundled desktop CLI.")
     if not mapped:
         print("Vault mapping: MISSING (run set-vault)")
         return
@@ -2231,6 +2298,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser_show = subparsers.add_parser("show-vault", help="Show resolved vault path")
     parser_show.add_argument("--workspace", help="Workspace path override")
     parser_show.set_defaults(func=cmd_show_vault)
+
+    parser_projects = subparsers.add_parser(
+        "list-projects",
+        help="List existing project memory folders in the resolved vault",
+    )
+    parser_projects.add_argument("--workspace", help="Workspace path override")
+    parser_projects.set_defaults(func=cmd_list_projects)
 
     parser_bootstrap = subparsers.add_parser("bootstrap", help="Create seed project notes")
     parser_bootstrap.add_argument("--project", required=True, help="Project display name")

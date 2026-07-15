@@ -22,6 +22,7 @@ from scripts.obsidian_memory import (
     cmd_compact_project,
     ConfigStore,
     ObsidianCLI,
+    build_parser,
     build_note_paths,
     build_seed_notes,
     ensure_project_dirs,
@@ -103,6 +104,10 @@ class ObsidianMemoryTests(unittest.TestCase):
 
     def test_projects_index_path(self) -> None:
         self.assertEqual(PROJECTS_INDEX_PATH.as_posix(), "Project Memory/Projects Index.md")
+
+    def test_list_projects_command_is_available(self) -> None:
+        args = build_parser().parse_args(["list-projects"])
+        self.assertEqual(args.command, "list-projects")
 
     def test_hook_scripts_run_directly_without_import_errors(self) -> None:
         skill_root = Path(__file__).resolve().parents[2]
@@ -225,6 +230,39 @@ class ObsidianMemoryTests(unittest.TestCase):
                 include_archive=True,
             )
             self.assertIn("Archive/Runs/old.md", archive_output)
+
+    def test_audit_scope_excludes_unrelated_projects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            demo = vault / "Project Memory" / "demo"
+            other = vault / "Project Memory" / "other"
+            demo.mkdir(parents=True)
+            other.mkdir(parents=True)
+            (demo / "linked.md").write_text("[[Missing Demo]]\n", encoding="utf-8")
+            (demo / "dead.md").write_text("No links here.\n", encoding="utf-8")
+            (other / "other.md").write_text("[[Missing Other]]\n", encoding="utf-8")
+            (other / "dead-other.md").write_text("No links here.\n", encoding="utf-8")
+
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            scope = Path("Project Memory/demo")
+
+            unresolved = cli.audit_unresolved(verbose=True, scope=scope)
+            self.assertIn("Missing Demo", unresolved)
+            self.assertNotIn("Missing Other", unresolved)
+
+            orphans = cli.audit_orphans(scope=scope)
+            self.assertIn("Project Memory/demo/dead.md", orphans)
+            self.assertNotIn("Project Memory/other", orphans)
+
+            deadends = cli.audit_deadends(scope=scope)
+            self.assertIn("Project Memory/demo/dead.md", deadends)
+            self.assertNotIn("dead-other.md", deadends)
+
+    def test_audit_scope_cannot_escape_vault(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = ObsidianCLI(vault_path=Path(tmp), dry_run=False)
+            with self.assertRaisesRegex(RuntimeError, "Audit scope escapes vault"):
+                cli.audit_deadends(scope=Path("../outside"))
 
 
 class BidirectionalLinkTests(unittest.TestCase):
