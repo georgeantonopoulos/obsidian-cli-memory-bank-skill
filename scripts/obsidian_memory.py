@@ -946,7 +946,9 @@ def _extract_wikilinks(body: str) -> List[str]:
         target = raw.split("|", maxsplit=1)[0].split("#", maxsplit=1)[0].strip()
         if not target:
             continue
-        stem = Path(target).stem
+        stem = Path(target).name
+        if stem.casefold().endswith(".md"):
+            stem = stem[:-3]
         if stem and stem not in seen:
             seen.add(stem)
             links.append(stem)

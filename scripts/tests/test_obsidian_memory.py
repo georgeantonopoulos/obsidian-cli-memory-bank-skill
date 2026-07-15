@@ -16,6 +16,7 @@ from scripts.obsidian_memory import (
     _collect_uncompacted_runs,
     _search_priority,
     _contains_cli_error,
+    _extract_wikilinks,
     _has_link_to,
     _parse_related_arg,
     _parse_search_output_paths,
@@ -94,6 +95,12 @@ class ObsidianMemoryTests(unittest.TestCase):
         self.assertTrue(_contains_cli_error("Error: failed to open file"))
         self.assertTrue(_contains_cli_error("some info\nERROR cannot continue"))
         self.assertFalse(_contains_cli_error("Created: note.md"))
+
+    def test_extract_wikilinks_preserves_dotted_note_names(self) -> None:
+        links = _extract_wikilinks(
+            "[[0.2.0 Home]] [[folder/release.1]] [[folder/Run.md|Run]]"
+        )
+        self.assertEqual(links, ["0.2.0 Home", "release.1", "Run"])
 
     def test_ensure_project_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
