@@ -32,7 +32,7 @@ AI agent memory, Obsidian automation, local knowledge management, coding assista
 - **Run logging** — Records each agent session as a structured note: what was asked, what changed, why, and what's still open.
 - **Memory compaction** — Distills noisy `Runs/` history into `Current Memory`, topic notes, and archived evidence notes without deleting raw sources.
 - **Context retrieval** — Searches the vault before answering so prior decisions and context surface automatically.
-- **Graph hygiene** — Audits for unresolved links, orphan notes, dead ends, and backlink coverage.
+- **Graph hygiene** — Audits for unresolved links, active-memory orphan notes, dead ends, and backlink coverage; cold `Archive/` evidence is excluded from orphan counts.
 
 ## How It Helps Discovery
 

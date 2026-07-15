@@ -535,7 +535,13 @@ class ObsidianCLI:
     def audit_orphans(self, *, scope: Optional[Path] = None) -> str:
         all_notes = list(self.vault_path.rglob("*.md"))
         linked = _linked_note_stems(all_notes)
-        orphans = [note for note in self._audit_notes(scope) if note.stem not in linked]
+        orphans = []
+        for note in self._audit_notes(scope):
+            relative = note.relative_to(self.vault_path.resolve())
+            if "Archive" in relative.parts:
+                continue
+            if note.stem not in linked:
+                orphans.append(note)
         if not orphans:
             return "0 orphan note(s)."
         lines = [f"{len(orphans)} orphan note(s)."]
@@ -940,6 +946,8 @@ def _search_priority(relative_path: str) -> int:
 
 
 def _extract_wikilinks(body: str) -> List[str]:
+    body = re.sub(r"```.*?```|~~~.*?~~~", "", body, flags=re.DOTALL)
+    body = re.sub(r"`[^`\n]*`", "", body)
     links: List[str] = []
     seen = set()
     for raw in re.findall(r"\[\[([^\]]+)\]\]", body):

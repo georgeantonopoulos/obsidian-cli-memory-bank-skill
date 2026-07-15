@@ -107,7 +107,7 @@ obmem read-note --path "Project Memory/project-name/Decisions.md"
 obmem audit --project "ProjectName"
 ```
 
-This audits unresolved links, orphans, and dead ends inside the selected project, plus backlinks to its home note. Missing projects are rejected instead of returning a misleading clean result.
+This audits unresolved links, active-memory orphans, and dead ends inside the selected project, plus backlinks to its home note. Orphan counts exclude `Archive/`, where sparse cold evidence is expected. Missing projects are rejected instead of returning a misleading clean result.
 
 Automatic behavior: `record-run` triggers auto-audit every N runs (default `5`).
 Change cadence:

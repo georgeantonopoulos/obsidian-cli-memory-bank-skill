@@ -102,6 +102,10 @@ class ObsidianMemoryTests(unittest.TestCase):
         )
         self.assertEqual(links, ["0.2.0 Home", "release.1", "Run"])
 
+    def test_extract_wikilinks_ignores_markdown_code(self) -> None:
+        body = "`[[Inline Example]]` [[Real Note]]\n```md\n[[Fenced Example]]\n```"
+        self.assertEqual(_extract_wikilinks(body), ["Real Note"])
+
     def test_ensure_project_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
@@ -271,6 +275,9 @@ class ObsidianMemoryTests(unittest.TestCase):
             other.mkdir(parents=True)
             (demo / "linked.md").write_text("[[Missing Demo]]\n", encoding="utf-8")
             (demo / "dead.md").write_text("No links here.\n", encoding="utf-8")
+            archived = demo / "Archive" / "Runs" / "old.md"
+            archived.parent.mkdir(parents=True)
+            archived.write_text("Cold evidence with no backlinks.\n", encoding="utf-8")
             (other / "other.md").write_text("[[Missing Other]]\n", encoding="utf-8")
             (other / "dead-other.md").write_text("No links here.\n", encoding="utf-8")
 
@@ -283,6 +290,7 @@ class ObsidianMemoryTests(unittest.TestCase):
 
             orphans = cli.audit_orphans(scope=scope)
             self.assertIn("Project Memory/demo/dead.md", orphans)
+            self.assertNotIn("Archive/Runs/old.md", orphans)
             self.assertNotIn("Project Memory/other", orphans)
 
             deadends = cli.audit_deadends(scope=scope)

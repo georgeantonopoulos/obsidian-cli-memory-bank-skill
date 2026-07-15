@@ -238,7 +238,7 @@ obmem read-note --path "Project Memory/project-name/Decisions.md"
 obmem audit --project "ProjectName"
 ```
 
-This runs project-scoped unresolved-link counts, orphan detection, and dead-end detection, plus a backlink count for the selected project home note. If the project does not exist, the command stops and directs you to `obmem list-projects` instead of reporting a misleading clean audit.
+This runs project-scoped unresolved-link counts, active-memory orphan detection, and dead-end detection, plus a backlink count for the selected project home note. Orphan counts intentionally exclude `Archive/`, where sparse cold evidence is expected. If the project does not exist, the command stops and directs you to `obmem list-projects` instead of reporting a misleading clean audit.
 
 Automatic behavior: `record-run` triggers auto-audit every N runs (default `5`).
 Search now skips `Archive/` by default and ranks compacted notes (`Current Memory`, `Topics`, `Compactions`, Decisions, Questions, Architecture) before raw `Runs/`. Use `--include-archive` when you need to search archived source evidence. Run `compact-project` whenever search starts returning too many timestamped execution notes.
