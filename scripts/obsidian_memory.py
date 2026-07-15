@@ -1007,6 +1007,15 @@ def ensure_projects_index(cli: ObsidianCLI, paths: NotePaths) -> None:
 def bootstrap_project(cli: ObsidianCLI, project: str) -> NotePaths:
     paths = build_note_paths(project)
     ensure_project_dirs(cli.vault_path, paths, cli.dry_run)
+    project_dir = cli.vault_path / paths.project_dir
+    if project_dir.is_dir():
+        canonical_homes = [
+            candidate
+            for candidate in project_dir.glob("*.md")
+            if candidate.name.casefold() == paths.home.name.casefold()
+        ]
+        if len(canonical_homes) == 1:
+            paths.home = canonical_homes[0].relative_to(cli.vault_path)
     notes = build_seed_notes(project, paths)
     print(f"Bootstrapping project memory in vault: {cli.vault_path}")
     for relative_path, content in notes.items():

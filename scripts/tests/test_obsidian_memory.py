@@ -25,6 +25,7 @@ from scripts.obsidian_memory import (
     build_parser,
     build_note_paths,
     build_seed_notes,
+    bootstrap_project,
     ensure_project_dirs,
     ensure_related_link,
     parse_tags,
@@ -101,6 +102,29 @@ class ObsidianMemoryTests(unittest.TestCase):
             ensure_project_dirs(vault, paths, dry_run=False)
             self.assertTrue((vault / "Project Memory" / "sequency").is_dir())
             self.assertTrue((vault / "Project Memory" / "sequency" / "Runs").is_dir())
+
+    def test_bootstrap_preserves_existing_home_filename_casing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project_dir = vault / "Project Memory" / "basecamp"
+            project_dir.mkdir(parents=True)
+            canonical_home = project_dir / "Basecamp Home.md"
+            canonical_home.write_text("# Basecamp Home\n", encoding="utf-8")
+
+            paths = bootstrap_project(
+                ObsidianCLI(vault_path=vault, dry_run=False),
+                "basecamp",
+            )
+
+            self.assertEqual(paths.home.name, "Basecamp Home.md")
+            self.assertIn(
+                "[[Basecamp Home]]",
+                (project_dir / "Current Memory.md").read_text(encoding="utf-8"),
+            )
+            self.assertNotIn(
+                "basecamp Home.md",
+                [item.name for item in project_dir.iterdir()],
+            )
 
     def test_projects_index_path(self) -> None:
         self.assertEqual(PROJECTS_INDEX_PATH.as_posix(), "Project Memory/Projects Index.md")
