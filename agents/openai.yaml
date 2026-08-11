@@ -1,4 +1,4 @@
 interface:
   display_name: "Obsidian CLI Memory Bank"
-  short_description: "Build and maintain linked Obsidian project knowledge"
-  default_prompt: "Use Obsidian CLI to update the project knowledge vault."
+  short_description: "Retrieve and maintain concise Obsidian project memory"
+  default_prompt: "Use obmem to retrieve only relevant prior context and record a concise durable outcome when warranted."
