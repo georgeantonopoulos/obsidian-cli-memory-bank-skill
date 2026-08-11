@@ -1,169 +1,137 @@
 ---
 name: obsidian-cli-memory-bank
-description: Build and maintain project-specific Obsidian knowledge bases via the obmem CLI. Use when an agent needs to (1) persist a vault mapping for a workspace, (2) capture prompt/run context as structured Markdown notes, (3) auto-link notes with wikilinks for backlink coverage, (4) retrieve context via search/read commands, or (5) audit graph hygiene with unresolved/orphan/dead-end link checks.
+description: Retrieve and maintain concise project memory through the obmem CLI and Claude Code hooks. Use to recall prior project decisions, record a meaningful outcome, compact noisy history, audit a selected project, or verify automatic memory hooks.
 ---
 
 # Obsidian CLI Memory Bank
 
-## Overview
+Use `obmem` as a small, project-scoped memory layer. Retrieve only enough context to act correctly, then record only information likely to matter in a future run.
 
-Use this skill to maintain a per-project "memory bank" inside Obsidian with consistent note structure, dense wikilinking, and CLI-first retrieval.
-Persist the vault path once per workspace, then bootstrap/update project notes on every relevant run.
+## Default path
 
-## Prerequisites
+1. Resolve the vault and stable project identity.
+2. Run one narrow active-memory search.
+3. Read at most the 1–3 most relevant notes.
+4. Do the task.
+5. Record one concise sanitized run only in manual mode and only when the outcome is reusable.
 
-- `obmem` CLI installed via pipx (`pipx install git+https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill.git`)
-- Write access to the configured Obsidian vault folder
-- Optional: `obsidian-cli` in PATH if you want external CLI/app conveniences
+Do not turn routine recall into a vault survey. Bootstrap, audit, compaction, archive search, and graph repair are exception paths.
 
-`obmem` uses direct file-backed vault operations for its own create, append, read, search, and audit
-commands. Obsidian desktop does not need to be running, and the old `obsidian` app IPC bridge is no
-longer required for normal memory-bank work.
+## Hook mode
 
-## Workflow
+Claude Code may provide automatic memory through five hooks:
 
-All commands use the `obmem` CLI directly (installed via pipx).
+- `SessionStart`: validates vault connectivity.
+- `UserPromptSubmit`: injects relevant search results before the response.
+- `Stop`: records the completed turn.
+- `PreCompact`: preserves a summary before context compression.
+- `PostToolUse`: mirrors writes to memory files.
 
-### 1) Resolve vault first
+When hook output already provides the needed context, do not repeat `show-vault` or the same search. When the `Stop` hook is active, do not manually record the same task. Hooks are non-blocking; use the manual workflow only if hook output reports a failure or the exact context is still missing.
+
+## Retrieval budget and filtering
+
+- Run `show-vault` once per session or when the workspace changes.
+- Run `list-projects` only when project identity is unknown or ambiguous.
+- Start with one specific 3–8 word query; refine once only if irrelevant.
+- Search active memory first; do not use `--include-archive` by default.
+- Read at most 3 notes and stop when the needed fact or decision is clear.
+- Never preload `Run Log`, all `Runs/`, all search hits, or raw transcripts.
+- Do not run `audit`, `doctor`, or `compact-project` during ordinary recall.
+
+Prefer results in this order:
+
+1. `Current Memory.md`
+2. Relevant `Topics/*.md`
+3. `Decisions.md`, `Open Questions.md`, or a named reference note
+4. A specific compaction note or recent run
+5. `Archive/Runs/*` only for exact historical evidence
+
+Filter out status chatter, retries, generic summaries, environment dumps, superseded detail, and unrelated facts. Prefer current decisions, constraints, known failures, verification, and unresolved questions.
 
 ```bash
 obmem show-vault
+obmem search --project "ProjectName" --query "specific subsystem decision"
+obmem read-note --path "Project Memory/project-name/Current Memory.md"
 ```
 
-If no vault is set for the current workspace:
+If the first note answers the question, stop reading.
 
-1. Ask exactly one question: `Which absolute vault path should I use for this project?`
-2. Save it:
-
-```bash
-obmem set-vault --vault-path "/absolute/path/to/vault"
-```
-
-Use `--workspace "/path/to/project"` when setting or resolving a different workspace than the current directory.
-
-### 2) Resolve project identity
+## Resolve identity safely
 
 ```bash
+obmem show-vault
 obmem list-projects
 ```
 
-Reuse an existing project when it matches. If multiple projects are plausible, ask one short question instead of creating another folder.
+- Reuse an existing project slug that matches the repository or task.
+- Keep the same `--project` value throughout the run.
+- If no vault mapping exists, ask: `Which absolute vault path should I use for this project?`
+- If several projects are plausible, ask instead of creating a duplicate.
+- Use `--workspace "/path/to/project"` only for a different workspace.
 
-### 3) Bootstrap project memory structure
-
-Create core notes once per project:
-
-```bash
-obmem bootstrap --project "ProjectName"
-```
-
-Or run the one-command initializer:
+For a genuinely new project only:
 
 ```bash
 obmem init-project --project "ProjectName" --with-stub
 ```
 
-This creates:
+## Record only durable outcomes
 
-- `Project Memory/<project-slug>/<Project Home>.md`
-- `Project Memory/<project-slug>/MOC.md`
-- `Project Memory/<project-slug>/Run Log.md`
-- `Project Memory/<project-slug>/Decisions.md`
-- `Project Memory/<project-slug>/Open Questions.md`
+Record when a run adds a durable decision, non-obvious fix, reusable exact verification, or consequential open question. Skip simple lookups, status checks, retries, abandoned attempts, raw transcripts, and unchanged outcomes.
 
-All seed notes include wikilinks to each other so backlinks are available immediately.
-
-### 4) Record each meaningful run
-
-After a task, add a run note:
+Keep prompt and summary to one sentence each; actions to 1–3 clauses; decisions/questions only when present; and tags to 2–5 specific terms.
 
 ```bash
 obmem record-run \
   --project "ProjectName" \
-  --title "Fix MXF progress regression" \
-  --summary "Updated progress to use true frame counts." \
-  --prompt "User asked for accurate progress on MXF exports." \
-  --actions "Adjusted estimateFrameCount routing in exporter and view model." \
-  --decisions "Prefer measured frame counts over duration heuristics." \
-  --questions "Confirm behavior for variable-frame-rate MXF corpus." \
-  --tags "bugfix,mxf"
+  --title "Fix MXF frame-count routing" \
+  --prompt "Correct inaccurate MXF export progress." \
+  --summary "Progress now uses measured frame counts instead of duration estimates." \
+  --actions "Updated exporter routing; ran the focused regression test." \
+  --decisions "Prefer measured counts when available." \
+  --questions "Validate variable-frame-rate MXF samples." \
+  --tags "mxf,progress,bugfix"
 ```
 
-This creates a timestamped note in `Runs/`, appends it to `Run Log.md`, and links back to project anchor notes.
+`record-run` weaves bidirectional `## Related` edges to up to 5 lexical neighbors. Use descriptive titles and tags. If matching is weak, use `--auto-relate-query "specific terms"` or `--related "note-a,note-b"`; use `--no-auto-relate` when suggested links would be noise.
 
-### 5) Retrieve context before answering
+Never persist secrets, tokens, passwords, private access links, personal data, unredacted environment output, or copied transcripts.
+
+## Exact evidence and maintenance
+
+Search archives only when active memory lacks an exact command, error, date, or verification:
 
 ```bash
-# search by topic
-obmem search --project "ProjectName" --query "MXF fallback routing"
-
-# inspect a key note
-obmem read-note --path "Project Memory/project-name/Decisions.md"
+obmem search --project "ProjectName" --query "exact error or artifact" --include-archive
 ```
 
-### 6) Keep graph hygiene high
+Read the smallest matching note and stop.
+
+Compact only when active results are dominated by timestamped runs. Require a backup or clean recoverable Git state and preview a bounded batch:
+
+```bash
+obmem compact-project --project "ProjectName" --max-runs 25 --dry-run
+obmem compact-project --project "ProjectName" --max-runs 25
+```
+
+Repair a specific graph relationship with `link-notes --dry-run`, then apply after reviewing it. Never hand-edit only one side of a bidirectional `## Related` edge.
 
 ```bash
 obmem audit --project "ProjectName"
-```
-
-This audits unresolved links, active-memory orphans, and dead ends inside the selected project, plus backlinks to its home note. Orphan counts exclude `Archive/`, where sparse cold evidence is expected. Missing projects are rejected instead of returning a misleading clean result.
-
-Automatic behavior: `record-run` triggers auto-audit every N runs (default `5`).
-Change cadence:
-
-```bash
-obmem set-audit-frequency --runs 5
-```
-
-Set `--runs 0` to disable auto-audit.
-
-### 7) Health-check setup
-
-```bash
 obmem doctor
 ```
 
-Reports optional CLI availability, workspace-to-vault mapping, audit cadence, and vault write access. Obsidian desktop does not need to be running.
+Audit only while maintaining graph health or diagnosing retrieval. `obmem` is file-backed and does not require Obsidian desktop.
 
-## Persistence Mode
+## Invariants
 
-Use this pattern to behave as "always-on" memory:
+1. Prefer concise distilled memory over raw history.
+2. Capture outcome and rationale, not narration.
+3. Use short stable titles, specific tags, and file stems without `.md` for run wikilinks.
+4. Keep note properties at the top.
+5. Use `record-run` or `link-notes` for bidirectional `## Related` edges.
+6. Treat missing or ambiguous vault/project identity as a stop-and-ask condition.
+7. Prefer no memory write over a low-signal or duplicate write.
 
-1. At first action in a session, run `show-vault`; ask user only if missing.
-2. At task start, run `search` for key topic terms before proposing changes.
-3. In manual mode, run `record-run` once at task end with a sanitized summary and rationale. If a Stop hook records the task, do not duplicate it manually.
-4. Run project-scoped `audit` periodically (or after major refactors).
-
-### Hook Integration (Optional)
-
-Claude Code hooks provide five automatic integration points:
-
-| Hook | Event | Purpose |
-|------|-------|---------|
-| `obsidian_sessionstart_hook.py` | `SessionStart` | Validate vault connectivity at session start |
-| `obsidian_preprompt_hook.py` | `UserPromptSubmit` | Search Obsidian for relevant notes before each response |
-| `obsidian_poststop_hook.py` | `Stop` | Log a structured run note after each agent stop |
-| `obsidian_precompact_hook.py` | `PreCompact` | Persist session context to Obsidian before context compaction |
-| `obsidian_memory_sync_hook.py` | `PostToolUse` | Mirror MEMORY.md writes to Obsidian vault |
-
-The **PreCompact** hook is especially valuable: when the context window fills up, Claude compresses prior messages. This hook captures a transcript summary as an Obsidian note *before* that compression happens, so project knowledge survives context boundaries.
-
-The **PostToolUse** hook watches for `Write` or `Edit` calls targeting `*/memory/*` or `*MEMORY.md` paths. When Claude saves auto-memory, the hook syncs the content to Obsidian so the same knowledge is searchable across tools.
-
-See `claude-code/INSTALL.md` for setup instructions.
-
-## Rules
-
-1. Prefer wikilinks (`[[Note]]`) over plain text references.
-2. Link every run note to at least: `[[<Project Home>]]`, `[[MOC]]`, and one topic/decision note.
-3. Keep properties at the top of notes (`tags`, `created`, `updated`, `project`, `type`).
-4. Use short, stable note titles; avoid duplicate names in the same vault.
-5. Capture both outcome and rationale so later retrieval answers "what changed" and "why".
-6. Never persist secrets, credentials, access links, unnecessary personal data, or raw transcripts when a short sanitized summary is enough.
-
-## Resources
-
-- CLI entrypoint: `obmem` (installed via pipx)
-- Hook scripts: `claude-code/hooks/`
-- Reference patterns: `references/obsidian-cli-patterns.md`
+Hook sources live in `claude-code/hooks/`; installation details live in `claude-code/INSTALL.md`.

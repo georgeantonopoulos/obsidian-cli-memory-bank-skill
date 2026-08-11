@@ -38,6 +38,7 @@ _DATE_STAMP_RE = re.compile(r"\b\d{4}[-/]\d{2}[-/]\d{2}\b")
 _INLINE_CODE_RE = re.compile(r"`[^`]+`")
 _NON_ALPHA_RE = re.compile(r"[^A-Za-z0-9\s\-]")
 _CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_SEARCH_HIT_RE = re.compile(r"^\s{2}Project Memory/.+\.md \(score \d+\)$")
 
 
 def _split_identifier(name: str) -> str:
@@ -62,6 +63,15 @@ def _sanitize_query(prompt: str, max_words: int = 4) -> str:
         keywords = words[:max_words]
     keywords.sort(key=len, reverse=True)
     return " ".join(keywords[:max_words])
+
+
+def _select_search_hits(output: str, limit: int = 3) -> str:
+    """Keep only the top ranked note paths from obmem search output."""
+    hits = [line for line in output.splitlines() if _SEARCH_HIT_RE.match(line)]
+    selected = hits[:limit]
+    if not selected:
+        return ""
+    return f"Showing top {len(selected)} relevant note(s):\n" + "\n".join(selected)
 
 
 def main() -> int:
@@ -119,13 +129,14 @@ def main() -> int:
     )
 
     output = result.stdout.strip() if result.returncode == 0 else ""
-    has_results = output and "No matches found" not in output
+    selected_hits = _select_search_hits(output)
+    has_results = bool(selected_hits)
 
     # Always tell the LLM what keywords were searched so it can refine
     # with its own domain knowledge (e.g. searching for "Nuke" or "oklch").
     header = f"[obsidian-memory] Searched Obsidian vault (project: {project_name}) with keywords: {query}"
     if has_results:
-        print(f"{header}\nMatching notes:\n{output}")
+        print(f"{header}\n{selected_hits}")
     else:
         print(
             f"{header}\nNo matches. Consider using the obmem skill to search "
