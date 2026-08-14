@@ -115,7 +115,13 @@ obmem compact-project --project "ProjectName" --max-runs 25 --dry-run
 obmem compact-project --project "ProjectName" --max-runs 25
 ```
 
-Repair a specific graph relationship with `link-notes --dry-run`, then apply after reviewing it. Never hand-edit only one side of a bidirectional `## Related` edge.
+Repair a specific graph relationship with `link-notes --dry-run`, then apply after reviewing it. Remove a wrong edge with `unlink-notes`, which drops both directions together. Never hand-edit only one side of a bidirectional `## Related` edge.
+
+```bash
+obmem unlink-notes --project "ProjectName" --from "run-note-stem" --to "Topic" --dry-run
+```
+
+When `record-run` reports an auto-related neighbor that is clearly off-topic, remove it rather than leaving it; a wrong edge costs more at recall time than a missing one.
 
 ```bash
 obmem audit --project "ProjectName"
@@ -130,7 +136,7 @@ Audit only while maintaining graph health or diagnosing retrieval. `obmem` is fi
 2. Capture outcome and rationale, not narration.
 3. Use short stable titles, specific tags, and file stems without `.md` for run wikilinks.
 4. Keep note properties at the top.
-5. Use `record-run` or `link-notes` for bidirectional `## Related` edges.
+5. Use `record-run` or `link-notes` to create bidirectional `## Related` edges, and `unlink-notes` to remove them.
 6. Treat missing or ambiguous vault/project identity as a stop-and-ask condition.
 7. Prefer no memory write over a low-signal or duplicate write.
 

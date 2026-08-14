@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import plistlib
 import re
@@ -149,7 +150,15 @@ TOPIC_RULES: List[Tuple[str, str]] = [
     ("permissions", r"\b(permission|permissions|access|grant access|sandbox)\b"),
     ("mxf", r"\b(mxf|dnxhd|vc3)\b"),
     ("video-export", r"\b(h264|h\.264|prores|mov|mp4|avassetwriter|avfoundation|videotranscoder)\b"),
-    ("audio", r"\b(audio|pcm|channel|sample)\b"),
+    # Bare "channel" and "sample" are not audio evidence. An image compositor
+    # says both constantly about RGBA channels and pixel sampling, which filed
+    # most of one project's node-graph work under Audio.
+    (
+        "audio",
+        r"\b(?:audio|pcm|waveform|loudness|lufs|stereo|mono|decibel)\b"
+        r"|\bsample[\s-]?rate\b"
+        r"|\baudio[\s-]?channel\b",
+    ),
     ("duration", r"\b(duration|fps|framerate|frame-rate|framecount|frame-count|retiming)\b"),
     ("queue", r"\b(queue|queued|batch)\b"),
     ("release", r"\b(beta|testflight|release|ship|build|archive|version)\b"),
@@ -489,7 +498,11 @@ class ObsidianCLI:
         if not root.exists():
             return "Found 0 hits."
 
-        hits: List[Tuple[int, int, str]] = []
+        patterns = _compile_term_patterns(terms)
+
+        # First pass: per-note term frequencies and lengths. BM25 needs corpus
+        # statistics, so nothing can be scored until every note has been seen.
+        documents: List[Tuple[str, List[int], int]] = []
         for note in root.rglob("*.md"):
             relative = note.relative_to(self.vault_path).as_posix()
             if not include_archive and "/Archive/" in relative:
@@ -498,14 +511,21 @@ class ObsidianCLI:
                 text = note.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 continue
-            haystack = f"{note.stem}\n{text}".lower()
-            score = sum(haystack.count(term.lower()) for term in terms)
-            if not terms or score > 0:
-                hits.append((score, _search_priority(relative), relative))
+            haystack = f"{note.stem}\n{text}"
+            # The title is worth more than a passing mention in the body, so it
+            # is counted twice rather than given a separate scoring branch.
+            title = note.stem
+            frequencies = [
+                len(pattern.findall(haystack)) + len(pattern.findall(title))
+                for pattern in patterns
+            ]
+            length = max(len(_WORD_RE.findall(haystack)), 1)
+            if not terms or any(frequencies):
+                documents.append((relative, frequencies, length))
 
-        hits.sort(key=lambda item: (-item[1], -item[0], item[2]))
+        hits = _rank_documents(documents, len(patterns))
         lines = [f"Found {len(hits)} hits."]
-        lines.extend(f"  {path} (score {score})" for score, _priority, path in hits[:25])
+        lines.extend(f"  {path} (score {score})" for score, path in hits[:25])
         return "\n".join(lines)
 
     def audit_unresolved(self, *, verbose: bool, scope: Optional[Path] = None) -> str:
@@ -926,6 +946,99 @@ def _parse_local_search_query(query: str) -> Tuple[Optional[Path], List[str]]:
     return scoped_path, terms
 
 
+_WORD_RE = re.compile(r"[A-Za-z0-9_#.+-]+")
+
+# Standard BM25 constants. ``b`` is what stops a very long note from winning on
+# raw term counts alone, which is the whole reason this replaced substring
+# counting.
+_BM25_K1 = 1.5
+_BM25_B = 0.75
+
+# How much a distilled note may outrank a raw run at equal relevance. Priority
+# spans 15..120, so this is at most a 30% boost: enough to break a tie toward
+# Current Memory or a Topic note, never enough to float an irrelevant one to
+# the top.
+_PRIORITY_BOOST_DIVISOR = 400.0
+
+
+def _compile_term_patterns(terms: Iterable[str]) -> List["re.Pattern[str]"]:
+    """Match whole words, not substrings.
+
+    Counting substrings made ``AI`` match inside *available*, *maintain* and
+    *chain*, so a long note that never mentioned the subject could outscore one
+    written entirely about it. A boundary is only asserted on the sides where
+    the term itself is alphanumeric, so ``C++``, ``#tag`` and ``.env`` still
+    match.
+    """
+    patterns: List["re.Pattern[str]"] = []
+    for term in terms:
+        if not term:
+            continue
+        escaped = re.escape(term)
+        prefix = r"\b" if term[0].isalnum() or term[0] == "_" else ""
+        suffix = r"\b" if term[-1].isalnum() or term[-1] == "_" else ""
+        patterns.append(re.compile(f"{prefix}{escaped}{suffix}", re.IGNORECASE))
+    return patterns
+
+
+def _rank_documents(
+    documents: List[Tuple[str, List[int], int]],
+    term_count: int,
+) -> List[Tuple[int, str]]:
+    """Order notes by BM25 relevance, nudged by the distilled-memory priority.
+
+    Summing one IDF-weighted term at a time means a note matching every query
+    term naturally beats one matching a single common term many times, which is
+    the behaviour retrieval actually wants from a memory bank.
+    """
+    if not documents:
+        return []
+    if term_count == 0:
+        # An empty query lists everything; fall back to priority order alone.
+        ordered = sorted(
+            documents,
+            key=lambda item: (-_search_priority(item[0]), item[0]),
+        )
+        return [(0, relative) for relative, _frequencies, _length in ordered]
+
+    total = len(documents)
+    document_frequency = [0] * term_count
+    for _relative, frequencies, _length in documents:
+        for index, frequency in enumerate(frequencies):
+            if frequency:
+                document_frequency[index] += 1
+    average_length = sum(length for _r, _f, length in documents) / total
+    inverse_frequency = [
+        math.log(1.0 + (total - count + 0.5) / (count + 0.5))
+        for count in document_frequency
+    ]
+
+    hits: List[Tuple[int, str]] = []
+    for relative, frequencies, length in documents:
+        relevance = 0.0
+        for index, frequency in enumerate(frequencies):
+            if not frequency:
+                continue
+            normalization = _BM25_K1 * (
+                1.0 - _BM25_B + _BM25_B * length / average_length
+            )
+            relevance += (
+                inverse_frequency[index]
+                * frequency
+                * (_BM25_K1 + 1.0)
+                / (frequency + normalization)
+            )
+        if relevance <= 0.0:
+            continue
+        boosted = relevance * (
+            1.0 + _search_priority(relative) / _PRIORITY_BOOST_DIVISOR
+        )
+        hits.append((round(boosted * 100), relative))
+
+    hits.sort(key=lambda item: (-item[0], item[1]))
+    return hits
+
+
 def _search_priority(relative_path: str) -> int:
     """Prefer distilled memory over raw execution logs during retrieval."""
     if relative_path.endswith("/Current Memory.md"):
@@ -1167,6 +1280,64 @@ def ensure_related_link(
     return f"linked:{note_path.as_posix()} ← [[{target_stem}]]"
 
 
+def _remove_related_entry(body: str, target_stem: str) -> Tuple[str, bool]:
+    """Drop the ``## Related`` bullet pointing at ``target_stem``.
+
+    Only whole list entries are removed, so a mention of the note elsewhere in
+    the prose is left alone; the caller reports ``absent`` when nothing matched.
+    """
+    pattern = re.compile(r"\[\[" + re.escape(target_stem) + r"(?:\|[^\]]*)?\]\]")
+    lines = body.splitlines()
+    kept: List[str] = []
+    removed = False
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith(("-", "*")) and pattern.search(line):
+            removed = True
+            continue
+        kept.append(line)
+    if not removed:
+        return body, False
+    updated = "\n".join(kept)
+    if body.endswith("\n") and not updated.endswith("\n"):
+        updated += "\n"
+    return updated, True
+
+
+def remove_related_link(cli: ObsidianCLI, note_path: Path, target_stem: str) -> str:
+    """Inverse of :func:`ensure_related_link`. Idempotent."""
+    absolute = cli.vault_path / note_path
+    if not absolute.exists():
+        return f"missing:{note_path.as_posix()}"
+    if cli.dry_run:
+        return f"[dry-run] unweave {note_path.as_posix()} ↛ [[{target_stem}]]"
+    body = absolute.read_text(encoding="utf-8")
+    updated, removed = _remove_related_entry(body, target_stem)
+    if not removed:
+        return f"absent:{note_path.as_posix()} (no [[{target_stem}]] entry)"
+    absolute.write_text(updated, encoding="utf-8")
+    return f"unlinked:{note_path.as_posix()} ↛ [[{target_stem}]]"
+
+
+def unweave_bidirectional(
+    cli: ObsidianCLI,
+    source_path: Path,
+    neighbor_paths: List[Path],
+) -> List[str]:
+    """Remove A↔B edges between ``source_path`` and each neighbor.
+
+    Both directions are removed together for the same reason they are created
+    together: a half-removed edge leaves the graph asserting a relationship
+    from one side only.
+    """
+    statuses: List[str] = []
+    source_stem = source_path.stem
+    for neighbor in neighbor_paths:
+        statuses.append(remove_related_link(cli, source_path, neighbor.stem))
+        statuses.append(remove_related_link(cli, neighbor, source_stem))
+    return statuses
+
+
 def weave_bidirectional(
     cli: ObsidianCLI,
     source_path: Path,
@@ -1365,6 +1536,36 @@ def _topic_title(key: str) -> str:
     return " ".join(part.upper() if len(part) <= 4 else part.capitalize() for part in key.split("-"))
 
 
+# Words that say how a note was captured rather than what the work was about.
+# Auto-logging hooks stamp their own identity onto every note they record, so
+# these appear in most runs of most projects and can only blur topics together.
+# The tag fallback already ignored them; rule matching has to as well, or a
+# note about the viewer gets filed under tooling because a hook wrote it.
+CAPTURE_VOCABULARY = frozenset(
+    {
+        "antigravity",
+        "auto-log",
+        "claude",
+        "codex",
+        "cursor",
+        "hook",
+        "hooks",
+        "hyperprompt",
+        "notify",
+        "turn",
+    }
+)
+
+_CAPTURE_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(word) for word in sorted(CAPTURE_VOCABULARY)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_capture_vocabulary(text: str) -> str:
+    return _CAPTURE_RE.sub(" ", text)
+
+
 def _compact_topic_key(run: RunMemory, project_slug: str) -> str:
     ignored_tags = {
         project_slug,
@@ -1402,9 +1603,23 @@ def _compact_topic_key(run: RunMemory, project_slug: str) -> str:
         "already",
     }
     combined = " ".join([run.title, run.prompt, run.summary, run.actions, run.decisions, run.questions]).lower()
+    # Score every rule and keep the strongest, rather than returning whichever
+    # rule happens to be declared first. First-match-wins let a single common
+    # word ("build", "channel", "test") capture a run whose actual subject was
+    # matched far more specifically by a later rule.
+    #
+    # Distinct vocabulary is the signal, not raw occurrences: a run that says
+    # "channel" thirty times is not more about audio than one that names four
+    # different audio concepts once each.
+    subject = _strip_capture_vocabulary(combined)
+    best_key: Optional[str] = None
+    best_score = 0
     for key, pattern in TOPIC_RULES:
-        if re.search(pattern, combined):
-            return key
+        score = len({match.group(0).lower() for match in re.finditer(pattern, subject)})
+        if score > best_score:
+            best_key, best_score = key, score
+    if best_key:
+        return best_key
     for tag in run.tags:
         normalized = slugify(tag)
         if normalized and normalized not in ignored_tags and normalized not in STOP_WORDS:
@@ -2107,6 +2322,45 @@ def cmd_link_notes(args: argparse.Namespace) -> None:
         print(f"  {status}")
 
 
+def cmd_unlink_notes(args: argparse.Namespace) -> None:
+    """Remove bidirectional ``## Related`` links between existing notes.
+
+    The inverse of ``link-notes``, and the repair path for an edge that
+    ``record-run --auto-relate`` wove between notes that turned out to be
+    unrelated.
+    """
+    vault_path = resolve_vault_or_exit(args.workspace)
+    cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
+    paths = build_note_paths(args.project.strip())
+
+    source = resolve_note_path(vault_path, paths, args.source)
+    if source is None:
+        raise SystemExit(f"Source note not found: {args.source}")
+
+    target_refs = _parse_related_arg(args.target)
+    if not target_refs:
+        raise SystemExit("At least one --to target is required.")
+
+    neighbor_paths: List[Path] = []
+    for ref in target_refs:
+        resolved = resolve_note_path(vault_path, paths, ref)
+        if resolved is None:
+            print(f"unlink-notes: could not resolve '{ref}' — skipped")
+            continue
+        if resolved == source:
+            print(f"unlink-notes: '{ref}' is the source note — skipped")
+            continue
+        if resolved not in neighbor_paths:
+            neighbor_paths.append(resolved)
+
+    if not neighbor_paths:
+        raise SystemExit("No valid target notes to unlink.")
+
+    print(f"Removing {len(neighbor_paths)} bidirectional link(s) from {source.as_posix()}")
+    for status in unweave_bidirectional(cli, source, neighbor_paths):
+        print(f"  {status}")
+
+
 def cmd_compact_project(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
@@ -2402,6 +2656,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser_link.add_argument("--workspace", help="Workspace path override")
     parser_link.add_argument("--dry-run", action="store_true", help="Print planned edits only")
     parser_link.set_defaults(func=cmd_link_notes)
+
+    parser_unlink = subparsers.add_parser(
+        "unlink-notes",
+        help="Remove bidirectional ## Related links between existing notes",
+    )
+    parser_unlink.add_argument("--project", required=True, help="Project display name")
+    parser_unlink.add_argument(
+        "--from",
+        dest="source",
+        required=True,
+        help="Source note (file stem, short name, or vault-relative path)",
+    )
+    parser_unlink.add_argument(
+        "--to",
+        dest="target",
+        required=True,
+        help="Target note(s) — comma-separated, same reference forms as --from",
+    )
+    parser_unlink.add_argument("--workspace", help="Workspace path override")
+    parser_unlink.add_argument("--dry-run", action="store_true", help="Print planned edits only")
+    parser_unlink.set_defaults(func=cmd_unlink_notes)
 
     parser_search = subparsers.add_parser("search", help="Search project memory")
     parser_search.add_argument("--project", required=True, help="Project display name")

@@ -266,6 +266,209 @@ class ObsidianMemoryTests(unittest.TestCase):
             )
             self.assertIn("Archive/Runs/old.md", archive_output)
 
+    def _relevance_vault(self, tmp: str) -> Path:
+        """A vault shaped like the failure: one huge hub note, one exact match."""
+        vault = Path(tmp)
+        project = vault / "Project Memory" / "demo"
+        (project / "Topics").mkdir(parents=True, exist_ok=True)
+        (project / "Runs").mkdir(parents=True, exist_ok=True)
+        # A large topic note that never discusses the query, but whose ordinary
+        # English contains "ai" inside words such as available and maintain.
+        (project / "Topics" / "Audio.md").write_text(
+            "Audio topic.\n" + ("available maintain detail chain certain " * 400),
+            encoding="utf-8",
+        )
+        # A small note that is genuinely about the query.
+        (project / "Runs" / "ollama-planner.md").write_text(
+            "Integrate the local Ollama model planner for AI FX.\n"
+            "The planner sends a schema to Ollama and validates the model plan.\n",
+            encoding="utf-8",
+        )
+        return vault
+
+    def test_search_ignores_substring_matches_inside_unrelated_words(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = self._relevance_vault(tmp)
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            output = cli.search_files('AI path:"Project Memory/demo"')
+            # "available"/"maintain"/"chain" all contain "ai" as a substring.
+            self.assertNotIn("Topics/Audio.md", output)
+            self.assertIn("Runs/ollama-planner.md", output)
+
+    def test_search_ranks_a_focused_note_above_a_large_incidental_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = self._relevance_vault(tmp)
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            output = cli.search_files(
+                'AI FX local model planner Ollama path:"Project Memory/demo"'
+            )
+            listed = [line for line in output.splitlines() if line.startswith("  ")]
+            self.assertTrue(listed, output)
+            self.assertIn("Runs/ollama-planner.md", listed[0])
+
+    def test_search_priority_boosts_ties_without_overriding_relevance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = vault / "Project Memory" / "demo"
+            (project / "Runs").mkdir(parents=True, exist_ok=True)
+            # A distilled note that barely mentions the query.
+            (project / "Current Memory.md").write_text(
+                "Current memory. The exporter writes frames.\nOllama is unrelated here.\n",
+                encoding="utf-8",
+            )
+            # A run note that is squarely about it.
+            (project / "Runs" / "ollama-planner.md").write_text(
+                "Ollama planner. The Ollama planner validates each Ollama plan.\n"
+                "Planner schema, planner fallback, planner worker.\n",
+                encoding="utf-8",
+            )
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            listed = [
+                line
+                for line in cli.search_files(
+                    'Ollama planner path:"Project Memory/demo"'
+                ).splitlines()
+                if line.startswith("  ")
+            ]
+            self.assertIn("Runs/ollama-planner.md", listed[0])
+
+            # With equal relevance the distilled note still wins.
+            same = vault / "Project Memory" / "tie"
+            (same / "Runs").mkdir(parents=True, exist_ok=True)
+            body = "Ollama planner.\n"
+            (same / "Current Memory.md").write_text(body, encoding="utf-8")
+            (same / "Runs" / "a-run.md").write_text(body, encoding="utf-8")
+            tied = [
+                line
+                for line in cli.search_files(
+                    'Ollama planner path:"Project Memory/tie"'
+                ).splitlines()
+                if line.startswith("  ")
+            ]
+            self.assertIn("Current Memory.md", tied[0])
+
+    def _run_memory(self, text: str, tags=None):
+        from scripts.obsidian_memory import RunMemory, _keywords
+
+        return RunMemory(
+            path=Path("Project Memory/demo/Runs/x.md"),
+            stem="x",
+            title=text,
+            created="2026-01-01T00:00:00+00:00",
+            prompt="",
+            summary=text,
+            actions="",
+            decisions="",
+            questions="",
+            tags=tags or [],
+            keywords=_keywords(text, limit=12),
+        )
+
+    def test_topic_key_ignores_image_channels_as_audio(self) -> None:
+        from scripts.obsidian_memory import _compact_topic_key
+
+        # An image compositor mentions RGBA channels and pixel sampling
+        # constantly; neither is evidence of audio work.
+        run = self._run_memory(
+            "Route RGBA channel selection through the viewer and sample "
+            "each pixel channel with bilinear sampling."
+        )
+        self.assertNotEqual(_compact_topic_key(run, "demo"), "audio")
+
+    def test_topic_key_still_recognises_real_audio_work(self) -> None:
+        from scripts.obsidian_memory import _compact_topic_key
+
+        run = self._run_memory(
+            "Fix PCM audio export so the audio sample rate and audio channel "
+            "layout survive the transcode."
+        )
+        self.assertEqual(_compact_topic_key(run, "demo"), "audio")
+
+    def test_topic_key_prefers_the_dominant_subject_over_rule_order(self) -> None:
+        from scripts.obsidian_memory import _compact_topic_key
+
+        # "build" and "version" alone must not file a UI run under release
+        # just because the release rule is declared earlier.
+        run = self._run_memory(
+            "Rebuild the inspector panel layout: the sidebar button, the panel "
+            "scroll view and the panel selection now share one layout pass. "
+            "Version 2 of the build."
+        )
+        self.assertEqual(_compact_topic_key(run, "demo"), "ui")
+
+    def test_topic_key_ignores_the_agent_that_recorded_the_note(self) -> None:
+        """How a note was captured is never what the note is about.
+
+        Auto-logging hooks stamp "codex", "notify" and "hook" onto every note
+        they write, which filed 170 of one project's 381 runs under tooling.
+        """
+        from scripts.obsidian_memory import _compact_topic_key
+
+        run = self._run_memory(
+            "Recorded by the codex notify hook during a claude turn. "
+            "Fix the exr colour pipeline so acescg saturation survives.",
+            tags=["codex", "exr"],
+        )
+        self.assertEqual(_compact_topic_key(run, "demo"), "color-management")
+
+    def test_topic_key_still_files_genuine_tooling_work(self) -> None:
+        from scripts.obsidian_memory import _compact_topic_key
+
+        run = self._run_memory(
+            "Add an mcp plugin and wire obsidian memory sync into the editor."
+        )
+        self.assertEqual(_compact_topic_key(run, "demo"), "tooling")
+
+    def test_unlink_removes_both_sides_of_a_related_edge(self) -> None:
+        """Auto-relate can weave a wrong edge; nothing could remove one.
+
+        Removing a link by hand breaks the bidirectional invariant on one side,
+        so the tool has to own the inverse of the operation it performs.
+        """
+        from scripts.obsidian_memory import remove_related_link, unweave_bidirectional
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = vault / "Project Memory" / "demo"
+            project.mkdir(parents=True)
+            run = project / "a-run.md"
+            topic = project / "Audio.md"
+            run.write_text(
+                "# A run\n\n## Related\n\n- [[Audio]] — woven by mistake\n"
+                "- [[Keep Me]] — still relevant\n",
+                encoding="utf-8",
+            )
+            topic.write_text(
+                "# Audio\n\n## Related\n\n- [[a-run]] — woven by mistake\n",
+                encoding="utf-8",
+            )
+
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            statuses = unweave_bidirectional(
+                cli,
+                run.relative_to(vault),
+                [topic.relative_to(vault)],
+            )
+            self.assertTrue(any("unlinked" in status for status in statuses), statuses)
+
+            run_body = run.read_text(encoding="utf-8")
+            topic_body = topic.read_text(encoding="utf-8")
+            self.assertNotIn("[[Audio]]", run_body)
+            self.assertNotIn("[[a-run]]", topic_body)
+            # Unrelated edges and the section itself survive.
+            self.assertIn("[[Keep Me]]", run_body)
+            self.assertIn("## Related", run_body)
+
+            # Removing an absent edge is a no-op, not an error.
+            again = remove_related_link(cli, run.relative_to(vault), "Audio")
+            self.assertIn("absent", again)
+
+    def test_unlink_notes_command_is_available(self) -> None:
+        args = build_parser().parse_args(
+            ["unlink-notes", "--project", "demo", "--from", "a", "--to", "b"]
+        )
+        self.assertEqual(args.command, "unlink-notes")
+
     def test_audit_scope_excludes_unrelated_projects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)

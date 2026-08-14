@@ -152,7 +152,7 @@ Audit only the selected project and only when maintaining graph health or invest
 2. Capture outcome and rationale, not narration.
 3. Use short stable titles, specific tags, and file stems without `.md` for run-note wikilinks.
 4. Keep note properties at the top.
-5. Use `record-run` or `link-notes` for bidirectional `## Related` edges.
+5. Use `record-run` or `link-notes` to create bidirectional `## Related` edges, and `unlink-notes` to remove them.
 6. Preserve exact commands, paths, errors, decisions, and verification only when they are reusable.
 7. Treat missing or ambiguous vault/project identity as a stop-and-ask condition.
 8. Prefer no memory write over a low-signal memory write.
