@@ -1517,6 +1517,75 @@ def _plain_sentences(text: str) -> List[str]:
     return [part.strip(" -") for part in parts if len(part.strip(" -")) >= 12]
 
 
+_DISTILLED_NOISE_RE = re.compile(
+    r"(?:"
+    r"</?(?:realtime_delegation|transcript_delta|input)>"
+    r"|\bthe tasks typically have to do with coding-related tasks\b"
+    r"|\btranslate fixed phrases\b"
+    r"|\bby following these conventions\b"
+    r"|\bdo not (?:respond to the user|answer (?:the )?request|perform additional work)\b"
+    r"|\bdo not (?:include quotes|use punctuation|produce a generic title)\b"
+    r"|\byou write the one-line activity\b"
+    r"|\bexamples?:\s*-\s*user:"
+    r"|^\s*\{\s*\"(?:title|summary|description)\"\s*:"
+    r")",
+    re.IGNORECASE,
+)
+_TRANSCRIPT_BLOCK_RE = re.compile(
+    r"<realtime_delegation\b.*?</realtime_delegation>"
+    r"|<transcript_delta\b.*?</transcript_delta>"
+    r"|<input\b.*?</input>",
+    re.IGNORECASE | re.DOTALL,
+)
+_DISTILLED_SECRET_VALUE_RE = re.compile(
+    r"\b(?:api[ _-]?key|access token|password)\s*[:=]\s*\S+"
+    r"|\b(?:using|with|from)\s+(?:the\s+)?(?:supplied\s+)?(?:private key|key pair)\b"
+    r"|\b\S+\.pem\b",
+    re.IGNORECASE,
+)
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+_PHONE_RE = re.compile(r"(?<!\d)(?:\+?30[ .-]?)?69\d{8}(?!\d)")
+_PRIVATE_IP_RE = re.compile(
+    r"\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|"
+    r"172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})\b"
+)
+_INTERNAL_HOST_RE = re.compile(
+    r"\b(?:ip-\d+(?:-\d+){3}\.[A-Z0-9.-]+|[A-Z0-9.-]+\.internal(?:\.[A-Z0-9.-]+)?)\b",
+    re.IGNORECASE,
+)
+_PRIVATE_LINK_RE = re.compile(
+    r"https?://\S*(?:sharepoint\.com/personal|dropbox\.com/request|"
+    r"[?&](?:access_token|auth|key|sig|signature|token)=)\S*",
+    re.IGNORECASE,
+)
+
+
+def _distilled_sentences(text: str) -> List[str]:
+    """Return active-memory-safe sentences while leaving raw evidence untouched."""
+    result: List[str] = []
+    cleaned_text = _TRANSCRIPT_BLOCK_RE.sub(" ", text)
+    for sentence in _plain_sentences(cleaned_text):
+        if _DISTILLED_NOISE_RE.search(sentence) or _DISTILLED_SECRET_VALUE_RE.search(sentence):
+            continue
+        sentence = _PRIVATE_LINK_RE.sub("[redacted private link]", sentence)
+        sentence = _EMAIL_RE.sub("[redacted email]", sentence)
+        sentence = _PHONE_RE.sub("[redacted phone]", sentence)
+        sentence = _PRIVATE_IP_RE.sub("[redacted private address]", sentence)
+        sentence = _INTERNAL_HOST_RE.sub("[redacted internal host]", sentence)
+        sentence = re.sub(r"\s+", " ", sentence).strip()
+        if len(sentence) >= 12:
+            result.append(sentence)
+    return result
+
+
+def _distilled_preview(*values: str) -> str:
+    for value in values:
+        sentences = _distilled_sentences(value)
+        if sentences:
+            return sentences[0]
+    return "Details retained in archived source."
+
+
 def _keywords(text: str, tags: Optional[Iterable[str]] = None, limit: int = 12) -> List[str]:
     counts: Dict[str, int] = {}
     for tag in tags or []:
@@ -1602,7 +1671,7 @@ def _compact_topic_key(run: RunMemory, project_slug: str) -> str:
         "found",
         "already",
     }
-    combined = " ".join([run.title, run.prompt, run.summary, run.actions, run.decisions, run.questions]).lower()
+    combined = " ".join([run.title, run.prompt, run.summary, run.actions, run.decisions, run.questions])
     # Score every rule and keep the strongest, rather than returning whichever
     # rule happens to be declared first. First-match-wins let a single common
     # word ("build", "channel", "test") capture a run whose actual subject was
@@ -1611,7 +1680,7 @@ def _compact_topic_key(run: RunMemory, project_slug: str) -> str:
     # Distinct vocabulary is the signal, not raw occurrences: a run that says
     # "channel" thirty times is not more about audio than one that names four
     # different audio concepts once each.
-    subject = _strip_capture_vocabulary(combined)
+    subject = _strip_capture_vocabulary(" ".join(_distilled_sentences(combined))).lower()
     best_key: Optional[str] = None
     best_score = 0
     for key, pattern in TOPIC_RULES:
@@ -1624,9 +1693,6 @@ def _compact_topic_key(run: RunMemory, project_slug: str) -> str:
         normalized = slugify(tag)
         if normalized and normalized not in ignored_tags and normalized not in STOP_WORDS:
             return normalized
-    for keyword in run.keywords:
-        if keyword not in ignored_tags and keyword not in STOP_WORDS:
-            return keyword
     return "general"
 
 
@@ -1671,7 +1737,7 @@ def _unique_sentences(values: Iterable[str], limit: int) -> List[str]:
     result: List[str] = []
     seen: set[str] = set()
     for value in values:
-        for sentence in _plain_sentences(value):
+        for sentence in _distilled_sentences(value):
             key = re.sub(r"[^a-z0-9]+", " ", sentence.lower()).strip()
             if not key or key in seen:
                 continue
@@ -1687,7 +1753,7 @@ def _gotcha_sentences(runs: List[RunMemory], limit: int) -> List[Tuple[str, RunM
     seen: set[str] = set()
     for run in runs:
         text = " ".join([run.prompt, run.summary, run.actions, run.decisions, run.questions])
-        for sentence in _plain_sentences(text):
+        for sentence in _distilled_sentences(text):
             lowered = sentence.lower()
             if not _contains_gotcha_word(lowered):
                 continue
@@ -1716,10 +1782,11 @@ def _build_topics(paths: NotePaths, runs: List[RunMemory]) -> List[TopicMemory]:
 
     topics: List[TopicMemory] = []
     for key, group in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0])):
-        text = " ".join(
+        raw_text = " ".join(
             " ".join([run.title, run.summary, run.actions, run.decisions, run.questions])
             for run in group
         )
+        text = " ".join(_distilled_sentences(raw_text))
         keywords = _keywords(text, tags=[key], limit=12)
         title = _topic_title(key)
         path = paths.topics_dir / f"{sanitize_note_title_component(title)}.md"
@@ -1801,7 +1868,7 @@ def _build_topic_note(project: str, paths: NotePaths, topic: TopicMemory, topics
     if not related_topics:
         lines.append("- None yet.")
     lines.extend(["", "## Source Runs"])
-    lines.extend(f"- [[{run.stem}]]: {run.summary or run.title}" for run in source_runs)
+    lines.extend(f"- [[{run.stem}]]: {_distilled_preview(run.summary, run.title)}" for run in source_runs)
     if len(topic.runs) > len(source_runs):
         lines.append(f"- {len(topic.runs) - len(source_runs)} additional archived source run(s) omitted from this list.")
     return "\n".join(lines)
@@ -1857,8 +1924,10 @@ def _build_compaction_note(
     compaction_path: Path,
     topics: List[TopicMemory],
     runs: List[RunMemory],
+    batch_runs: Optional[List[RunMemory]] = None,
 ) -> str:
     gotchas = _gotcha_sentences(runs, COMPACTION_NOTE_LIMIT)
+    batch_count = len(batch_runs) if batch_runs is not None else len(runs)
     lines = [
         build_frontmatter(
             note_type="compaction",
@@ -1873,7 +1942,7 @@ def _build_compaction_note(
         f"MOC: [[{paths.moc.stem}]]",
         "",
         "## Result",
-        f"- Compacted {len(runs)} raw run note(s) into {len(topics)} topic note(s).",
+        f"- Compacted {batch_count} new raw run note(s) and distilled {len(runs)} total source run(s) into {len(topics)} topic note(s).",
         f"- Archived source run notes under `{paths.archived_runs_dir.as_posix()}` without deleting them.",
         "- Pruned raw run links from hub indexes so the graph starts from distilled memory.",
         "",
@@ -1886,7 +1955,7 @@ def _build_compaction_note(
         lines.append("- None extracted.")
     lines.extend(["", "## Source Runs"])
     for run in runs[:COMPACTION_SOURCE_LIMIT]:
-        lines.append(f"- [[{run.stem}]]: {run.summary or run.title}")
+        lines.append(f"- [[{run.stem}]]: {_distilled_preview(run.summary, run.title)}")
     if len(runs) > COMPACTION_SOURCE_LIMIT:
         lines.append(f"- {len(runs) - COMPACTION_SOURCE_LIMIT} additional archived source run(s) omitted from this list.")
     return "\n".join(lines)
@@ -1949,41 +2018,41 @@ def _archive_runs(
     paths: NotePaths,
     compaction_path: Path,
     topics: List[TopicMemory],
+    runs_to_archive: List[RunMemory],
 ) -> List[Tuple[Path, Path]]:
-    topic_for_run: Dict[str, List[Path]] = {}
+    topic_for_run: Dict[Path, List[Path]] = {}
     for topic in topics:
         for run in topic.runs:
-            topic_for_run.setdefault(run.stem, []).append(topic.path)
+            topic_for_run.setdefault(run.path, []).append(topic.path)
 
     moved: List[Tuple[Path, Path]] = []
-    for topic in topics:
-        for run in topic.runs:
-            source_abs = cli.vault_path / run.path
-            if not source_abs.exists():
-                continue
-            dest = paths.archived_runs_dir / run.path.name
+    for run in runs_to_archive:
+        source_abs = cli.vault_path / run.path
+        if not source_abs.exists():
+            continue
+        dest = paths.archived_runs_dir / run.path.name
+        dest_abs = cli.vault_path / dest
+        suffix = 2
+        while dest_abs.exists() and dest_abs != source_abs:
+            dest = paths.archived_runs_dir / f"{run.path.stem}-{suffix}.md"
             dest_abs = cli.vault_path / dest
-            suffix = 2
-            while dest_abs.exists() and dest_abs != source_abs:
-                dest = paths.archived_runs_dir / f"{run.path.stem}-{suffix}.md"
-                dest_abs = cli.vault_path / dest
-                suffix += 1
-            if cli.dry_run:
-                moved.append((run.path, dest))
-                continue
-            body = source_abs.read_text(encoding="utf-8")
-            archived_body = _archive_run_body(
-                project,
-                run,
-                body,
-                compaction_path,
-                topic_for_run.get(run.stem, []),
-            )
-            dest_abs.parent.mkdir(parents=True, exist_ok=True)
-            dest_abs.write_text(archived_body, encoding="utf-8")
-            if dest_abs != source_abs:
-                source_abs.unlink()
+            suffix += 1
+        if cli.dry_run:
             moved.append((run.path, dest))
+            continue
+        body = source_abs.read_text(encoding="utf-8")
+        archived_body = _archive_run_body(
+            project,
+            run,
+            body,
+            compaction_path,
+            topic_for_run.get(run.path, []),
+        )
+        dest_abs.parent.mkdir(parents=True, exist_ok=True)
+        dest_abs.write_text(archived_body, encoding="utf-8")
+        if dest_abs != source_abs:
+            source_abs.unlink()
+        moved.append((run.path, dest))
     return moved
 
 
@@ -2080,6 +2149,39 @@ def _collect_uncompacted_runs(
             if limit and len(runs) >= limit:
                 return runs
     return runs
+
+
+def _collect_archived_runs(vault_path: Path, paths: NotePaths) -> List[RunMemory]:
+    runs: List[RunMemory] = []
+    absolute_dir = vault_path / paths.archived_runs_dir
+    if not absolute_dir.exists():
+        return runs
+    for note in sorted(absolute_dir.glob("*.md")):
+        parsed = _parse_run_memory(
+            vault_path,
+            note.relative_to(vault_path),
+            include_compacted=True,
+        )
+        if parsed:
+            runs.append(parsed)
+    return runs
+
+
+def _merge_run_history(historical: List[RunMemory], active: List[RunMemory]) -> List[RunMemory]:
+    """Combine archived evidence with the current batch without duplicate stems."""
+    by_stem: Dict[str, RunMemory] = {run.stem: run for run in historical}
+    for run in active:
+        by_stem[run.stem] = run
+    return sorted(by_stem.values(), key=lambda run: (run.created, run.path.as_posix()))
+
+
+def _unique_compaction_path(vault_path: Path, desired: Path) -> Path:
+    candidate = desired
+    suffix = 2
+    while (vault_path / candidate).exists():
+        candidate = desired.with_name(f"{desired.stem}-{suffix}{desired.suffix}")
+        suffix += 1
+    return candidate
 
 
 def cmd_set_vault(args: argparse.Namespace) -> None:
@@ -2367,30 +2469,39 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
     project = args.project.strip()
     paths = bootstrap_project(cli, project)
     limit = args.max_runs if args.max_runs and args.max_runs > 0 else None
-    runs = _collect_uncompacted_runs(
+    batch_runs = _collect_uncompacted_runs(
         vault_path,
         paths,
         limit,
-        include_archive=getattr(args, "include_archive", False),
+        include_archive=False,
     )
-    if not runs:
-        sources = paths.runs_dir.as_posix()
-        if getattr(args, "include_archive", False):
-            sources += f" or {paths.archived_runs_dir.as_posix()}"
-        print(f"No run notes found in {sources}.")
+    historical_runs = _collect_archived_runs(vault_path, paths)
+    if not batch_runs and not (getattr(args, "include_archive", False) and historical_runs):
+        print(f"No new run notes found in {paths.runs_dir.as_posix()}.")
         return
+    runs = _merge_run_history(historical_runs, batch_runs)
 
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
-    compaction_path = paths.compactions_dir / f"{timestamp}-compact-{paths.project_slug}.md"
+    compaction_path = _unique_compaction_path(
+        vault_path,
+        paths.compactions_dir / f"{timestamp}-compact-{paths.project_slug}.md",
+    )
     topics = _build_topics(paths, runs)
 
-    source_label = paths.runs_dir.as_posix()
-    if getattr(args, "include_archive", False):
-        source_label += f" plus {paths.archived_runs_dir.as_posix()}"
-    print(f"Compacting {len(runs)} run note(s) from {source_label}.")
+    print(
+        f"Compacting {len(batch_runs)} new run note(s) from {paths.runs_dir.as_posix()}; "
+        f"distilling {len(runs)} total source run(s) including archived history."
+    )
     print(f"Distilled topic count: {len(topics)}")
 
-    compaction_note = _build_compaction_note(project, paths, compaction_path, topics, runs)
+    compaction_note = _build_compaction_note(
+        project,
+        paths,
+        compaction_path,
+        topics,
+        runs,
+        batch_runs=batch_runs,
+    )
     print(_write_note(cli, compaction_path, compaction_note))
 
     current_note = _build_current_memory_note(project, paths, compaction_path, topics, runs)
@@ -2424,18 +2535,26 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
 
     moved: List[Tuple[Path, Path]] = []
     if not args.no_archive:
-        moved = _archive_runs(cli, project, paths, compaction_path, topics)
+        moved = _archive_runs(
+            cli,
+            project,
+            paths,
+            compaction_path,
+            topics,
+            batch_runs,
+        )
         print(f"Archived source runs: {len(moved)} into {paths.archived_runs_dir.as_posix()}")
     else:
         print("Archive step skipped by --no-archive.")
 
-    stems = {run.stem for run in runs}
+    stems = {run.stem for run in batch_runs}
     pruned = 0
     for hub in [paths.run_log, paths.moc, paths.decisions, paths.questions]:
         pruned += _remove_lines_linking_stems(cli, hub, stems)
     summary = (
-        f"- [[{compaction_path.stem}]]: Compacted {len(runs)} run note(s) "
-        f"into {len(topics)} topic note(s); archived raw sources under `{paths.archived_runs_dir.as_posix()}`."
+        f"- [[{compaction_path.stem}]]: Compacted {len(batch_runs)} run note(s) "
+        f"and distilled {len(runs)} total source run(s) into {len(topics)} topic note(s); "
+        f"archived raw sources under `{paths.archived_runs_dir.as_posix()}`."
     )
     _append_unique_line(cli, paths.run_log, summary)
     _append_unique_line(cli, paths.moc, summary)
@@ -2699,7 +2818,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-runs",
         type=int,
         default=0,
-        help="Maximum active run notes to compact (default: all uncompacted runs)",
+        help="Maximum new active run notes to compact; archived history remains in the distilled result",
     )
     parser_compact.add_argument(
         "--no-archive",
@@ -2709,7 +2828,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser_compact.add_argument(
         "--include-archive",
         action="store_true",
-        help="Also re-distill already archived source runs.",
+        help="Re-distill archived evidence even when there are no new active runs",
     )
     parser_compact.add_argument("--workspace", help="Workspace path override")
     parser_compact.add_argument("--dry-run", action="store_true", help="Print planned edits only")

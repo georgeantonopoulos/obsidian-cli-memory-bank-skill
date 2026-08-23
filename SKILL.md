@@ -122,6 +122,8 @@ obmem search --project "ProjectName" --query "representative topic" --include-ar
 
 The result promotes `Current Memory.md` and `Topics/*.md` while retaining raw evidence under `Archive/Runs/`. Use `--include-archive` on compaction only to re-distill archived evidence after rules improve. Use `--no-archive` only when deliberately leaving raw runs active.
 
+Each bounded batch automatically includes previously archived runs in the distilled result, so a later 25-note pass cannot erase earlier hot memory. `--max-runs` limits only the new active notes; `--include-archive` forces a refresh when no new runs exist. Active distilled notes filter transcript wrappers, instruction boilerplate, credentials, private endpoints, email addresses, and phone numbers while leaving raw archived evidence untouched.
+
 ### Repair graph links
 
 `## Related` edges must be bidirectional. Never hand-edit only one side. For a specific missing relationship:

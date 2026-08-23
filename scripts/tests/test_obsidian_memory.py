@@ -419,6 +419,77 @@ class ObsidianMemoryTests(unittest.TestCase):
         )
         self.assertEqual(_compact_topic_key(run, "demo"), "tooling")
 
+    def test_topic_key_uses_general_instead_of_arbitrary_keyword(self) -> None:
+        from scripts.obsidian_memory import _compact_topic_key
+
+        run = self._run_memory(
+            "I need one thing under the current account before we continue."
+        )
+        self.assertEqual(_compact_topic_key(run, "demo"), "general")
+
+    def test_distilled_sentences_drop_prompt_noise_and_redact_private_values(self) -> None:
+        from scripts.obsidian_memory import _distilled_sentences
+
+        text = " ".join(
+            [
+                "Do NOT respond to the user, answer questions, or attempt the task.",
+                "<realtime_delegation><input>Use my private account</input></realtime_delegation>",
+                "Verified the live display backend after the repair.",
+                "Contact producer@example.com or +30 6912345678.",
+                "Connected to 10.0.13.135 using the supplied key pair.",
+                "Do not embed or print the API key.",
+            ]
+        )
+
+        distilled = " ".join(_distilled_sentences(text))
+        self.assertNotIn("Do NOT respond", distilled)
+        self.assertNotIn("realtime_delegation", distilled)
+        self.assertNotIn("producer@example.com", distilled)
+        self.assertNotIn("6912345678", distilled)
+        self.assertNotIn("10.0.13.135", distilled)
+        self.assertNotIn("key pair", distilled)
+        self.assertIn("Verified the live display backend", distilled)
+        self.assertIn("[redacted email]", distilled)
+        self.assertIn("[redacted phone]", distilled)
+        self.assertIn("Do not embed or print the API key", distilled)
+
+    def test_active_compaction_notes_never_repeat_private_or_prompt_content(self) -> None:
+        from scripts.obsidian_memory import (
+            _build_compaction_note,
+            _build_current_memory_note,
+            _build_topic_note,
+        )
+
+        run = self._run_memory("Export repair", tags=["export"])
+        run.prompt = "Do NOT respond to the user or answer the request."
+        run.summary = (
+            "Verified export output. Contact producer@example.com or +30 6912345678."
+        )
+        run.actions = "Connected to 10.0.13.135 using the supplied key pair."
+        run.decisions = "Keep the verified export operator path."
+        paths = build_note_paths("Demo")
+        topics = _build_topics(paths, [run])
+        compaction_path = paths.compactions_dir / "2026-01-01-1000-compact-demo.md"
+        active = "\n".join(
+            [
+                _build_current_memory_note("Demo", paths, compaction_path, topics, [run]),
+                _build_compaction_note("Demo", paths, compaction_path, topics, [run]),
+                _build_topic_note("Demo", paths, topics[0], topics),
+            ]
+        )
+
+        for private_value in [
+            "Do NOT respond",
+            "producer@example.com",
+            "6912345678",
+            "10.0.13.135",
+            "key pair",
+        ]:
+            self.assertNotIn(private_value, active)
+        self.assertIn("Verified export output", active)
+        self.assertIn("[redacted email]", active)
+        self.assertIn("Keep the verified export operator path", active)
+
     def test_unlink_removes_both_sides_of_a_related_edge(self) -> None:
         """Auto-relate can weave a wrong edge; nothing could remove one.
 
@@ -780,6 +851,85 @@ class CompactionTests(unittest.TestCase):
                 run_log = (vault / paths.run_log).read_text(encoding="utf-8")
                 self.assertNotIn("[[2026-01-01-1001-export-run]]: noisy", run_log)
                 self.assertIn("Compacted 3 run note(s)", run_log)
+        finally:
+            if original_state_env is None:
+                os.environ.pop("OBMEM_STATE_FILE", None)
+            else:
+                os.environ["OBMEM_STATE_FILE"] = original_state_env
+
+    def test_bounded_compactions_preserve_prior_distilled_memory(self) -> None:
+        original_state_env = os.environ.get("OBMEM_STATE_FILE")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                vault = root / "vault"
+                workspace = root / "workspace"
+                os.environ["OBMEM_STATE_FILE"] = str(root / "state" / "vault_config.json")
+                vault.mkdir(parents=True)
+                workspace.mkdir(parents=True)
+                ConfigStore().set_vault(vault_path=vault, workspace=workspace)
+                paths = build_note_paths("Demo")
+                runs_dir = vault / paths.runs_dir
+                runs_dir.mkdir(parents=True, exist_ok=True)
+
+                for idx, (tag, summary) in enumerate(
+                    [
+                        ("export", "Fixed export routing and verified output pixels."),
+                        ("permissions", "Fixed sandbox permissions and verified access."),
+                    ],
+                    start=1,
+                ):
+                    (runs_dir / f"2026-01-01-100{idx}-{tag}.md").write_text(
+                        "\n".join(
+                            [
+                                "---",
+                                'type: "run"',
+                                'project: "Demo"',
+                                "tags:",
+                                f'  - "{tag}"',
+                                '  - "run"',
+                                f'title: "{tag} run"',
+                                "---",
+                                "",
+                                f"# {tag} run",
+                                "",
+                                "## Prompt",
+                                f"Fix {tag} behavior.",
+                                "",
+                                "## Summary",
+                                summary,
+                                "",
+                                "## Actions Taken",
+                                f"Changed the {tag} implementation.",
+                                "",
+                                "## Decisions",
+                                f"Preserve the {tag} operator path.",
+                                "",
+                                "## Open Questions",
+                                "None.",
+                            ]
+                        ),
+                        encoding="utf-8",
+                    )
+
+                args = argparse.Namespace(
+                    project="Demo",
+                    max_runs=1,
+                    no_archive=False,
+                    include_archive=False,
+                    workspace=str(workspace),
+                    dry_run=False,
+                )
+                cmd_compact_project(args)
+                cmd_compact_project(args)
+
+                current = (vault / paths.current_memory).read_text(encoding="utf-8")
+                self.assertIn("[[Export]]", current)
+                self.assertIn("[[Permissions]]", current)
+                self.assertTrue((vault / paths.topics_dir / "Export.md").exists())
+                self.assertTrue((vault / paths.topics_dir / "Permissions.md").exists())
+                self.assertEqual(len(list((vault / paths.archived_runs_dir).glob("*.md"))), 2)
+                self.assertEqual(len(list((vault / paths.compactions_dir).glob("*.md"))), 2)
         finally:
             if original_state_env is None:
                 os.environ.pop("OBMEM_STATE_FILE", None)
