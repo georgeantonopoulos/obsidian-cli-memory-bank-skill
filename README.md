@@ -225,9 +225,12 @@ obmem init-project --project "Name"   # Bootstrap + stub content in one step
 obmem record-run --project "Name" ... # Log a session note
 obmem compact-project --project "Name" # Distill Runs/ into Current Memory, Topics, and Archive/Runs
 obmem compact-project --project "Name" --include-archive # Refresh distilled memory from archive when no new runs exist
-obmem search --project "Name" -q "x"  # Search active distilled memory by keyword
-obmem search --project "Name" -q "x" --include-archive # Include archived evidence in search
-obmem read-note --path "..."          # Read a specific note
+obmem search --project "Name" --query "x"  # Search active distilled memory by keyword
+obmem search --project "Name" --query "x" --include-archive # Include archived evidence in search
+obmem read-note --path "..."          # Read up to 6,000 source characters
+obmem read-note --path "..." --query "retry queue" # Focus on matching evidence
+obmem read-note --path "..." --offset 6000 # Continue a truncated note
+obmem read-note --path "..." --full    # Explicit complete-note read
 obmem audit --project "Name"          # Check graph hygiene inside one project
 obmem set-audit-frequency --runs N    # Auto-audit every N runs (0 = off)
 ```
@@ -284,3 +287,7 @@ pipx uninstall obsidian-cli-memory-bank
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
+
+### Retrieval budgets
+
+CLI search returns 3 ranked hits by default; use `--limit 10` (or another positive number) for broader discovery. Internal graph-link searches retain their existing 25-hit budget. `read-note` defaults to 6,000 source characters, with `--max-chars` to adjust the budget and explicit character offsets for continuation. `--query` selects a verbatim window near the line covering the most query terms; it may omit surrounding qualifications, so continue reading when needed. `--full` retains complete-note access. These limits reduce returned context; they do not avoid the local corpus scan or imply measured model-quota savings.

@@ -429,7 +429,10 @@ class ObsidianCLI:
             return self.read_file(Path(relative_path))
         if command == "search":
             query = _arg_value(args, "query") or " ".join(args)
-            return self.search_files(query, include_archive="include-archive" in args)
+            return self.search_files(
+                query, include_archive="include-archive" in args,
+                limit=int(_arg_value(args, "limit") or 25),
+            )
         if command == "unresolved":
             return self.audit_unresolved(
                 verbose="verbose" in args,
@@ -490,7 +493,7 @@ class ObsidianCLI:
             raise RuntimeError(f"Note not found: {relative_path.as_posix()}")
         return absolute.read_text(encoding="utf-8")
 
-    def search_files(self, query: str, *, include_archive: bool = False) -> str:
+    def search_files(self, query: str, *, include_archive: bool = False, limit: int = 25) -> str:
         scoped_path, terms = _parse_local_search_query(query)
         root = self.vault_path / scoped_path if scoped_path else self.vault_path
         if self.dry_run:
@@ -524,8 +527,8 @@ class ObsidianCLI:
                 documents.append((relative, frequencies, length))
 
         hits = _rank_documents(documents, len(patterns))
-        lines = [f"Found {len(hits)} hits."]
-        lines.extend(f"  {path} (score {score})" for score, path in hits[:25])
+        lines = [f"Found {len(hits)} hits; showing {min(limit, len(hits))}."]
+        lines.extend(f"  {path} (score {score})" for score, path in hits[:limit])
         return "\n".join(lines)
 
     def audit_unresolved(self, *, verbose: bool, scope: Optional[Path] = None) -> str:
@@ -2371,17 +2374,64 @@ def cmd_search(args: argparse.Namespace) -> None:
     project_slug = slugify(args.project)
     or_query = _build_or_query(args.query)
     scoped_query = f"{or_query} path:\"{PROJECT_ROOT}/{project_slug}\""
-    command_args = [f"query={scoped_query}"]
+    command_args = [f"query={scoped_query}", f"limit={getattr(args, 'limit', 3)}"]
     if getattr(args, "include_archive", False):
         command_args.append("include-archive")
     output = cli.run("search", *command_args)
     print(output)
 
 
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return number
+
+
+def _nonnegative_int(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
+    return number
+
+
+def _note_excerpt(text: str, *, offset: int = 0, max_chars: int = 6000,
+                  query: Optional[str] = None) -> str:
+    """Return a bounded, verbatim window with explicit source offsets."""
+    if query:
+        patterns = _compile_term_patterns(_parse_local_search_query(query)[1])
+        # Prefer the line covering most query terms, not repeated boilerplate.
+        best_score = 0
+        cursor = 0
+        for line in text.splitlines(keepends=True):
+            matches = [match for pattern in patterns if (match := pattern.search(line))]
+            score = len(matches)
+            if score > best_score:
+                best_score = score
+                first_match = min(match.start() for match in matches)
+                offset = max(0, cursor + first_match - min(300, max_chars // 4))
+            cursor += len(line)
+    offset = min(offset, len(text))
+    end = min(len(text), offset + max_chars)
+    excerpt = text[offset:end]
+    if offset or end < len(text):
+        excerpt += f"\n[Excerpt: characters {offset}:{end} of {len(text)}."
+        if end < len(text):
+            excerpt += f" Continue with --offset {end};"
+        excerpt += " use --full for the complete note.]"
+    return excerpt
+
+
 def cmd_read_note(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
     output = cli.read(Path(args.path))
+    if not args.dry_run and not getattr(args, "full", False):
+        output = _note_excerpt(
+            output, offset=getattr(args, "offset", 0),
+            max_chars=getattr(args, "max_chars", 6000),
+            query=getattr(args, "query", None),
+        )
     print(output)
 
 
@@ -2800,6 +2850,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser_search = subparsers.add_parser("search", help="Search project memory")
     parser_search.add_argument("--project", required=True, help="Project display name")
     parser_search.add_argument("--query", required=True, help="Search query")
+    parser_search.add_argument("--limit", type=_positive_int, default=3, help="Maximum hits (default: 3; use 25 for broader discovery)")
     parser_search.add_argument(
         "--include-archive",
         action="store_true",
@@ -2836,6 +2887,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser_read = subparsers.add_parser("read-note", help="Read one note by path")
     parser_read.add_argument("--path", required=True, help="Path relative to vault root")
+    parser_read.add_argument("--max-chars", type=_positive_int, default=6000, help="Maximum note characters (default: 6000)")
+    read_position = parser_read.add_mutually_exclusive_group()
+    read_position.add_argument("--offset", type=_nonnegative_int, default=0, help="Start at this character offset")
+    read_position.add_argument("--query", help="Center excerpt near the line matching most query terms")
+    parser_read.add_argument("--full", action="store_true", help="Read the complete note without truncation")
     parser_read.add_argument("--workspace", help="Workspace path override")
     parser_read.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser_read.set_defaults(func=cmd_read_note)
