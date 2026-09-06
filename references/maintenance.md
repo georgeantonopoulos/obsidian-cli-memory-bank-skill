@@ -42,4 +42,3 @@ obmem doctor
 ```
 
 Audit only the selected project and only when maintaining graph health or investigating retrieval problems. Orphans and dead ends are signals, not a requirement to link every note. `doctor` checks mapping, cadence, optional CLI availability, and write access; `obmem` itself is file-backed and does not require Obsidian desktop.
-
