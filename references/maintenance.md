@@ -4,6 +4,12 @@ Load only for requested compaction, graph repair, or diagnosis.
 
 ## Maintenance paths
 
+### Requested vault-wide pass
+
+Inventory first and make an external backup, then stage the cleanup in a copy. Consolidate exact duplicates within their project, redirect incoming links to the retained note, and preserve distinct source evidence. Merge generated home-name variants only within the same project, retaining their unique content. Do not infer project moves from semantic similarity.
+
+Use vault-relative wikilink targets with readable aliases: `[[Project Memory/project-name/MOC|MOC]]`. Bare hub/topic names are ambiguous across projects. Retain references to unavailable files as text and report them; do not invent target notes. Check the staged link graph and source preservation before applying changes, and skip or reconcile files changed in the live vault since the snapshot. Keep backups and private vault reports out of the skill repository.
+
 ### Compact noisy history
 
 Compact when active search is dominated by timestamped run notes. Because compaction moves notes and prunes indexes, require a backup or clean recoverable Git state, then preview a bounded batch:

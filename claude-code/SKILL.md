@@ -42,6 +42,8 @@ Keep prompt/summary to one sentence each, actions to 1–3 clauses, and tags spe
 
 ## Requested maintenance only
 
+For a vault-wide pass, back up and stage changes first. Consolidate exact duplicates within their project, retain unique content, redirect links, and verify source preservation. Use vault-relative targets with readable aliases; retain unavailable references as text and report them. Reconcile live changes before applying the staged result.
+
 Initialize new memory with `obmem init-project --project "ProjectName" --with-stub` only when authorized. `obmem` is file-backed; Obsidian desktop is not required.
 
 Compact noisy history only with a backup or clean recoverable Git state. Preview a bounded batch, then apply:

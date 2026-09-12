@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
+import io
 import json
 import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.obsidian_memory import (
     DEFAULT_AUDIT_EVERY_RUNS,
@@ -18,6 +21,9 @@ from scripts.obsidian_memory import (
     _contains_cli_error,
     _extract_wikilinks,
     _has_link_to,
+    _merge_run_history,
+    _plan_archive_destinations,
+    _related_entry,
     _parse_related_arg,
     _parse_search_output_paths,
     cmd_compact_project,
@@ -28,9 +34,11 @@ from scripts.obsidian_memory import (
     build_seed_notes,
     bootstrap_project,
     ensure_project_dirs,
+    ensure_projects_index,
     ensure_related_link,
     parse_tags,
     resolve_note_path,
+    RunMemory,
     sanitize_note_title_component,
     slugify,
     weave_bidirectional,
@@ -38,6 +46,116 @@ from scripts.obsidian_memory import (
 
 
 class ObsidianMemoryTests(unittest.TestCase):
+    def test_audit_checks_qualified_target_not_another_projects_stem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            home = vault / "Project Memory/demo"
+            home.mkdir(parents=True)
+            (home / "MOC.md").write_text("# MOC\n")
+            (home / "source.md").write_text(
+                "[[Project Memory/demo/MOC|valid]]\n"
+                "[[Project Memory/missing/MOC|missing]]\n"
+            )
+            output = ObsidianCLI(vault, False).audit_unresolved(verbose=False)
+            self.assertIn("1 unresolved link target", output)
+            self.assertIn("Project Memory/missing/MOC", output)
+            self.assertNotIn("Project Memory/demo/MOC", output)
+
+    def test_compaction_collision_preserves_both_sources_and_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            for directory in (paths.runs_dir, paths.archived_runs_dir):
+                (vault / directory).mkdir(parents=True)
+            template = '---\ntype: "run"\nproject: "Demo"\ntags: [export]\n---\n\n## Summary\n{}\n'
+            old = vault / paths.archived_runs_dir / "shared.md"
+            source = vault / paths.runs_dir / "shared.md"
+            old.write_text(template.format("Preserve the Linux export configuration."))
+            source.write_text(template.format("Use measured frame counts for Windows exports."))
+            args = build_parser().parse_args(["compact-project", "--project", "Demo"])
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), contextlib.redirect_stdout(io.StringIO()):
+                cmd_compact_project(args)
+            self.assertFalse(source.exists())
+            moved = vault / paths.archived_runs_dir / "shared-2.md"
+            self.assertIn("Windows exports", moved.read_text())
+            self.assertIn("Linux export", old.read_text())
+            compaction = next((vault / paths.compactions_dir).glob("*.md")).read_text()
+            self.assertIn("[[Project Memory/demo/Archive/Runs/shared|", compaction)
+            self.assertIn("[[Project Memory/demo/Archive/Runs/shared-2|", compaction)
+
+    def test_qualified_weave_is_idempotent_and_unlink_preserves_other_project(self) -> None:
+        from scripts.obsidian_memory import unweave_bidirectional
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            source = Path("Project Memory/demo/Runs/run.md")
+            topic = Path("Project Memory/demo/Topics/Audio.md")
+            for path in (source, topic):
+                (vault / path).parent.mkdir(parents=True, exist_ok=True)
+                (vault / path).write_text("# Note\n")
+            cli = ObsidianCLI(vault, dry_run=False)
+            weave_bidirectional(cli, source, [topic])
+            once = (vault / source).read_text()
+            weave_bidirectional(cli, source, [topic])
+            self.assertEqual(once, (vault / source).read_text())
+            foreign = "- [[Project Memory/other/Topics/Audio|Audio]]\n"
+            evidence = "\n## Sources\n- [[Project Memory/demo/Topics/Audio|Audio]]\n"
+            (vault / source).write_text(once + foreign + evidence)
+            unweave_bidirectional(cli, source, [topic])
+            after = (vault / source).read_text()
+            self.assertIn(foreign, after)
+            self.assertIn(evidence, after)
+            self.assertNotIn("Project Memory/demo/Runs/run", (vault / topic).read_text())
+
+    def test_resolve_qualified_alias_and_reject_ambiguous_short_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            for directory in (paths.runs_dir, paths.archived_runs_dir):
+                (vault / directory).mkdir(parents=True)
+                (vault / directory / "shared.md").write_text("source")
+            self.assertIsNone(resolve_note_path(vault, paths, "shared"))
+            self.assertEqual(resolve_note_path(vault, paths, "[[Project Memory/demo/Runs/shared|source]]"), paths.runs_dir / "shared.md")
+
+    def test_merge_history_keeps_same_stem_from_distinct_paths(self) -> None:
+        def run(path: str) -> RunMemory:
+            return RunMemory(Path(path), Path(path).stem, "x", "2026", [], "", "", "", "", "", [])
+
+        merged = _merge_run_history(
+            [run("Project Memory/a/Archive/Runs/shared.md")],
+            [run("Project Memory/a/Runs/shared.md")],
+        )
+        self.assertEqual({item.path.as_posix() for item in merged}, {
+            "Project Memory/a/Archive/Runs/shared.md", "Project Memory/a/Runs/shared.md"
+        })
+
+    def test_archive_destination_is_planned_for_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            archive = vault / paths.archived_runs_dir
+            archive.mkdir(parents=True)
+            (archive / "shared.md").write_text("old", encoding="utf-8")
+            run = RunMemory(Path("Project Memory/demo/Runs/shared.md"), "shared", "x", "2026", [], "", "", "", "", "", [])
+            _plan_archive_destinations(vault, paths, [run])
+            self.assertEqual(run.path, paths.archived_runs_dir / "shared-2.md")
+
+    def test_qualified_related_link_preserves_dotted_note_name(self) -> None:
+        self.assertIn(
+            "[[Project Memory/demo/0.2.0 Home|0.2.0 Home]]",
+            _related_entry("Project Memory/demo/0.2.0 Home", None),
+        )
+
+    def test_projects_index_append_separates_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            first = build_note_paths("Alpha")
+            second = build_note_paths("Beta")
+            ensure_projects_index(cli, first)
+            ensure_projects_index(cli, second)
+            body = (vault / "Project Memory" / "Projects Index.md").read_text(encoding="utf-8")
+            self.assertIn(")\n- [[Project Memory/beta/Beta Home|Beta Home]]", body)
+
     def test_slugify(self) -> None:
         self.assertEqual(slugify("Sequency Project"), "sequency-project")
         self.assertEqual(slugify("  Mixed__Chars!! "), "mixed-chars")
@@ -70,16 +188,16 @@ class ObsidianMemoryTests(unittest.TestCase):
         moc = notes[paths.moc]
         architecture = notes[paths.architecture]
         roadmap = notes[paths.roadmap]
-        self.assertIn("[[MOC]]", home)
-        self.assertIn("[[Sequency Home]]", moc)
-        self.assertIn("[[Architecture]]", home)
-        self.assertIn("[[Roadmap]]", home)
-        self.assertIn("[[Current Memory]]", home)
-        self.assertIn("[[Architecture]]", moc)
-        self.assertIn("[[Current Memory]]", moc)
-        self.assertIn("[[MOC]]", architecture)
-        self.assertIn("[[Debugging Notes]]", architecture)
-        self.assertIn("[[Release Notes]]", roadmap)
+        self.assertIn("[[Project Memory/sequency/MOC|MOC]]", home)
+        self.assertIn("[[Project Memory/sequency/Sequency Home|Sequency Home]]", moc)
+        self.assertIn("[[Project Memory/sequency/Architecture|Architecture]]", home)
+        self.assertIn("[[Project Memory/sequency/Roadmap|Roadmap]]", home)
+        self.assertIn("[[Project Memory/sequency/Current Memory|Current Memory]]", home)
+        self.assertIn("[[Project Memory/sequency/Architecture|Architecture]]", moc)
+        self.assertIn("[[Project Memory/sequency/Current Memory|Current Memory]]", moc)
+        self.assertIn("[[Project Memory/sequency/MOC|MOC]]", architecture)
+        self.assertIn("[[Project Memory/sequency/Debugging Notes|Debugging Notes]]", architecture)
+        self.assertIn("[[Project Memory/sequency/Release Notes|Release Notes]]", roadmap)
 
     def test_seed_notes_create_topic_note_files(self) -> None:
         paths = build_note_paths("Sequency")
@@ -129,7 +247,7 @@ class ObsidianMemoryTests(unittest.TestCase):
 
             self.assertEqual(paths.home.name, "Basecamp Home.md")
             self.assertIn(
-                "[[Basecamp Home]]",
+                "[[Project Memory/basecamp/Basecamp Home|Basecamp Home]]",
                 (project_dir / "Current Memory.md").read_text(encoding="utf-8"),
             )
             self.assertNotIn(
@@ -696,8 +814,8 @@ class BidirectionalLinkTests(unittest.TestCase):
             self.assertEqual(len(results), 2)
             body_a = a.read_text(encoding="utf-8")
             body_b = b.read_text(encoding="utf-8")
-            self.assertIn("[[note-b]]", body_a)
-            self.assertIn("[[note-a]]", body_b)
+            self.assertIn("[[Project Memory/testproj/Runs/note-b|note-b]]", body_a)
+            self.assertIn("[[Project Memory/testproj/Runs/note-a|note-a]]", body_b)
 
     def test_parse_search_output_paths(self) -> None:
         output = (
@@ -924,8 +1042,8 @@ class CompactionTests(unittest.TestCase):
                 cmd_compact_project(args)
 
                 current = (vault / paths.current_memory).read_text(encoding="utf-8")
-                self.assertIn("[[Export]]", current)
-                self.assertIn("[[Permissions]]", current)
+                self.assertIn("[[Project Memory/demo/Topics/Export|Export]]", current)
+                self.assertIn("[[Project Memory/demo/Topics/Permissions|Permissions]]", current)
                 self.assertTrue((vault / paths.topics_dir / "Export.md").exists())
                 self.assertTrue((vault / paths.topics_dir / "Permissions.md").exists())
                 self.assertEqual(len(list((vault / paths.archived_runs_dir).glob("*.md"))), 2)

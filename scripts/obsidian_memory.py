@@ -481,7 +481,16 @@ class ObsidianCLI:
         if self.dry_run:
             return f"[dry-run] append {relative_path.as_posix()}"
         absolute.parent.mkdir(parents=True, exist_ok=True)
+        needs_separator = False
+        if absolute.exists() and absolute.stat().st_size:
+            with absolute.open("rb") as reader:
+                reader.seek(-1, os.SEEK_END)
+                needs_separator = reader.read(1) not in (b"\n", b"\r")
         with absolute.open("a", encoding="utf-8") as handle:
+            # Appended markdown entries must start on their own line even when
+            # a prior writer omitted its trailing newline.
+            if needs_separator:
+                handle.write("\n")
             handle.write(content)
         return f"appended:{relative_path.as_posix()}"
 
@@ -532,13 +541,21 @@ class ObsidianCLI:
         return "\n".join(lines)
 
     def audit_unresolved(self, *, verbose: bool, scope: Optional[Path] = None) -> str:
-        existing_stems = {note.stem for note in self.vault_path.rglob("*.md")}
+        existing_notes = list(self.vault_path.rglob("*.md"))
+        existing_stems = {note.stem for note in existing_notes}
+        existing_paths = {note.resolve() for note in existing_notes}
         counts: Dict[str, int] = {}
         sources: Dict[str, List[str]] = {}
         for note in self._audit_notes(scope):
             body = note.read_text(encoding="utf-8")
-            for target in _extract_wikilinks(body):
-                if target in existing_stems:
+            for target in _extract_wikilinks(body, preserve_paths=True):
+                if "/" in target:
+                    resolved = any(candidate.resolve() in existing_paths for candidate in (
+                        self.vault_path / f"{target}.md", note.parent / f"{target}.md"
+                    ))
+                else:
+                    resolved = target in existing_stems
+                if resolved:
                     continue
                 counts[target] = counts.get(target, 0) + 1
                 sources.setdefault(target, []).append(
@@ -893,7 +910,7 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
         ]
     )
 
-    return {
+    notes = {
         paths.home: home,
         paths.moc: moc,
         paths.run_log: run_log,
@@ -905,6 +922,15 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
         paths.release_notes: release_notes,
         paths.current_memory: current_memory,
     }
+    # Seed notes are written into a shared vault: qualify every project-local
+    # link so a second project with the same hub/topic names cannot capture it.
+    local_links = {path.stem: _wikilink(path) for path in notes}
+    local_links[project_home_title] = _wikilink(paths.home)
+    for path, body in list(notes.items()):
+        for stem, link in local_links.items():
+            body = body.replace(f"[[{stem}]]", link)
+        notes[path] = body
+    return notes
 
 
 def parse_tags(raw_tags: str) -> List[str]:
@@ -1061,7 +1087,7 @@ def _search_priority(relative_path: str) -> int:
     return 50
 
 
-def _extract_wikilinks(body: str) -> List[str]:
+def _extract_wikilinks(body: str, *, preserve_paths: bool = False) -> List[str]:
     body = re.sub(r"```.*?```|~~~.*?~~~", "", body, flags=re.DOTALL)
     body = re.sub(r"`[^`\n]*`", "", body)
     links: List[str] = []
@@ -1070,7 +1096,7 @@ def _extract_wikilinks(body: str) -> List[str]:
         target = raw.split("|", maxsplit=1)[0].split("#", maxsplit=1)[0].strip()
         if not target:
             continue
-        stem = Path(target).name
+        stem = target if preserve_paths else Path(target).name
         if stem.casefold().endswith(".md"):
             stem = stem[:-3]
         if stem and stem not in seen:
@@ -1103,7 +1129,7 @@ def ensure_project_dirs(vault_path: Path, paths: NotePaths, dry_run: bool) -> No
 
 
 def ensure_projects_index(cli: ObsidianCLI, paths: NotePaths) -> None:
-    entry = f"- [[{paths.home.stem}]] (`{paths.project_slug}`)"
+    entry = f"- {_wikilink(paths.home)} (`{paths.project_slug}`)"
     index_content = "\n".join(
         [
             build_frontmatter(
@@ -1139,6 +1165,7 @@ def bootstrap_project(cli: ObsidianCLI, project: str) -> NotePaths:
             candidate
             for candidate in project_dir.glob("*.md")
             if candidate.name.casefold() == paths.home.name.casefold()
+            or slugify(candidate.stem.removesuffix(" Home")) == paths.project_slug
         ]
         if len(canonical_homes) == 1:
             paths.home = canonical_homes[0].relative_to(cli.vault_path)
@@ -1188,6 +1215,7 @@ def resolve_note_path(vault_path: Path, paths: NotePaths, reference: str) -> Opt
     wikilink_match = re.match(r"^\[\[(.+?)\]\]$", raw)
     if wikilink_match:
         raw = wikilink_match.group(1).strip()
+    raw = raw.split("|", 1)[0].split("#", 1)[0]
     # Full relative path under Project Memory/.
     candidate = Path(raw)
     if candidate.suffix.lower() == ".md":
@@ -1204,15 +1232,20 @@ def resolve_note_path(vault_path: Path, paths: NotePaths, reference: str) -> Opt
     project_abs = vault_path / paths.project_dir
     if not project_abs.exists():
         return None
-    target_stem = raw
-    for md_file in project_abs.rglob("*.md"):
-        if md_file.stem == target_stem:
-            return md_file.relative_to(vault_path)
-    return None
+    target_stem = raw[:-3] if raw.endswith(".md") else raw
+    for preferred in (project_abs / f"{target_stem}.md", project_abs / "Topics" / f"{target_stem}.md"):
+        if preferred.is_file():
+            return preferred.relative_to(vault_path)
+    matches = [p for p in project_abs.rglob("*.md") if p.stem == target_stem]
+    return matches[0].relative_to(vault_path) if len(matches) == 1 else None
 
 
 def _related_entry(target_stem: str, reason: Optional[str]) -> str:
-    base = f"- [[{target_stem}]]"
+    if "/" in target_stem:
+        target = Path(target_stem)
+        base = f"- {_wikilink(target)}"
+    else:
+        base = f"- [[{target_stem}]]"
     if reason and reason.strip():
         return f"{base} — {reason.strip()}"
     return base
@@ -1269,7 +1302,7 @@ def ensure_related_link(
     absolute = cli.vault_path / note_path
     if not absolute.exists():
         return f"missing:{note_path.as_posix()}"
-    if target_stem == note_path.stem:
+    if target_stem in (note_path.stem, note_path.with_suffix("").as_posix(), note_path.as_posix()):
         return f"self:{note_path.as_posix()}"
     if cli.dry_run:
         return f"[dry-run] weave {note_path.as_posix()} ← [[{target_stem}]]"
@@ -1293,9 +1326,12 @@ def _remove_related_entry(body: str, target_stem: str) -> Tuple[str, bool]:
     lines = body.splitlines()
     kept: List[str] = []
     removed = False
+    in_related = False
     for line in lines:
         stripped = line.lstrip()
-        if stripped.startswith(("-", "*")) and pattern.search(line):
+        if stripped.startswith("#"):
+            in_related = stripped.strip() == RELATED_HEADING
+        if in_related and stripped.startswith(("-", "*")) and pattern.search(line):
             removed = True
             continue
         kept.append(line)
@@ -1316,6 +1352,13 @@ def remove_related_link(cli: ObsidianCLI, note_path: Path, target_stem: str) -> 
         return f"[dry-run] unweave {note_path.as_posix()} ↛ [[{target_stem}]]"
     body = absolute.read_text(encoding="utf-8")
     updated, removed = _remove_related_entry(body, target_stem)
+    # Legacy links used bare stems. Only match those within the same project;
+    # a qualified link to another project's same-named note must survive.
+    target_path = Path(target_stem)
+    if "/" in target_stem and target_path.parts[:2] == note_path.parts[:2]:
+        legacy_stem = target_path.name.removesuffix(".md")
+        updated, legacy_removed = _remove_related_entry(updated, legacy_stem)
+        removed = removed or legacy_removed
     if not removed:
         return f"absent:{note_path.as_posix()} (no [[{target_stem}]] entry)"
     absolute.write_text(updated, encoding="utf-8")
@@ -1334,10 +1377,9 @@ def unweave_bidirectional(
     from one side only.
     """
     statuses: List[str] = []
-    source_stem = source_path.stem
     for neighbor in neighbor_paths:
-        statuses.append(remove_related_link(cli, source_path, neighbor.stem))
-        statuses.append(remove_related_link(cli, neighbor, source_stem))
+        statuses.append(remove_related_link(cli, source_path, neighbor.with_suffix("").as_posix()))
+        statuses.append(remove_related_link(cli, neighbor, source_path.with_suffix("").as_posix()))
     return statuses
 
 
@@ -1353,12 +1395,10 @@ def weave_bidirectional(
     two statuses per neighbor: forward + reverse).
     """
     results: List[str] = []
-    source_stem = source_path.stem
     for neighbor in neighbor_paths:
-        neighbor_stem = neighbor.stem
-        forward = ensure_related_link(cli, source_path, neighbor_stem, reason)
+        forward = ensure_related_link(cli, source_path, neighbor.with_suffix("").as_posix(), reason)
         results.append(f"→ {forward}")
-        reverse = ensure_related_link(cli, neighbor, source_stem, reason)
+        reverse = ensure_related_link(cli, neighbor, source_path.with_suffix("").as_posix(), reason)
         results.append(f"← {reverse}")
     return results
 
@@ -1451,6 +1491,8 @@ class RunMemory:
     decisions: str
     questions: str
     keywords: List[str]
+    source_path: Optional[Path] = None
+    source_stem: Optional[str] = None
 
 
 @dataclass
@@ -1816,7 +1858,13 @@ def _topic_by_key(topics: List[TopicMemory]) -> Dict[str, TopicMemory]:
 
 
 def _wikilink(path_or_stem: Path | str) -> str:
-    stem = path_or_stem.stem if isinstance(path_or_stem, Path) else Path(path_or_stem).stem
+    if isinstance(path_or_stem, Path):
+        target = path_or_stem.as_posix()
+        if target.lower().endswith(".md"):
+            target = target[:-3]
+        alias = path_or_stem.name[:-3] if path_or_stem.name.lower().endswith(".md") else path_or_stem.name
+        return f"[[{target}|{alias}]]"
+    stem = Path(path_or_stem).stem
     return f"[[{stem}]]"
 
 
@@ -1849,15 +1897,15 @@ def _build_topic_note(project: str, paths: NotePaths, topic: TopicMemory, topics
         "",
         f"# {topic.title}",
         "",
-        f"Current memory: [[{paths.current_memory.stem}]]",
-        f"MOC: [[{paths.moc.stem}]]",
+        f"Current memory: {_wikilink(paths.current_memory)}",
+        f"MOC: {_wikilink(paths.moc)}",
         "",
         "## Key Takeaways",
     ]
     lines.extend(f"- {item}" for item in summaries or ["No durable summary extracted yet."])
     lines.extend(["", "## Gotchas"])
     lines.extend(
-        f"- {sentence} Source: [[{run.stem}]]" for sentence, run in gotchas
+        f"- {sentence} Source: {_wikilink(run.path)}" for sentence, run in gotchas
     )
     if not gotchas:
         lines.append("- None extracted.")
@@ -1867,11 +1915,11 @@ def _build_topic_note(project: str, paths: NotePaths, topic: TopicMemory, topics
     lines.extend(f"- {item}" for item in actions or ["None extracted."])
     lines.extend(["", "## Related Topics"])
     related_topics = [by_key[key] for key in topic.related if key in by_key]
-    lines.extend(f"- [[{related.path.stem}]]" for related in related_topics)
+    lines.extend(f"- {_wikilink(related.path)}" for related in related_topics)
     if not related_topics:
         lines.append("- None yet.")
     lines.extend(["", "## Source Runs"])
-    lines.extend(f"- [[{run.stem}]]: {_distilled_preview(run.summary, run.title)}" for run in source_runs)
+    lines.extend(f"- {_wikilink(run.path)}: {_distilled_preview(run.summary, run.title)}" for run in source_runs)
     if len(topic.runs) > len(source_runs):
         lines.append(f"- {len(topic.runs) - len(source_runs)} additional archived source run(s) omitted from this list.")
     return "\n".join(lines)
@@ -1897,20 +1945,20 @@ def _build_current_memory_note(
         "",
         f"# {paths.current_memory.stem}",
         "",
-        f"Parent note: [[{paths.home.stem}]]",
-        f"MOC: [[{paths.moc.stem}]]",
-        f"Latest compaction: [[{compaction_path.stem}]]",
+        f"Parent note: {_wikilink(paths.home)}",
+        f"MOC: {_wikilink(paths.moc)}",
+        f"Latest compaction: {_wikilink(compaction_path)}",
         "",
         "## High-Signal Memory",
     ]
     for topic in top_topics:
         preview = _unique_sentences((run.summary for run in topic.runs), 1)
         suffix = f" — {preview[0]}" if preview else ""
-        lines.append(f"- [[{topic.path.stem}]] ({len(topic.runs)} source run(s)){suffix}")
+        lines.append(f"- {_wikilink(topic.path)} ({len(topic.runs)} source run(s)){suffix}")
     if not top_topics:
         lines.append("- No topics compacted yet.")
     lines.extend(["", "## Important Gotchas"])
-    lines.extend(f"- {sentence} Source: [[{run.stem}]]" for sentence, run in gotchas)
+    lines.extend(f"- {sentence} Source: {_wikilink(run.path)}" for sentence, run in gotchas)
     if not gotchas:
         lines.append("- None extracted.")
     lines.extend(["", "## Durable Decisions"])
@@ -1941,8 +1989,8 @@ def _build_compaction_note(
         "",
         f"# {compaction_path.stem}",
         "",
-        f"Current memory: [[{paths.current_memory.stem}]]",
-        f"MOC: [[{paths.moc.stem}]]",
+        f"Current memory: {_wikilink(paths.current_memory)}",
+        f"MOC: {_wikilink(paths.moc)}",
         "",
         "## Result",
         f"- Compacted {batch_count} new raw run note(s) and distilled {len(runs)} total source run(s) into {len(topics)} topic note(s).",
@@ -1951,14 +1999,14 @@ def _build_compaction_note(
         "",
         "## Topics",
     ]
-    lines.extend(f"- [[{topic.path.stem}]]: {len(topic.runs)} source run(s)" for topic in topics)
+    lines.extend(f"- {_wikilink(topic.path)}: {len(topic.runs)} source run(s)" for topic in topics)
     lines.extend(["", "## Gotchas Preserved"])
-    lines.extend(f"- {sentence} Source: [[{run.stem}]]" for sentence, run in gotchas)
+    lines.extend(f"- {sentence} Source: {_wikilink(run.path)}" for sentence, run in gotchas)
     if not gotchas:
         lines.append("- None extracted.")
     lines.extend(["", "## Source Runs"])
     for run in runs[:COMPACTION_SOURCE_LIMIT]:
-        lines.append(f"- [[{run.stem}]]: {_distilled_preview(run.summary, run.title)}")
+        lines.append(f"- {_wikilink(run.path)}: {_distilled_preview(run.summary, run.title)}")
     if len(runs) > COMPACTION_SOURCE_LIMIT:
         lines.append(f"- {len(runs) - COMPACTION_SOURCE_LIMIT} additional archived source run(s) omitted from this list.")
     return "\n".join(lines)
@@ -1991,9 +2039,9 @@ def _archive_run_body(
     header_lines = [
         "",
         "## Archived Source",
-        f"- Compacted into [[{compaction_path.stem}]].",
+        f"- Compacted into {_wikilink(compaction_path)}.",
     ]
-    header_lines.extend(f"- Topic: [[{topic_path.stem}]]" for topic_path in topic_paths[:3])
+    header_lines.extend(f"- Topic: {_wikilink(topic_path)}" for topic_path in topic_paths[:3])
     header = "\n".join(header_lines)
     if "## Archived Source" in content:
         content = re.sub(
@@ -2030,10 +2078,12 @@ def _archive_runs(
 
     moved: List[Tuple[Path, Path]] = []
     for run in runs_to_archive:
-        source_abs = cli.vault_path / run.path
+        # The destination is assigned before compaction notes are generated;
+        # active source names remain stable and are used to perform the move.
+        source_abs = cli.vault_path / (run.source_path or paths.runs_dir / f"{run.source_stem or run.stem}.md")
         if not source_abs.exists():
             continue
-        dest = paths.archived_runs_dir / run.path.name
+        dest = run.path if run.path.parent == paths.archived_runs_dir else paths.archived_runs_dir / run.path.name
         dest_abs = cli.vault_path / dest
         suffix = 2
         while dest_abs.exists() and dest_abs != source_abs:
@@ -2087,7 +2137,7 @@ def _archive_stale_topics(
         body = topic_abs.read_text(encoding="utf-8")
         body = _without_related_section(body)
         body = body.rstrip() + "\n\n## Archived Topic\n"
-        body += f"- Superseded by [[{compaction_path.stem}]].\n"
+        body += f"- Superseded by {_wikilink(compaction_path)}.\n"
         dest_abs.parent.mkdir(parents=True, exist_ok=True)
         dest_abs.write_text(body, encoding="utf-8")
         topic_abs.unlink()
@@ -2171,11 +2221,31 @@ def _collect_archived_runs(vault_path: Path, paths: NotePaths) -> List[RunMemory
 
 
 def _merge_run_history(historical: List[RunMemory], active: List[RunMemory]) -> List[RunMemory]:
-    """Combine archived evidence with the current batch without duplicate stems."""
-    by_stem: Dict[str, RunMemory] = {run.stem: run for run in historical}
+    """Combine archived evidence with the current batch without path collisions."""
+    by_path: Dict[str, RunMemory] = {run.path.as_posix(): run for run in historical}
     for run in active:
-        by_stem[run.stem] = run
-    return sorted(by_stem.values(), key=lambda run: (run.created, run.path.as_posix()))
+        by_path[run.path.as_posix()] = run
+    return sorted(by_path.values(), key=lambda run: (run.created, run.path.as_posix()))
+
+
+def _plan_archive_destinations(
+    vault_path: Path, paths: NotePaths, runs: List[RunMemory]
+) -> None:
+    """Assign stable archive paths before any distilled links are rendered."""
+    reserved: set[Path] = set()
+    archive_dir = vault_path / paths.archived_runs_dir
+    for run in runs:
+        run.source_path = run.path
+        run.source_stem = run.stem
+        desired = paths.archived_runs_dir / run.path.name
+        candidate = desired
+        suffix = 2
+        while (archive_dir / candidate.name).exists() or candidate in reserved:
+            candidate = paths.archived_runs_dir / f"{desired.stem}-{suffix}.md"
+            suffix += 1
+        reserved.add(candidate)
+        run.path = candidate
+        run.stem = candidate.stem
 
 
 def _unique_compaction_path(vault_path: Path, desired: Path) -> Path:
@@ -2263,11 +2333,11 @@ def cmd_record_run(args: argparse.Namespace) -> None:
             "",
             f"# {args.title.strip()}",
             "",
-            f"Parent note: [[{paths.home.stem}]]",
-            f"MOC: [[{paths.moc.stem}]]",
-            f"Run log: [[{paths.run_log.stem}]]",
-            f"Decision register: [[{paths.decisions.stem}]]",
-            f"Question log: [[{paths.questions.stem}]]",
+            f"Parent note: {_wikilink(paths.home)}",
+            f"MOC: {_wikilink(paths.moc)}",
+            f"Run log: {_wikilink(paths.run_log)}",
+            f"Decision register: {_wikilink(paths.decisions)}",
+            f"Question log: {_wikilink(paths.questions)}",
             "",
             "## Prompt",
             args.prompt.strip(),
@@ -2288,16 +2358,16 @@ def cmd_record_run(args: argparse.Namespace) -> None:
     cli.ensure_note(run_note_path, run_note)
     cli.append(
         paths.run_log,
-        f"- [[{run_note_path.stem}]]: {args.summary.strip()}",
+        f"- {_wikilink(run_note_path)}: {args.summary.strip()}",
     )
     cli.append(
         paths.moc,
-        f"- [[{run_note_path.stem}]]: {args.summary.strip()}",
+        f"- {_wikilink(run_note_path)}: {args.summary.strip()}",
     )
     if args.decisions:
-        cli.append(paths.decisions, f"- [[{run_note_path.stem}]]: {args.decisions.strip()}")
+        cli.append(paths.decisions, f"- {_wikilink(run_note_path)}: {args.decisions.strip()}")
     if args.questions:
-        cli.append(paths.questions, f"- [[{run_note_path.stem}]]: {args.questions.strip()}")
+        cli.append(paths.questions, f"- {_wikilink(run_note_path)}: {args.questions.strip()}")
     print(f"Recorded run note: {run_note_path.as_posix()}")
 
     # Bidirectional weaving — runs automatically unless explicitly disabled.
@@ -2531,6 +2601,11 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
         return
     runs = _merge_run_history(historical_runs, batch_runs)
 
+    if not args.no_archive:
+        _plan_archive_destinations(vault_path, paths, batch_runs)
+        # Keep the merged view in sync with the paths used in generated links.
+        runs = _merge_run_history(historical_runs, batch_runs)
+
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
     compaction_path = _unique_compaction_path(
         vault_path,
@@ -2570,13 +2645,13 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
 
     # Intentional neural-network edges: distilled memory is densely linked,
     # archived source notes are sparse evidence.
-    ensure_related_link(cli, paths.current_memory, compaction_path.stem, "latest compaction")
-    ensure_related_link(cli, compaction_path, paths.current_memory.stem, "distilled project memory")
+    ensure_related_link(cli, paths.current_memory, compaction_path.with_suffix("").as_posix(), "latest compaction")
+    ensure_related_link(cli, compaction_path, paths.current_memory.with_suffix("").as_posix(), "distilled project memory")
     for topic in topics:
-        ensure_related_link(cli, paths.current_memory, topic.path.stem, f"{len(topic.runs)} source run(s)")
-        ensure_related_link(cli, topic.path, paths.current_memory.stem, "current project memory")
-        ensure_related_link(cli, compaction_path, topic.path.stem, f"{len(topic.runs)} source run(s)")
-        ensure_related_link(cli, topic.path, compaction_path.stem, "compaction source map")
+        ensure_related_link(cli, paths.current_memory, topic.path.with_suffix("").as_posix(), f"{len(topic.runs)} source run(s)")
+        ensure_related_link(cli, topic.path, paths.current_memory.with_suffix("").as_posix(), "current project memory")
+        ensure_related_link(cli, compaction_path, topic.path.with_suffix("").as_posix(), f"{len(topic.runs)} source run(s)")
+        ensure_related_link(cli, topic.path, compaction_path.with_suffix("").as_posix(), "compaction source map")
     topic_map = _topic_by_key(topics)
     for topic in topics:
         related_paths = [topic_map[key].path for key in topic.related if key in topic_map]
@@ -2597,18 +2672,18 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
     else:
         print("Archive step skipped by --no-archive.")
 
-    stems = {run.stem for run in batch_runs}
+    stems = {run.source_stem or run.stem for run in batch_runs}
     pruned = 0
     for hub in [paths.run_log, paths.moc, paths.decisions, paths.questions]:
         pruned += _remove_lines_linking_stems(cli, hub, stems)
     summary = (
-        f"- [[{compaction_path.stem}]]: Compacted {len(batch_runs)} run note(s) "
+        f"- {_wikilink(compaction_path)}: Compacted {len(batch_runs)} run note(s) "
         f"and distilled {len(runs)} total source run(s) into {len(topics)} topic note(s); "
         f"archived raw sources under `{paths.archived_runs_dir.as_posix()}`."
     )
     _append_unique_line(cli, paths.run_log, summary)
     _append_unique_line(cli, paths.moc, summary)
-    _append_unique_line(cli, paths.decisions, f"- [[{compaction_path.stem}]]: Prefer [[{paths.current_memory.stem}]] and topic notes before raw archived run notes for retrieval.")
+    _append_unique_line(cli, paths.decisions, f"- {_wikilink(compaction_path)}: Prefer {_wikilink(paths.current_memory)} and topic notes before raw archived run notes for retrieval.")
     print(f"Pruned hub/index lines pointing at compacted runs: {pruned}")
 
     active_runs = len(list((vault_path / paths.runs_dir).glob("*.md"))) if (vault_path / paths.runs_dir).exists() else 0
