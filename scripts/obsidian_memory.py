@@ -13,7 +13,10 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -270,6 +273,17 @@ class ConfigStore:
         if not isinstance(value, int):
             return DEFAULT_AUDIT_EVERY_RUNS
         return max(0, value)
+
+    def get_search_ranker(self) -> str:
+        ranker = self.load().get("search_ranker", "local")
+        return ranker if ranker in ("local", "auto", "jev") else "local"
+
+    def set_search_ranker(self, ranker: str) -> None:
+        if ranker not in ("local", "auto", "jev"):
+            raise ValueError(f"Invalid search ranker: {ranker}")
+        data = self.load()
+        data["search_ranker"] = ranker
+        self.save(data)
 
     def set_audit_every_runs(self, runs: int) -> None:
         data = self.load()
@@ -2438,17 +2452,116 @@ def _build_or_query(raw_query: str) -> str:
     return "(" + " OR ".join(words) + ")"
 
 
+def _jev_rerank(
+    cli: ObsidianCLI, query: str, hits: List[Tuple[int, str]], api_key: str,
+) -> List[Tuple[int, str, float]]:
+    """Score a bounded local shortlist in one Jev request; keep paths and ties stable."""
+    questions = {}
+    for index, (_score, path) in enumerate(hits):
+        excerpt = _note_excerpt(cli.read(Path(path)), max_chars=1200, query=query)
+        questions[f"candidate_{index}"] = {
+            "type": "noul",
+            "instructions": {
+                "title": Path(path).stem,
+                "excerpt": excerpt,
+                "question": (
+                    "Does this memory contain specific evidence useful for answering "
+                    "the memory query in state? Judge this candidate independently. "
+                    "Mere keyword overlap without useful evidence means no."
+                ),
+            },
+        }
+    payload = json.dumps({
+        "model": "jev-latest",
+        "state": {"memory_query": query},
+        "questions": questions,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.typesafe.ai/v1/systemone",
+        data=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            answers = json.load(response)["answers"]
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Jev ranking request failed (HTTP {exc.code})") from exc
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("Jev ranking request failed") from exc
+    ranked = []
+    try:
+        for index, (score, path) in enumerate(hits):
+            answer = answers[f"candidate_{index}"]
+            probability = answer["noul"]
+            if (answer["type"] != "noul" or isinstance(probability, bool)
+                    or not isinstance(probability, (int, float))
+                    or not math.isfinite(probability) or not 0 <= probability <= 1):
+                raise ValueError("invalid Jev answer")
+            ranked.append((score, path, float(probability)))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("Jev returned an incomplete ranking") from exc
+    return [
+        item for _index, item in sorted(
+            enumerate(ranked), key=lambda pair: (-pair[1][2], pair[0])
+        )
+    ]
+
+
 def cmd_search(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
     project_slug = slugify(args.project)
     or_query = _build_or_query(args.query)
     scoped_query = f"{or_query} path:\"{PROJECT_ROOT}/{project_slug}\""
-    command_args = [f"query={scoped_query}", f"limit={getattr(args, 'limit', 3)}"]
+    limit = getattr(args, "limit", 3)
+    ranker = getattr(args, "ranker", None) or ConfigStore().get_search_ranker()
+    api_key = os.environ.get("TYPESAFE_API_KEY", "")
+    use_jev = not args.dry_run and (ranker == "jev" or ranker == "auto" and bool(api_key))
+    if ranker == "jev" and not api_key and not args.dry_run:
+        raise RuntimeError("Jev ranking requires TYPESAFE_API_KEY")
+    if limit > 30 and use_jev:
+        if ranker == "jev":
+            raise RuntimeError("Jev ranking supports --limit up to 30")
+        use_jev = False
+    candidate_limit = min(30, max(limit * 4, 12)) if use_jev else limit
+    local_args = [f"query={scoped_query}", f"limit={limit}"]
+    command_args = [f"query={scoped_query}", f"limit={candidate_limit}"]
     if getattr(args, "include_archive", False):
         command_args.append("include-archive")
+        local_args.append("include-archive")
     output = cli.run("search", *command_args)
-    print(output)
+    if not use_jev:
+        print(output)
+        return
+    candidates = []
+    for line in output.splitlines()[1:]:
+        match = re.fullmatch(r"\s+(.+\.md) \(score (\d+)\)", line)
+        if match is None:
+            if ranker == "jev":
+                raise RuntimeError("Cannot read local search results for Jev ranking")
+            print("Jev ranking skipped: unrecognized local search results", file=sys.stderr)
+            print(cli.run("search", *local_args))
+            return
+        candidates.append((int(match.group(2)), match.group(1)))
+    try:
+        ranked = _jev_rerank(cli, args.query, candidates, api_key) if len(candidates) > 1 else [
+            (score, path, 1.0) for score, path in candidates
+        ]
+    except RuntimeError as exc:
+        if ranker == "jev":
+            raise
+        print(f"Jev ranking skipped: {exc}; using local results", file=sys.stderr)
+        print(cli.run("search", *local_args))
+        return
+    if not candidates:
+        print(output)
+        return
+    header = output.splitlines()[0].replace(f"showing {len(candidates)}", f"showing {min(limit, len(candidates))}")
+    print(f"{header} Ranked by Jev.")
+    for score, path, probability in ranked[:limit]:
+        print(f"  {path} (score {score}; Jev {probability:.2f})")
+
 
 
 def _positive_int(value: str) -> int:
@@ -2803,6 +2916,11 @@ def cmd_set_audit_frequency(args: argparse.Namespace) -> None:
     print(f"Saved auto-audit frequency: every {max(0, args.runs)} run(s).")
 
 
+def cmd_set_search_ranker(args: argparse.Namespace) -> None:
+    ConfigStore().set_search_ranker(args.ranker)
+    print(f"Saved local search ranker preference: {args.ranker}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Obsidian project memory bank helper")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2927,6 +3045,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser_search.add_argument("--query", required=True, help="Search query")
     parser_search.add_argument("--limit", type=_positive_int, default=3, help="Maximum hits (default: 3; use 25 for broader discovery)")
     parser_search.add_argument(
+        "--ranker", choices=("local", "auto", "jev"),
+        help="Override private preference (default: local). auto uses Jev with TYPESAFE_API_KEY",
+    )
+    parser_search.add_argument(
         "--include-archive",
         action="store_true",
         help="Also search archived evidence notes under Archive/.",
@@ -2934,6 +3056,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser_search.add_argument("--workspace", help="Workspace path override")
     parser_search.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser_search.set_defaults(func=cmd_search)
+
+    parser_search_ranker = subparsers.add_parser(
+        "set-search-ranker", help="Save a private search ranking preference (default: local)",
+    )
+    parser_search_ranker.add_argument("--ranker", choices=("local", "auto", "jev"), required=True)
+    parser_search_ranker.set_defaults(func=cmd_set_search_ranker)
 
     parser_compact = subparsers.add_parser(
         "compact-project",

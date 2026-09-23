@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,12 +29,88 @@ class RetrievalBudgetTests(unittest.TestCase):
             internal = ObsidianCLI(vault_path=vault, dry_run=False).run('search', 'query=export path:"Project Memory/demo"')
             self.assertEqual(len(internal.splitlines()), 9)
             args = ('search', '--project', 'demo', '--query', 'export')
-            default = self.command(vault, *args)
+            with patch.dict('os.environ', {'TYPESAFE_API_KEY': ''}):
+                default = self.command(vault, *args)
             self.assertIn('Found 8 hits; showing 3.', default)
             self.assertEqual(len(default.splitlines()), 4)
-            expanded = self.command(vault, *args, '--limit', '10', '--include-archive')
+            expanded = self.command(vault, *args, '--limit', '10', '--include-archive', '--ranker', 'local')
             self.assertIn('Found 9 hits; showing 9.', expanded)
             self.assertIn('Archive/old.md', expanded)
+
+    def test_jev_reranks_local_shortlist_and_sends_bounded_excerpts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / 'Project Memory/demo'
+            root.mkdir(parents=True)
+            for i in range(5):
+                (root / f'note-{i}.md').write_text('export progress\n' + 'detail ' * 500)
+            (root / 'Archive').mkdir()
+            (root / 'Archive/old.md').write_text('export progress')
+            answers = {
+                f'candidate_{i}': {'type': 'noul', 'noul': 0.95 if i == 4 else 0.2}
+                for i in range(5)
+            }
+            response = io.BytesIO(json.dumps({'answers': answers}).encode())
+            with patch.dict('os.environ', {'TYPESAFE_API_KEY': 'test-key'}), patch(
+                'scripts.obsidian_memory.urllib.request.urlopen', return_value=response
+            ) as urlopen:
+                output = self.command(
+                    vault, 'search', '--project', 'demo', '--query', 'export progress',
+                    '--ranker', 'auto',
+                )
+            self.assertIn('showing 3. Ranked by Jev.', output)
+            self.assertEqual(len(output.splitlines()), 4)
+            self.assertIn('note-4.md', output.splitlines()[1])
+            request = urlopen.call_args.args[0]
+            self.assertEqual(request.full_url, 'https://api.typesafe.ai/v1/systemone')
+            payload = json.loads(request.data)
+            self.assertEqual(payload['model'], 'jev-latest')
+            self.assertEqual(len(payload['questions']), 5)
+            excerpt = payload['questions']['candidate_0']['instructions']['excerpt']
+            self.assertLessEqual(len(excerpt.split('\n[Excerpt:')[0]), 1200)
+            self.assertNotIn('old.md', json.dumps(payload))
+
+    def test_jev_failure_falls_back_in_auto_and_explicit_mode_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / 'Project Memory/demo'
+            root.mkdir(parents=True)
+            for i in range(4):
+                (root / f'note-{i}.md').write_text('export progress')
+            args = ('search', '--project', 'demo', '--query', 'export')
+            with patch.dict('os.environ', {'TYPESAFE_API_KEY': 'test-key'}), patch(
+                'scripts.obsidian_memory.urllib.request.urlopen', side_effect=OSError('offline')
+            ):
+                self.assertIn('Found 4 hits; showing 3.', self.command(vault, *args, '--ranker', 'auto'))
+                with self.assertRaisesRegex(RuntimeError, 'Jev ranking request failed'):
+                    self.command(vault, *args, '--ranker', 'jev')
+            with patch.dict('os.environ', {'TYPESAFE_API_KEY': ''}):
+                with self.assertRaisesRegex(RuntimeError, 'requires TYPESAFE_API_KEY'):
+                    self.command(vault, *args, '--ranker', 'jev')
+
+    def test_jev_is_off_by_default_and_private_preference_stores_no_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / 'vault'
+            root = vault / 'Project Memory/demo'
+            root.mkdir(parents=True)
+            for i in range(4):
+                (root / f'note-{i}.md').write_text('export progress')
+            state = Path(tmp) / 'private-state.json'
+            args = ('search', '--project', 'demo', '--query', 'export')
+            answers = {
+                f'candidate_{i}': {'type': 'noul', 'noul': 0.9 if i == 3 else 0.1}
+                for i in range(4)
+            }
+            response = io.BytesIO(json.dumps({'answers': answers}).encode())
+            with patch.dict('os.environ', {
+                'TYPESAFE_API_KEY': 'test-key', 'OBMEM_STATE_FILE': str(state),
+            }), patch('scripts.obsidian_memory.urllib.request.urlopen', return_value=response) as urlopen:
+                self.assertNotIn('Jev', self.command(vault, *args))
+                urlopen.assert_not_called()
+                self.command(vault, 'set-search-ranker', '--ranker', 'auto')
+                self.assertIn('note-3.md', self.command(vault, *args).splitlines()[1])
+                self.assertEqual(json.loads(state.read_text())['search_ranker'], 'auto')
+                self.assertNotIn('test-key', state.read_text())
 
     def test_read_budget_query_continuation_and_full(self):
         with tempfile.TemporaryDirectory() as tmp:

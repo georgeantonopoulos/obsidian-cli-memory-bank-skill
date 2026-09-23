@@ -93,6 +93,35 @@ obmem audit --project "My Project"
 obmem compact-project --project "My Project" --max-runs 25 --dry-run
 ```
 
+### Optional Jev ranking
+
+Search is local by default, even when `TYPESAFE_API_KEY` is set. Each user can
+opt in to Jev with their own TypeSafe API key. Jev receives the query, note titles,
+and up to 1,200 source characters from each of at most 30 matching notes, then
+ranks the shortlist before the CLI shows the best three. Archived notes stay
+excluded unless you pass `--include-archive`.
+
+```bash
+# Enter your own key privately for this shell session (input is hidden).
+export TYPESAFE_API_KEY="$(python3 -c 'import getpass; print(getpass.getpass("TypeSafe API key: "))')"
+
+# Enable Jev for one search, or save your private preference for future searches.
+obmem search --project "My Project" --query "retry queue" --ranker jev
+obmem set-search-ranker --ranker auto
+obmem search --project "My Project" --query "retry queue"
+
+# Switch back to local search at any time.
+obmem set-search-ranker --ranker local
+```
+
+The saved ranking preference lives in the CLI's private, Git-ignored state file;
+the API key stays in your environment or your own secret manager. Never put a
+key in the repository, a committed `.env` file, or a command argument. `auto`
+uses local ranking if the key is absent or Jev fails. `--ranker jev` requires
+a working key and reports API failures. `--ranker local` overrides a saved
+preference for one search. Jev ranking supports `--limit` up to 30; larger
+discovery searches stay local.
+
 ## Runtime Integrations
 
 The skill works anywhere an agent can run shell commands. For runtimes with lifecycle hooks, adapter scripts automate the memory operations at the right moments:
