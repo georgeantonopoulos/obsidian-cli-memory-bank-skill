@@ -1,119 +1,85 @@
 #!/usr/bin/env python3
 """Claude Code PostToolUse hook: sync MEMORY file writes to Obsidian.
 
-Fires after Write or Edit tool calls. Filters for file paths containing
-'/memory/' or 'MEMORY.md' to detect Claude's auto-memory saves.
-When a memory write is detected, records the content as an Obsidian note
-so that project knowledge is mirrored in the vault.
+Fires after Write or Edit tool calls. Only Claude Code's own auto-memory
+files (~/.claude/projects/<project>/memory/*.md) are mirrored; other paths
+that merely contain "memory" are ignored.
 
-Requires: obmem CLI installed via pipx.
+Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this file.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
-
-def truncate(text: str, limit: int) -> str:
-    text = " ".join(text.split())
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).parent))
+from obsidian_hook_common import active_context, read_payload, record_run  # noqa: E402
 
 
 def _is_memory_path(file_path: str) -> bool:
-    """Check if the file path looks like a Claude auto-memory file."""
-    p = file_path.lower()
-    return "/memory/" in p or p.endswith("memory.md")
+    """True for Claude Code auto-memory files: ~/.claude/projects/*/memory/*.md."""
+    parts = Path(file_path).expanduser().parts
+    if not file_path.lower().endswith(".md") or len(parts) < 4:
+        return False
+    for index in range(len(parts) - 3):
+        if parts[index] == ".claude" and parts[index + 1] == "projects" and "memory" in parts[index + 3:-1]:
+            return True
+    return False
 
 
 def main() -> int:
-    raw = sys.stdin.read().strip()
-    if not raw:
+    payload = read_payload(sys.stdin.read())
+    if payload is None:
         return 0
 
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
+    if payload.get("tool_name", "") not in ("Write", "Edit", "MultiEdit"):
         return 0
 
-    if not isinstance(payload, dict):
-        return 0
-
-    # Only act on Write or Edit tool calls
-    tool_name = payload.get("tool_name", "")
-    if tool_name not in ("Write", "Edit"):
-        return 0
-
-    # Extract file path from tool input
     tool_input = payload.get("tool_input", {})
     if isinstance(tool_input, str):
         try:
             tool_input = json.loads(tool_input)
         except json.JSONDecodeError:
             return 0
+    if not isinstance(tool_input, dict):
+        return 0
 
     file_path = tool_input.get("file_path", "")
     if not file_path or not _is_memory_path(file_path):
         return 0
 
-    # Resolve workspace
-    cwd = payload.get("cwd") or payload.get("workspace") or "."
-    workspace = str(Path(cwd).resolve())
-    project_name = Path(workspace).name or "Project"
-
-    # Check if vault is mapped
-    check = subprocess.run(
-        ["obmem", "show-vault", "--workspace", workspace],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if check.returncode != 0:
+    context = active_context(payload)
+    if context is None:
         return 0
+    workspace, project = context
 
     # Read the actual file content from disk (post-write state)
     try:
         content = Path(file_path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        content = ""
-
+        return 0
     if not content.strip():
         return 0
 
-    # Determine which memory file was written
     memory_filename = Path(file_path).name
-
-    title = truncate(f"Memory sync: {memory_filename} ({project_name})", 80)
-
-    cmd = [
-        "obmem", "record-run",
-        "--project", project_name,
-        "--title", title,
-        "--prompt", f"Auto-memory file written: {file_path}",
-        "--summary", truncate(content, 3000),
-        "--actions", f"Claude wrote to {memory_filename}. Content synced to Obsidian vault.",
-        "--tags", "claude,auto-log,memory-sync",
-        "--workspace", workspace,
-    ]
-
-    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
-
+    result = record_run(
+        workspace, project,
+        title=f"Memory sync: {memory_filename} ({project})",
+        prompt=f"Auto-memory file written: {file_path}",
+        summary=content,
+        actions=f"Claude wrote to {memory_filename}. Content synced to Obsidian vault.",
+        tags="claude,auto-log,memory-sync",
+    )
     if result.returncode == 0:
-        print(
-            f"[obsidian-memory] Synced {memory_filename} to Obsidian vault.",
-            file=sys.stderr,
-        )
+        print(f"[obsidian-memory] Synced {memory_filename} to Obsidian vault.", file=sys.stderr)
     else:
         print(
-            f"[obsidian-memory] memory-sync record-run failed (non-blocking): "
-            f"{result.stderr[:200]}",
+            f"[obsidian-memory] memory-sync record-run failed (non-blocking): {result.stderr[:200]}",
             file=sys.stderr,
         )
-
     return 0
 
 

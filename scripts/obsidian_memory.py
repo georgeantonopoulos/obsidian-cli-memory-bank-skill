@@ -2454,8 +2454,15 @@ def _build_or_query(raw_query: str) -> str:
 
 def _jev_rerank(
     cli: ObsidianCLI, query: str, hits: List[Tuple[int, str]], api_key: str,
+    intent: str = "",
 ) -> List[Tuple[int, str, float]]:
-    """Score a bounded local shortlist in one Jev request; keep paths and ties stable."""
+    """Score a bounded local shortlist in one Jev request; keep paths and ties stable.
+
+    Follows TypeSafe's re-ranking guidance: one Noul per candidate, the question
+    names the fields it reads in backticks, and criteria separate useful evidence
+    from mere keyword overlap. ``intent`` (the fuller request) gives Jev more to
+    judge than the keyword query alone.
+    """
     questions = {}
     for index, (_score, path) in enumerate(hits):
         excerpt = _note_excerpt(cli.read(Path(path)), max_chars=1200, query=query)
@@ -2465,15 +2472,24 @@ def _jev_rerank(
                 "title": Path(path).stem,
                 "excerpt": excerpt,
                 "question": (
-                    "Does this memory contain specific evidence useful for answering "
-                    "the memory query in state? Judge this candidate independently. "
-                    "Mere keyword overlap without useful evidence means no."
+                    "Does `excerpt` record a specific decision, fix, setting, or fact "
+                    "that helps with the `request` in state?"
+                ),
+            },
+            "criteria": {
+                "true": (
+                    "`excerpt` states a concrete decision, fix, configuration, or fact "
+                    "about the subject of `request`."
+                ),
+                "false": (
+                    "`excerpt` only shares keywords or a broad topic with `request`, or "
+                    "only logs that work happened without the reusable detail."
                 ),
             },
         }
     payload = json.dumps({
         "model": "jev-latest",
-        "state": {"memory_query": query},
+        "state": {"request": intent.strip() or query, "keywords": query},
         "questions": questions,
     }).encode("utf-8")
     request = urllib.request.Request(
@@ -2545,7 +2561,7 @@ def cmd_search(args: argparse.Namespace) -> None:
             return
         candidates.append((int(match.group(2)), match.group(1)))
     try:
-        ranked = _jev_rerank(cli, args.query, candidates, api_key) if len(candidates) > 1 else [
+        ranked = _jev_rerank(cli, args.query, candidates, api_key, getattr(args, "intent", "") or "") if len(candidates) > 1 else [
             (score, path, 1.0) for score, path in candidates
         ]
     except RuntimeError as exc:
@@ -3043,6 +3059,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser_search = subparsers.add_parser("search", help="Search project memory")
     parser_search.add_argument("--project", required=True, help="Project display name")
     parser_search.add_argument("--query", required=True, help="Search query")
+    parser_search.add_argument(
+        "--intent",
+        help="Fuller request text for Jev to judge relevance against (default: --query). Not used for local search.",
+    )
     parser_search.add_argument("--limit", type=_positive_int, default=3, help="Maximum hits (default: 3; use 25 for broader discovery)")
     parser_search.add_argument(
         "--ranker", choices=("local", "auto", "jev"),

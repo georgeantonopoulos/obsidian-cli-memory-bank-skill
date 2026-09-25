@@ -3,93 +3,67 @@
 
 Context compaction compresses the conversation history, which may lose details.
 This hook captures a snapshot of the session so far as an Obsidian run note,
-ensuring important context survives across compaction boundaries.
+ensuring important context survives across compaction boundaries. The PreCompact
+payload has no summary, so the recent prompts are read from the transcript.
 
-Reads the hook payload from stdin (includes transcript_summary).
-Requires: obmem CLI installed via pipx.
+Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this file.
 """
 
 from __future__ import annotations
 
-import json
-import subprocess
 import sys
 from pathlib import Path
 
-
-def truncate(text: str, limit: int) -> str:
-    text = " ".join(text.split())
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).parent))
+from obsidian_hook_common import (  # noqa: E402
+    active_context,
+    read_payload,
+    recent_prompts,
+    record_run,
+    truncate,
+)
 
 
 def main() -> int:
-    raw = sys.stdin.read().strip()
-    if not raw:
+    payload = read_payload(sys.stdin.read())
+    if payload is None:
         return 0
-
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
+    context = active_context(payload)
+    if context is None:
         return 0
+    workspace, project = context
 
-    if not isinstance(payload, dict):
-        return 0
-
-    # Resolve workspace
-    cwd = payload.get("cwd") or payload.get("workspace") or "."
-    workspace = str(Path(cwd).resolve())
-    project_name = Path(workspace).name or "Project"
-
-    # Check if vault is mapped
-    check = subprocess.run(
-        ["obmem", "show-vault", "--workspace", workspace],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if check.returncode != 0:
-        return 0
-
-    # Extract transcript summary (provided by PreCompact event)
     summary = ""
     for key in ("transcript_summary", "summary", "context"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             summary = value.strip()
             break
-
+    if not summary and isinstance(payload.get("transcript_path"), str):
+        prompts = recent_prompts(payload["transcript_path"], limit=5)
+        if prompts:
+            summary = "Recent requests before compaction:\n" + "\n".join(
+                f"- {truncate(p, 500)}" for p in prompts
+            )
     if not summary:
         summary = "Context compaction occurred — no transcript summary available."
 
-    title = truncate(f"Pre-compaction snapshot: {project_name}", 80)
-
-    cmd = [
-        "obmem", "record-run",
-        "--project", project_name,
-        "--title", title,
-        "--prompt", "Automatic pre-compaction context capture.",
-        "--summary", truncate(summary, 3000),
-        "--actions", "Session context persisted to Obsidian before context window compaction.",
-        "--tags", "claude,auto-log,compaction",
-        "--workspace", workspace,
-    ]
-
-    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
-
+    result = record_run(
+        workspace, project,
+        title=f"Pre-compaction snapshot: {project}",
+        prompt="Automatic pre-compaction context capture.",
+        summary=summary,
+        actions="Session context persisted to Obsidian before context window compaction.",
+        tags="claude,auto-log,compaction",
+    )
     if result.returncode == 0:
-        print(
-            f"[obsidian-memory] Pre-compaction snapshot saved for {project_name}.",
-            file=sys.stderr,
-        )
+        print(f"[obsidian-memory] Pre-compaction snapshot saved for {project}.", file=sys.stderr)
     else:
         print(
-            f"[obsidian-memory] pre-compact record-run failed (non-blocking): "
-            f"{result.stderr[:200]}",
+            f"[obsidian-memory] pre-compact record-run failed (non-blocking): {result.stderr[:200]}",
             file=sys.stderr,
         )
-
     return 0
 
 

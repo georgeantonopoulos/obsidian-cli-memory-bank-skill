@@ -42,6 +42,7 @@ cp claude-code/hooks/obsidian_poststop_hook.py ~/.claude/hooks/
 cp claude-code/hooks/obsidian_precompact_hook.py ~/.claude/hooks/
 cp claude-code/hooks/obsidian_sessionstart_hook.py ~/.claude/hooks/
 cp claude-code/hooks/obsidian_memory_sync_hook.py ~/.claude/hooks/
+cp claude-code/hooks/obsidian_hook_common.py ~/.claude/hooks/   # shared helpers, required
 chmod +x ~/.claude/hooks/obsidian_*.py
 ```
 
@@ -111,11 +112,16 @@ If you already have hooks configured for these events, append the new hook group
 
 - **SessionStart** (session-start): Validates vault connectivity at session start. Surfaces warnings early if Obsidian is unreachable or the vault is misconfigured.
 - **UserPromptSubmit** (pre-prompt): Searches Obsidian for notes relevant to your prompt before Claude answers. Surfaces prior context automatically.
-- **Stop** (post-stop): Logs a structured run note to Obsidian after each agent stop. Captures what was asked and what was done.
-- **PreCompact** (pre-compaction): Saves a transcript summary to Obsidian before context compression. Prevents knowledge loss when conversations hit context limits.
-- **PostToolUse** (post-write/edit): Mirrors MEMORY.md writes to Obsidian vault. Fires only on `Write` or `Edit` tool calls targeting memory files (`*/memory/*` or `*MEMORY.md`).
+- **Stop** (post-stop): Logs a run note with the prompt (read from the transcript), the final reply, and the files changed. By default only turns that edited files are logged; set `OBMEM_STOP_LOG=all` to log every turn or `OBMEM_STOP_LOG=off` to disable.
+- **PreCompact** (pre-compaction): Saves the recent prompts to Obsidian before context compression. Prevents knowledge loss when conversations hit context limits.
+- **PostToolUse** (post-write/edit): Mirrors Claude Code auto-memory writes (`~/.claude/projects/*/memory/*.md`) to the vault.
 
 All hooks silently no-op when no vault is mapped for the current workspace.
+
+- **Project identity**: hooks use the directory Claude was launched in (`CLAUDE_PROJECT_DIR`, else the git root), so `cd`-ing into a subfolder does not file notes under another project.
+- **Secrets**: API keys, bearer tokens, `KEY=value` secrets and long opaque tokens are redacted before any search query, Jev request, or run note.
+- **Opt out**: `OBMEM_HOOKS=off` disables all hooks; an empty `.obmem-off` file in a project root disables them for that project.
+- **Prompt search**: skips short acknowledgements, ranks proper nouns and `identifiers` ahead of filler words, and prefers distilled notes over `Compactions/`, `Archive/` and `Runs/`. With the Jev ranker enabled it passes the redacted prompt as `--intent`.
 
 ## 4) First-time setup
 

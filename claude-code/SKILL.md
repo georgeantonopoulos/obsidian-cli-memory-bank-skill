@@ -18,13 +18,13 @@ obmem search --project "ProjectName" --query "specific subsystem decision"
 obmem read-note --path "Project Memory/project-name/Topics/Export.md" --query "specific subsystem decision" --max-chars 2000
 ```
 
-Search returns 3 hits. Read one note first, at most 3 for ordinary recall. Start with 2,000 source characters; the CLI default remains 6,000. Query excerpts may omit qualifications: follow the reported `--offset N` or increase `--max-chars` when evidence is incomplete. Reserve `--full` for complete evidence.
+Search returns 3 hits. With the Jev ranker on, add `--intent "<the specific question>"`; Jev separates notes on a concrete question, not on bare keywords. Read one note first, at most 3 for ordinary recall. Start with 2,000 source characters; the CLI default remains 6,000. Query excerpts may omit qualifications: follow the reported `--offset N` or increase `--max-chars` when evidence is incomplete. Reserve `--full` for complete evidence.
 
 Prefer relevant `Current Memory.md` and `Topics/` over indexes and raw runs. Never preload Run Log, all hits, or transcripts. Refine an irrelevant query once, then continue without memory if still empty. Broaden with `--limit 10` or `--include-archive` only when missing historical evidence matters.
 
 ## Hooks and capture
 
-`SessionStart` validates connectivity; `UserPromptSubmit` injects search results; `Stop` records turns; `PreCompact` preserves summaries; `PostToolUse` mirrors memory-file writes. Reuse their output. Hooks are non-blocking; reported failures may require manual fallback. Sources and setup are in the repository's `claude-code/hooks/` and `claude-code/INSTALL.md`.
+`SessionStart` validates connectivity; `UserPromptSubmit` injects search results; `Stop` records turns that edited files; `PreCompact` preserves summaries; `PostToolUse` mirrors memory-file writes. Reuse their output. Hooks are non-blocking; reported failures may require manual fallback. Sources and setup are in the repository's `claude-code/hooks/` and `claude-code/INSTALL.md`.
 
 Record manually once only when authorized and automatic recording is inactive or has failed. Capture reusable decisions, causes/fixes, verification, or open questions. Skip chatter, retries, and unchanged outcomes. Never persist secrets, private access links, personal data, or transcripts.
 

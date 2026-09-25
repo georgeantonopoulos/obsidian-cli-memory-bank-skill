@@ -66,9 +66,33 @@ class RetrievalBudgetTests(unittest.TestCase):
             payload = json.loads(request.data)
             self.assertEqual(payload['model'], 'jev-latest')
             self.assertEqual(len(payload['questions']), 5)
-            excerpt = payload['questions']['candidate_0']['instructions']['excerpt']
+            question = payload['questions']['candidate_0']
+            self.assertEqual(set(question['criteria']), {'true', 'false'})
+            self.assertIn('`excerpt`', question['instructions']['question'])
+            self.assertEqual(payload['state'], {'request': 'export progress', 'keywords': 'export progress'})
+            excerpt = question['instructions']['excerpt']
             self.assertLessEqual(len(excerpt.split('\n[Excerpt:')[0]), 1200)
             self.assertNotIn('old.md', json.dumps(payload))
+
+    def test_jev_judges_the_intent_when_given(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / 'Project Memory/demo'
+            root.mkdir(parents=True)
+            for i in range(2):
+                (root / f'note-{i}.md').write_text('export progress')
+            answers = {f'candidate_{i}': {'type': 'noul', 'noul': 0.5} for i in range(2)}
+            response = io.BytesIO(json.dumps({'answers': answers}).encode())
+            with patch.dict('os.environ', {'TYPESAFE_API_KEY': 'test-key'}), patch(
+                'scripts.obsidian_memory.urllib.request.urlopen', return_value=response
+            ) as urlopen:
+                self.command(
+                    vault, 'search', '--project', 'demo', '--query', 'export',
+                    '--intent', 'why did the EXR export stall at 90%?', '--ranker', 'jev',
+                )
+            payload = json.loads(urlopen.call_args.args[0].data)
+            self.assertEqual(payload['state']['request'], 'why did the EXR export stall at 90%?')
+            self.assertEqual(payload['state']['keywords'], 'export')
 
     def test_jev_failure_falls_back_in_auto_and_explicit_mode_errors(self):
         with tempfile.TemporaryDirectory() as tmp:

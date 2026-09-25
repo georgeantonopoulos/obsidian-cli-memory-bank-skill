@@ -1,94 +1,78 @@
 #!/usr/bin/env python3
 """Claude Code Stop hook: log a run summary to Obsidian memory bank.
 
-Reads the hook payload from stdin, extracts session context,
-and calls obmem record-run to persist a structured note.
+The Stop payload carries no prompt, so the prompt, final reply, and edited
+files are read from the session transcript. By default only turns that edited
+files are logged; set OBMEM_STOP_LOG=all to log every turn, or off to disable.
 
-Requires: obmem CLI installed via pipx.
+Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this file.
 """
 
 from __future__ import annotations
 
-import json
-import subprocess
+import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).parent))
+from obsidian_hook_common import (  # noqa: E402
+    active_context,
+    last_turn,
+    read_payload,
+    record_run,
+    truncate,
+)
 
-def truncate(text: str, limit: int) -> str:
-    text = " ".join(text.split())
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
+
+def _log_mode() -> str:
+    mode = os.environ.get("OBMEM_STOP_LOG", "edits").strip().lower()
+    return mode if mode in ("edits", "all", "off") else "edits"
 
 
 def main() -> int:
-    raw = sys.stdin.read().strip()
-    if not raw:
+    payload = read_payload(sys.stdin.read())
+    if payload is None or payload.get("stop_hook_active"):
+        return 0
+    mode = _log_mode()
+    if mode == "off":
         return 0
 
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
+    transcript_path = payload.get("transcript_path")
+    turn = last_turn(transcript_path) if isinstance(transcript_path, str) else {
+        "prompt": "", "assistant": "", "tools": [], "edited_files": [],
+    }
+    if mode == "edits" and not turn["edited_files"]:
         return 0
 
-    if not isinstance(payload, dict):
+    context = active_context(payload)
+    if context is None:
         return 0
+    workspace, project = context
 
-    # Resolve workspace
-    cwd = payload.get("cwd") or payload.get("workspace") or "."
-    workspace = str(Path(cwd).resolve())
-    project_name = Path(workspace).name or "Project"
+    prompt = turn["prompt"]
+    summary = payload.get("last_assistant_message") or turn["assistant"]
+    if not isinstance(summary, str):
+        summary = ""
+    edited = turn["edited_files"]
+    actions = "Auto-captured from Claude Code Stop event."
+    if edited:
+        actions += " Files changed: " + ", ".join(edited[:12])
+        if len(edited) > 12:
+            actions += f" (+{len(edited) - 12} more)"
 
-    # Check if vault is mapped
-    check = subprocess.run(
-        ["obmem", "show-vault", "--workspace", workspace],
-        text=True,
-        capture_output=True,
-        check=False,
+    result = record_run(
+        workspace, project,
+        title=prompt or summary or f"Claude Code session in {project}",
+        prompt=prompt or "No user prompt captured.",
+        summary=truncate(summary, 1500) or "No assistant summary captured.",
+        actions=actions,
+        tags="claude,auto-log",
     )
-    if check.returncode != 0:
-        return 0
-
-    # Extract prompt (what the user asked)
-    prompt = ""
-    for key in ("prompt", "user_prompt", "message", "input"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            prompt = value.strip()
-            break
-
-    # Extract summary (what the assistant did)
-    summary = ""
-    for key in ("last_assistant_message", "assistant", "response", "output", "stop_reason"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            summary = value.strip()
-            break
-
-    # Extract tool name if present
-    tool_name = payload.get("tool_name", "")
-
-    title = truncate(prompt or summary or f"Claude Code session in {project_name}", 80)
-
-    cmd = [
-        "obmem", "record-run",
-        "--project", project_name,
-        "--title", title,
-        "--prompt", truncate(prompt or "No user prompt captured.", 3000),
-        "--summary", truncate(summary or "No assistant summary captured.", 500),
-        "--actions", f"Auto-captured from Claude Code Stop event.{f' Tool: {tool_name}' if tool_name else ''}",
-        "--tags", "claude,auto-log",
-        "--workspace", workspace,
-    ]
-
-    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
-
     if result.returncode == 0:
         print("[obsidian-memory] Logged run note to Obsidian.", file=sys.stderr)
     else:
         print(f"[obsidian-memory] record-run failed (non-blocking): {result.stderr[:200]}", file=sys.stderr)
-
     return 0
 
 

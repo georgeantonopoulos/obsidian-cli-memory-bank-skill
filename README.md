@@ -110,9 +110,16 @@ obmem search --project "My Project" --query "retry queue" --ranker jev
 obmem set-search-ranker --ranker auto
 obmem search --project "My Project" --query "retry queue"
 
+# Give Jev the full question to judge against; keywords still drive local search.
+obmem search --project "My Project" --query "retry queue" --intent "Why did we cap retries at 3?"
+
 # Switch back to local search at any time.
 obmem set-search-ranker --ranker local
 ```
+
+Jev scores each note with one Noul question whose criteria separate a concrete
+decision, fix, or fact from mere keyword overlap. It separates notes best when
+`--intent` is a specific question; broad keyword-only queries give flat scores.
 
 The saved ranking preference lives in the CLI's private, Git-ignored state file;
 the API key stays in your environment or your own secret manager. Never put a

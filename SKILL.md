@@ -20,7 +20,7 @@ obmem read-note --path "Project Memory/project-name/Topics/Export.md" --query "s
 
 Search returns 3 hits. Read one note first, at most 3 for ordinary recall. Start with 2,000 source characters; the CLI default remains 6,000. Query excerpts may omit qualifications: follow the reported `--offset N` or increase `--max-chars` when evidence is incomplete. Reserve `--full` for complete evidence.
 
-Search stays local by default, even if `TYPESAFE_API_KEY` is set. A user can opt in for one search with `--ranker jev`, or save a private preference with `obmem set-search-ranker --ranker auto`. Jev receives query-focused note excerpts; use `--ranker local` when notes must stay local. `auto` falls back to local search if the key or service is unavailable.
+Search stays local by default, even if `TYPESAFE_API_KEY` is set. A user can opt in for one search with `--ranker jev`, or save a private preference with `obmem set-search-ranker --ranker auto`. Jev receives query-focused note excerpts; use `--ranker local` when notes must stay local. `auto` falls back to local search if the key or service is unavailable. When Jev ranks, pass the specific question as `--intent`; keyword-only queries give flat scores.
 
 Prefer relevant `Current Memory.md` and `Topics/` over indexes and raw runs. Never preload Run Log, all hits, or transcripts. Refine an irrelevant query once, then continue without memory if still empty. Broaden with `--limit 10` or `--include-archive` only when missing historical evidence matters.
 
