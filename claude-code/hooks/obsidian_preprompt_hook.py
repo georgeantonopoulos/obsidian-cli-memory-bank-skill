@@ -10,6 +10,7 @@ Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -51,11 +52,23 @@ _INLINE_CODE_RE = re.compile(r"`[^`]+`")
 _NON_ALPHA_RE = re.compile(r"[^A-Za-z0-9\s\-]")
 _CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _SENTENCE_START_RE = re.compile(r"(?:^|[.!?\n]\s*)([A-Za-z][\w\-]*)")
-_SEARCH_HIT_RE = re.compile(r"^\s{2}(Project Memory/.+\.md) \(score \d+(?:; Jev [\d.]+)?\)$")
+_SEARCH_HIT_RE = re.compile(r"^\s{2}(Project Memory/.+\.md) \(score \d+(?:; Jev [\d.]+)?(?:; best)?\)$")
+_JEV_GATED_RE = re.compile(r"none cleared the Jev threshold")
 # Distilled and topical notes answer questions; raw logs mostly repeat them.
 _LOW_VALUE_RE = re.compile(r"/(?:Compactions|Archive|Runs)/|/Run Log\.md$")
 _MIN_KEYWORDS = 2
 _MIN_PROMPT_WORDS = 3
+# Jev relevance a note needs before it is injected (TypeSafe's cookbook uses 0.30).
+# Unrelated prompts score ~0.02-0.05, related ones 0.5+. Only applies when Jev ranks.
+_DEFAULT_JEV_MIN = 0.30
+
+
+def _jev_min() -> float:
+    try:
+        value = float(os.environ.get("OBMEM_JEV_MIN", _DEFAULT_JEV_MIN))
+    except ValueError:
+        return _DEFAULT_JEV_MIN
+    return min(max(value, 0.0), 1.0)
 _CANDIDATE_LIMIT = 10
 
 
@@ -108,11 +121,18 @@ def _sanitize_query(prompt: str, max_words: int = 4) -> str:
 
 
 def _select_search_hits(output: str, limit: int = 3) -> str:
-    """Pick the top note paths, preferring distilled notes over raw logs."""
+    """Pick the top note paths.
+
+    Local keyword order is demoted in favour of distilled notes over raw logs;
+    a Jev order already judged each note's content, so it is kept as is.
+    """
     lines = [line for line in output.splitlines() if _SEARCH_HIT_RE.match(line)]
-    preferred = [line for line in lines if not _LOW_VALUE_RE.search(_SEARCH_HIT_RE.match(line).group(1))]
-    fallback = [line for line in lines if line not in preferred]
-    selected = (preferred + fallback)[:limit]
+    if "Ranked by Jev." in output:
+        selected = lines[:limit]
+    else:
+        preferred = [line for line in lines if not _LOW_VALUE_RE.search(_SEARCH_HIT_RE.match(line).group(1))]
+        fallback = [line for line in lines if line not in preferred]
+        selected = (preferred + fallback)[:limit]
     if not selected:
         return ""
     return f"Showing top {len(selected)} relevant note(s):\n" + "\n".join(selected)
@@ -148,12 +168,16 @@ def main() -> int:
     try:
         result = subprocess.run(
             ["obmem", "search", "--project", project, "--query", query,
-             "--intent", intent, "--limit", str(_CANDIDATE_LIMIT), "--workspace", workspace],
+             "--intent", intent, "--min-jev", f"{_jev_min():.2f}",
+             "--limit", str(_CANDIDATE_LIMIT), "--workspace", workspace],
             text=True, capture_output=True, check=False, timeout=20,
         )
         output = result.stdout.strip() if result.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         output = ""
+    # Jev judged every candidate irrelevant: stay quiet rather than suggest a search.
+    if _JEV_GATED_RE.search(output):
+        return 0
     selected_hits = _select_search_hits(output)
 
     # Always tell the LLM what keywords were searched so it can refine

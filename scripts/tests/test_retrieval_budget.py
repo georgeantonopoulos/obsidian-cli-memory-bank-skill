@@ -65,7 +65,10 @@ class RetrievalBudgetTests(unittest.TestCase):
             self.assertEqual(request.full_url, 'https://api.typesafe.ai/v1/systemone')
             payload = json.loads(request.data)
             self.assertEqual(payload['model'], 'jev-latest')
-            self.assertEqual(len(payload['questions']), 5)
+            self.assertEqual(len(payload['questions']), 6)
+            best = payload['questions']['best_note']
+            self.assertEqual(best['type'], 'choice')
+            self.assertEqual(sorted(best['criteria']), [f'note-{i}' for i in range(5)])
             question = payload['questions']['candidate_0']
             self.assertEqual(set(question['criteria']), {'true', 'false'})
             self.assertIn('`excerpt`', question['instructions']['question'])
@@ -93,6 +96,53 @@ class RetrievalBudgetTests(unittest.TestCase):
             payload = json.loads(urlopen.call_args.args[0].data)
             self.assertEqual(payload['state']['request'], 'why did the EXR export stall at 90%?')
             self.assertEqual(payload['state']['keywords'], 'export')
+
+    def _jev_search(self, answers, *extra, notes=4):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / 'Project Memory/demo'
+            root.mkdir(parents=True)
+            for i in range(notes):
+                (root / f'note-{i}.md').write_text('export progress')
+            response = io.BytesIO(json.dumps({'answers': answers}).encode())
+            with patch.dict('os.environ', {'TYPESAFE_API_KEY': 'test-key'}), patch(
+                'scripts.obsidian_memory.urllib.request.urlopen', return_value=response
+            ) as urlopen:
+                output = self.command(
+                    vault, 'search', '--project', 'demo', '--query', 'export', '--ranker', 'jev', *extra,
+                )
+            return output, urlopen
+
+    def test_confident_best_note_choice_leads(self):
+        answers = {f'candidate_{i}': {'type': 'noul', 'noul': 0.9 - i * 0.1} for i in range(4)}
+        answers['best_note'] = {'type': 'choice', 'choice': 'note-2', 'confidence': 0.8}
+        lines = self._jev_search(answers)[0].splitlines()
+        self.assertIn('note-2.md (score', lines[1])
+        self.assertTrue(lines[1].endswith('; best)'))
+        self.assertIn('note-0.md', lines[2])
+
+    def test_unsure_best_note_choice_keeps_noul_order(self):
+        answers = {f'candidate_{i}': {'type': 'noul', 'noul': 0.9 - i * 0.1} for i in range(4)}
+        answers['best_note'] = {'type': 'choice', 'choice': 'note-2', 'confidence': 0.3}
+        lines = self._jev_search(answers)[0].splitlines()
+        self.assertIn('note-0.md', lines[1])
+        self.assertNotIn('best', ''.join(lines))
+
+    def test_min_jev_gates_irrelevant_notes(self):
+        answers = {f'candidate_{i}': {'type': 'noul', 'noul': 0.6 if i == 1 else 0.05} for i in range(4)}
+        output = self._jev_search(answers, '--min-jev', '0.3')[0]
+        self.assertIn('showing 1. Ranked by Jev.', output)
+        self.assertIn('note-1.md', output)
+        answers = {f'candidate_{i}': {'type': 'noul', 'noul': 0.04} for i in range(4)}
+        output = self._jev_search(answers, '--min-jev', '0.3')[0]
+        self.assertEqual(output.strip(), 'Found 4 hits; none cleared the Jev threshold 0.30 (best 0.04).')
+
+    def test_single_candidate_is_still_judged_for_the_gate(self):
+        output, urlopen = self._jev_search(
+            {'candidate_0': {'type': 'noul', 'noul': 0.02}}, '--min-jev', '0.3', notes=1,
+        )
+        self.assertIn('none cleared', output)
+        self.assertNotIn('best_note', json.loads(urlopen.call_args.args[0].data)['questions'])
 
     def test_jev_failure_falls_back_in_auto_and_explicit_mode_errors(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -20,7 +20,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -2452,20 +2452,35 @@ def _build_or_query(raw_query: str) -> str:
     return "(" + " OR ".join(words) + ")"
 
 
+# Below this, Jev's single-best pick is too spread across notes to override Noul order.
+JEV_CHOICE_MIN_CONFIDENCE = 0.5
+
+
 def _jev_rerank(
     cli: ObsidianCLI, query: str, hits: List[Tuple[int, str]], api_key: str,
     intent: str = "",
-) -> List[Tuple[int, str, float]]:
+) -> List[Tuple[int, str, float, bool]]:
     """Score a bounded local shortlist in one Jev request; keep paths and ties stable.
 
     Follows TypeSafe's re-ranking guidance: one Noul per candidate, the question
     names the fields it reads in backticks, and criteria separate useful evidence
     from mere keyword overlap. ``intent`` (the fuller request) gives Jev more to
     judge than the keyword query alone.
+
+    One request carries both question kinds, as in TypeSafe's skill-suggestion
+    cookbook: a Choice over the whole shortlist picks the single best note
+    (relative), and each candidate's Noul says whether it is useful at all
+    (absolute), which callers use as a relevance gate. Returns
+    (local score, path, noul, is_best) sorted best-first.
     """
     questions = {}
+    options: Dict[str, Any] = {}
+    option_index: Dict[str, int] = {}
     for index, (_score, path) in enumerate(hits):
         excerpt = _note_excerpt(cli.read(Path(path)), max_chars=1200, query=query)
+        option = _jev_option_name(path, option_index)
+        option_index[option] = index
+        options[option] = {"title": Path(path).stem, "excerpt": excerpt}
         questions[f"candidate_{index}"] = {
             "type": "noul",
             "instructions": {
@@ -2486,6 +2501,15 @@ def _jev_rerank(
                     "only logs that work happened without the reusable detail."
                 ),
             },
+        }
+    if len(hits) > 1:
+        questions["best_note"] = {
+            "type": "choice",
+            "instructions": (
+                "Which note most directly records a decision, fix, setting, or fact that "
+                "helps with the `request` in state?"
+            ),
+            "criteria": options,
         }
     payload = json.dumps({
         "model": "jev-latest",
@@ -2517,11 +2541,29 @@ def _jev_rerank(
             ranked.append((score, path, float(probability)))
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("Jev returned an incomplete ranking") from exc
-    return [
-        item for _index, item in sorted(
-            enumerate(ranked), key=lambda pair: (-pair[1][2], pair[0])
-        )
-    ]
+    # The Choice only reorders when it is confident; an unsure, missing, or
+    # partial pick leaves the Noul order alone.
+    best_index = -1
+    best = answers.get("best_note") if isinstance(answers, dict) else None
+    confidence = best.get("confidence") if isinstance(best, dict) else None
+    if (isinstance(best, dict) and best.get("choice") in option_index
+            and isinstance(confidence, (int, float)) and confidence >= JEV_CHOICE_MIN_CONFIDENCE):
+        best_index = option_index[best["choice"]]
+    ordered = sorted(
+        range(len(ranked)),
+        key=lambda i: (i != best_index, -ranked[i][2], i),
+    )
+    return [(*ranked[i], i == best_index) for i in ordered]
+
+
+def _jev_option_name(path: str, taken: Dict[str, int]) -> str:
+    """Readable, unique Choice option: the note path inside its project folder."""
+    parts = Path(path).with_suffix("").parts
+    name = "/".join(parts[2:]) if len(parts) > 2 and parts[0] == PROJECT_ROOT else "/".join(parts)
+    candidate, suffix = name, 2
+    while candidate in taken:
+        candidate, suffix = f"{name} ({suffix})", suffix + 1
+    return candidate
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -2561,9 +2603,8 @@ def cmd_search(args: argparse.Namespace) -> None:
             return
         candidates.append((int(match.group(2)), match.group(1)))
     try:
-        ranked = _jev_rerank(cli, args.query, candidates, api_key, getattr(args, "intent", "") or "") if len(candidates) > 1 else [
-            (score, path, 1.0) for score, path in candidates
-        ]
+        # A single candidate is still judged so --min-jev can gate it.
+        ranked = _jev_rerank(cli, args.query, candidates, api_key, getattr(args, "intent", "") or "") if candidates else []
     except RuntimeError as exc:
         if ranker == "jev":
             raise
@@ -2573,11 +2614,29 @@ def cmd_search(args: argparse.Namespace) -> None:
     if not candidates:
         print(output)
         return
-    header = output.splitlines()[0].replace(f"showing {len(candidates)}", f"showing {min(limit, len(candidates))}")
+    min_jev = getattr(args, "min_jev", None)
+    if min_jev is not None:
+        top = max(item[2] for item in ranked)
+        ranked = [item for item in ranked if item[2] >= min_jev]
+        if not ranked:
+            print(
+                f"Found {len(candidates)} hits; none cleared the Jev threshold "
+                f"{min_jev:.2f} (best {top:.2f})."
+            )
+            return
+    shown = ranked[:limit]
+    header = output.splitlines()[0].replace(f"showing {len(candidates)}", f"showing {len(shown)}")
     print(f"{header} Ranked by Jev.")
-    for score, path, probability in ranked[:limit]:
-        print(f"  {path} (score {score}; Jev {probability:.2f})")
+    for score, path, probability, is_best in shown:
+        print(f"  {path} (score {score}; Jev {probability:.2f}{'; best' if is_best else ''})")
 
+
+
+def _probability(value: str) -> float:
+    number = float(value)
+    if not 0 <= number <= 1:
+        raise argparse.ArgumentTypeError("must be between 0 and 1")
+    return number
 
 
 def _positive_int(value: str) -> int:
@@ -3062,6 +3121,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser_search.add_argument(
         "--intent",
         help="Fuller request text for Jev to judge relevance against (default: --query). Not used for local search.",
+    )
+    parser_search.add_argument(
+        "--min-jev", type=_probability, metavar="P",
+        help="When Jev ranks, hide notes whose relevance is below P (0-1); prints a no-match line if none pass.",
     )
     parser_search.add_argument("--limit", type=_positive_int, default=3, help="Maximum hits (default: 3; use 25 for broader discovery)")
     parser_search.add_argument(

@@ -120,6 +120,15 @@ obmem set-search-ranker --ranker local
 Jev scores each note with one Noul question whose criteria separate a concrete
 decision, fix, or fact from mere keyword overlap. It separates notes best when
 `--intent` is a specific question; broad keyword-only queries give flat scores.
+The same request asks one Choice question for the single best note; when Jev is
+confident (0.5 or higher) that note leads and is marked `best`.
+
+```bash
+# Hide notes Jev judges irrelevant; prints "none cleared the Jev threshold" if nothing passes.
+obmem search --project "My Project" --query "retry queue" --intent "Why did we cap retries at 3?" --min-jev 0.3
+```
+
+Unrelated questions typically score below 0.05 and related ones above 0.5.
 
 The saved ranking preference lives in the CLI's private, Git-ignored state file;
 the API key stays in your environment or your own secret manager. Never put a

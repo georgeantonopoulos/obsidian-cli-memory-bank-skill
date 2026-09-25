@@ -121,7 +121,7 @@ All hooks silently no-op when no vault is mapped for the current workspace.
 - **Project identity**: hooks use the directory Claude was launched in (`CLAUDE_PROJECT_DIR`, else the git root), so `cd`-ing into a subfolder does not file notes under another project.
 - **Secrets**: API keys, bearer tokens, `KEY=value` secrets and long opaque tokens are redacted before any search query, Jev request, or run note.
 - **Opt out**: `OBMEM_HOOKS=off` disables all hooks; an empty `.obmem-off` file in a project root disables them for that project.
-- **Prompt search**: skips short acknowledgements, ranks proper nouns and `identifiers` ahead of filler words, and prefers distilled notes over `Compactions/`, `Archive/` and `Runs/`. With the Jev ranker enabled it passes the redacted prompt as `--intent`.
+- **Prompt search**: skips short acknowledgements, ranks proper nouns and `identifiers` ahead of filler words, and prefers distilled notes over `Compactions/`, `Archive/` and `Runs/`. With the Jev ranker enabled it passes the redacted prompt as `--intent` and keeps Jev's order; if no note clears the Jev relevance threshold (`OBMEM_JEV_MIN`, default 0.30) the hook prints nothing.
 
 ## 4) First-time setup
 

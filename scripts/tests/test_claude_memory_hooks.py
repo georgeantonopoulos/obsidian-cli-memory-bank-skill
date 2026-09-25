@@ -49,17 +49,46 @@ class ClaudePrePromptHookTests(unittest.TestCase):
     def test_select_search_hits_handles_no_matches(self) -> None:
         self.assertEqual(HOOK._select_search_hits("No matches found."), "")
 
-    def test_select_search_hits_reads_jev_output_and_demotes_compactions(self) -> None:
-        output = """Found 12 hits; showing 4. Ranked by Jev.
-  Project Memory/demo/Compactions/2026-06-18-compact.md (score 160; Jev 0.91)
-  Project Memory/demo/Compactions/2026-07-01-compact.md (score 150; Jev 0.88)
+    def test_select_search_hits_keeps_jev_order(self) -> None:
+        output = """Found 12 hits; showing 3. Ranked by Jev.
+  Project Memory/demo/Compactions/2026-06-18-compact.md (score 160; Jev 0.91; best)
   Project Memory/demo/Topics/Search.md (score 120; Jev 0.70)
   Project Memory/demo/Current Memory.md (score 110; Jev 0.40)
 """
         lines = HOOK._select_search_hits(output).splitlines()[1:]
+        self.assertIn("Compactions/2026-06-18", lines[0])
+        self.assertIn("Topics/Search.md", lines[1])
+
+    def test_local_order_demotes_compactions(self) -> None:
+        output = """Found 3 hits; showing 3.
+  Project Memory/demo/Compactions/2026-06-18-compact.md (score 160)
+  Project Memory/demo/Topics/Search.md (score 120)
+  Project Memory/demo/Current Memory.md (score 110)
+"""
+        lines = HOOK._select_search_hits(output).splitlines()[1:]
         self.assertIn("Topics/Search.md", lines[0])
-        self.assertIn("Current Memory.md", lines[1])
         self.assertIn("Compactions/2026-06-18", lines[2])
+
+    def test_jev_gate_keeps_the_hook_quiet(self) -> None:
+        gated = "Found 9 hits; none cleared the Jev threshold 0.30 (best 0.04)."
+        payload = json.dumps({"prompt": "What is a good moussaka recipe with aubergine?", "cwd": tempfile.gettempdir()})
+        completed = HOOK.subprocess.CompletedProcess([], 0, gated, "")
+        with patch("sys.stdin") as stdin, patch.object(HOOK, "active_context", return_value=("/w", "demo")), \
+                patch.object(HOOK.subprocess, "run", return_value=completed) as run, \
+                patch("sys.stdout", new_callable=__import__("io").StringIO) as stdout:
+            stdin.read.return_value = payload
+            self.assertEqual(HOOK.main(), 0)
+        self.assertEqual(stdout.getvalue(), "")
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("--min-jev") + 1], "0.30")
+
+    def test_jev_min_env_override_is_clamped(self) -> None:
+        with patch.dict(os.environ, {"OBMEM_JEV_MIN": "0.5"}):
+            self.assertEqual(HOOK._jev_min(), 0.5)
+        with patch.dict(os.environ, {"OBMEM_JEV_MIN": "7"}):
+            self.assertEqual(HOOK._jev_min(), 1.0)
+        with patch.dict(os.environ, {"OBMEM_JEV_MIN": "nope"}):
+            self.assertEqual(HOOK._jev_min(), 0.30)
 
     def test_sanitize_query_never_searches_secrets(self) -> None:
         query = HOOK._sanitize_query(f"Use this key {FAKE_KEY} for Jev ranking")
