@@ -76,7 +76,10 @@ class ClaudePrePromptHookTests(unittest.TestCase):
         for prompt in ("What projects did we recently work on?", "what have we done lately",
                        "anything from yesterday?", "what did we work on last week"):
             self.assertTrue(HOOK._is_recency_question(prompt), prompt)
-        for prompt in ("Why does Export progress jump around?", "fix the tracker search box"):
+        for prompt in ("Why does Export progress jump around?", "fix the tracker search box",
+                       "fix the recent regression in Foo", "the bug I worked on in the viewer",
+                       "the last time the cache invalidated, why?", "yesterday's build failed",
+                       "what did we work on lately? " + "word " * 40):
             self.assertFalse(HOOK._is_recency_question(prompt), prompt)
 
     def test_recency_lists_newest_sessions_across_projects(self) -> None:
@@ -95,6 +98,13 @@ class ClaudePrePromptHookTests(unittest.TestCase):
                 path = vault / "Project Memory" / rel
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(body, encoding="utf-8")
+            bad = vault / "Project Memory" / "beta" / "Runs" / "2026-06-01-0800-latin1.md"
+            bad.write_bytes(b"# caf\xe9 \xff\n")
+            secret = vault / "Project Memory" / "beta" / "Runs" / "2026-06-01-0700-key.md"
+            secret.write_text(f"# use {FAKE_KEY} here\n", encoding="utf-8")
+            listed = HOOK._recent_sessions(vault, limit=10)
+            self.assertTrue(any(title.startswith("caf") for _when, _proj, title in listed))
+            self.assertFalse(any(FAKE_KEY[:20] in title for _when, _proj, title in listed))
             sessions = HOOK._recent_sessions(vault, limit=2)
             self.assertEqual(sessions, [("2026-06-03 10:15", "alpha", "New thing"),
                                         ("2026-06-02 12:00", "beta", "Middle")])
