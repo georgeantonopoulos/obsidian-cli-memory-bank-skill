@@ -82,6 +82,57 @@ class ClaudePrePromptHookTests(unittest.TestCase):
         argv = run.call_args.args[0]
         self.assertEqual(argv[argv.index("--min-jev") + 1], "0.30")
 
+    def test_clean_excerpt_drops_frontmatter_nav_and_related(self) -> None:
+        note = """---
+type: "run"
+---
+
+# Fix export
+
+Parent note: [[Home]]
+MOC: [[MOC]]
+
+## Summary
+Progress uses measured counts.
+
+
+
+## Related
+- [[Other]]
+
+[Excerpt: characters 0:300 of 900. use --offset 300 to continue.]
+"""
+        excerpt = HOOK._clean_excerpt(note)
+        self.assertTrue(excerpt.startswith("# Fix export"))
+        self.assertIn("Progress uses measured counts.", excerpt)
+        for gone in ("type:", "Parent note", "MOC:", "Related", "[Excerpt", "\n\n\n"):
+            self.assertNotIn(gone, excerpt)
+        self.assertEqual(len(HOOK._clean_excerpt("x" * 5000, 100)), 100)
+
+    def test_top_notes_are_injected_as_excerpts(self) -> None:
+        search = """Found 3 hits; showing 3. Ranked by Jev.
+  Project Memory/demo/Topics/Export.md (score 9; Jev 0.9; best)
+  Project Memory/demo/Topics/Render.md (score 8; Jev 0.8)
+  Project Memory/demo/Topics/Other.md (score 7; Jev 0.7)
+"""
+        def fake_run(argv, **_kwargs):
+            if argv[1] == "search":
+                return HOOK.subprocess.CompletedProcess(argv, 0, search, "")
+            path = argv[argv.index("--path") + 1]
+            return HOOK.subprocess.CompletedProcess(argv, 0, f"# {path}\nbody of {path}\n", "")
+
+        payload = json.dumps({"prompt": "Why does Export progress jump around?", "cwd": tempfile.gettempdir()})
+        with patch("sys.stdin") as stdin, patch.object(HOOK, "active_context", return_value=("/w", "demo")), \
+                patch.object(HOOK.subprocess, "run", side_effect=fake_run) as run, \
+                patch("sys.stdout", new_callable=__import__("io").StringIO) as stdout:
+            stdin.read.return_value = payload
+            self.assertEqual(HOOK.main(), 0)
+        out = stdout.getvalue()
+        self.assertIn("body of Project Memory/demo/Topics/Export.md", out)
+        self.assertIn("body of Project Memory/demo/Topics/Render.md", out)
+        self.assertNotIn("body of Project Memory/demo/Topics/Other.md", out)
+        self.assertEqual(run.call_count, 3)
+
     def test_jev_min_env_override_is_clamped(self) -> None:
         with patch.dict(os.environ, {"OBMEM_JEV_MIN": "0.5"}):
             self.assertEqual(HOOK._jev_min(), 0.5)
