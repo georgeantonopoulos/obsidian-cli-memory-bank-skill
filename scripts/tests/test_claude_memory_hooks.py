@@ -49,15 +49,18 @@ class ClaudePrePromptHookTests(unittest.TestCase):
     def test_select_search_hits_handles_no_matches(self) -> None:
         self.assertEqual(HOOK._select_search_hits("No matches found."), "")
 
-    def test_select_search_hits_keeps_jev_order(self) -> None:
-        output = """Found 12 hits; showing 3. Ranked by Jev.
-  Project Memory/demo/Compactions/2026-06-18-compact.md (score 160; Jev 0.91; best)
+    def test_jev_order_kept_within_distilled_notes_ahead_of_logs(self) -> None:
+        output = """Found 12 hits; showing 4. Ranked by Jev.
+  Project Memory/demo/Runs/2026-06-18-0900-fix-export.md (score 160; Jev 0.91; best)
   Project Memory/demo/Topics/Search.md (score 120; Jev 0.70)
-  Project Memory/demo/Current Memory.md (score 110; Jev 0.40)
+  Project Memory/demo/Current Memory.md (score 110; Jev 0.80)
+  Project Memory/demo/Runs/2026-06-19-0900-memory-sync-notes-md-demo.md (score 100; Jev 0.95)
 """
         lines = HOOK._select_search_hits(output).splitlines()[1:]
-        self.assertIn("Compactions/2026-06-18", lines[0])
-        self.assertIn("Topics/Search.md", lines[1])
+        self.assertIn("Topics/Search.md", lines[0])
+        self.assertIn("Current Memory.md", lines[1])
+        self.assertIn("fix-export", lines[2])
+        self.assertFalse(any("memory-sync" in line for line in lines))
 
     def test_local_order_demotes_compactions(self) -> None:
         output = """Found 3 hits; showing 3.
@@ -68,6 +71,49 @@ class ClaudePrePromptHookTests(unittest.TestCase):
         lines = HOOK._select_search_hits(output).splitlines()[1:]
         self.assertIn("Topics/Search.md", lines[0])
         self.assertIn("Compactions/2026-06-18", lines[2])
+
+    def test_recency_questions_are_recognised(self) -> None:
+        for prompt in ("What projects did we recently work on?", "what have we done lately",
+                       "anything from yesterday?", "what did we work on last week"):
+            self.assertTrue(HOOK._is_recency_question(prompt), prompt)
+        for prompt in ("Why does Export progress jump around?", "fix the tracker search box"):
+            self.assertFalse(HOOK._is_recency_question(prompt), prompt)
+
+    def test_recency_lists_newest_sessions_across_projects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            notes = {
+                "alpha/Runs/2026-06-01-0900-old-thing.md": "# Old thing\n",
+                "alpha/Runs/2026-06-03-1015-new-thing.md": "---\ntitle: x\n---\n# New thing\n",
+                "beta/Runs/2026-06-02-1200-middle.md": "# Middle\n",
+                "beta/Runs/2026-06-04-0800-memory-sync-notes-md-beta.md": "# Memory sync\n",
+                "beta/Topics/Search.md": "# Not a session\n",
+                "alpha/Runs/2026-06-02-1300-new-thing.md": "# New thing\n",
+                "beta/Runs/2026-06-02-1100-turn-a.md": "# beta Turn 01a0ad40-268d-7e62-8a80-365ee8cb6bbb Middle\n",
+            }
+            for rel, body in notes.items():
+                path = vault / "Project Memory" / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body, encoding="utf-8")
+            sessions = HOOK._recent_sessions(vault, limit=2)
+            self.assertEqual(sessions, [("2026-06-03 10:15", "alpha", "New thing"),
+                                        ("2026-06-02 12:00", "beta", "Middle")])
+
+            payload = json.dumps({"prompt": "what did we work on lately?", "cwd": tmp})
+            with patch("sys.stdin") as stdin, patch.object(HOOK, "active_context", return_value=("/w", "demo")), \
+                    patch.object(HOOK, "_vault_path", return_value=vault), \
+                    patch.object(HOOK.subprocess, "run") as run, \
+                    patch("sys.stdout", new_callable=__import__("io").StringIO) as stdout:
+                stdin.read.return_value = payload
+                self.assertEqual(HOOK.main(), 0)
+            run.assert_not_called()
+            result = json.loads(stdout.getvalue())
+            self.assertEqual(result["systemMessage"], "Memory: listed recent work across 2 projects")
+            context = result["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("Projects by latest session: alpha (2026-06-03), beta (2026-06-02)", context)
+            self.assertLess(context.index("New thing"), context.index("Old thing"))
+            self.assertEqual(context.count("New thing"), 1)
+            self.assertEqual(context.count("Middle"), 1)
 
     def test_jev_gate_keeps_the_hook_quiet(self) -> None:
         gated = "Found 9 hits; none cleared the Jev threshold 0.30 (best 0.04)."

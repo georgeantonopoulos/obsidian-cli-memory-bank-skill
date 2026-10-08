@@ -72,6 +72,16 @@ def _jev_min() -> float:
         return _DEFAULT_JEV_MIN
     return min(max(value, 0.0), 1.0)
 _CANDIDATE_LIMIT = 10
+# Auto-copies of the agent's memory files ("Memory sync: x.md"); those load anyway.
+_MEMORY_COPY_RE = re.compile(r"memory-sync-[^/]*\.md$")
+# "What did we work on lately?" is about time, not keywords: list newest sessions instead.
+_RECENCY_RE = re.compile(
+    r"\b(?:recent(?:ly)?|lately|yesterday|last (?:week|few days|session|time)|this week|"
+    r"what (?:did|have|were) we (?:do|done|doing|work)|worked on)\b", re.IGNORECASE)
+_RUN_STAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}-\d{4})-")
+_RECENT_LIMIT = 10
+# Codex logs title each turn "<project> Turn <id> <prompt>"; the id would defeat de-duplication.
+_TURN_ID_RE = re.compile(r"^.*?\bTurn [0-9a-f]{8}-[0-9a-f-]{20,}\s*", re.IGNORECASE)
 # The top notes are pasted in, not just named, so the agent reads them every time.
 _EXCERPT_NOTES = 2
 _EXCERPT_CHARS = 2000
@@ -130,19 +140,82 @@ def _sanitize_query(prompt: str, max_words: int = 4) -> str:
 def _select_search_hits(output: str, limit: int = 3) -> str:
     """Pick the top note paths.
 
-    Local keyword order is demoted in favour of distilled notes over raw logs;
-    a Jev order already judged each note's content, so it is kept as is.
+    Copies of the agent's own memory files are dropped (they already load at
+    session start), and distilled notes go ahead of raw logs; within each group
+    the search's order (Jev's, when it ranks) is kept.
     """
-    lines = [line for line in output.splitlines() if _SEARCH_HIT_RE.match(line)]
-    if "Ranked by Jev." in output:
-        selected = lines[:limit]
-    else:
-        preferred = [line for line in lines if not _LOW_VALUE_RE.search(_SEARCH_HIT_RE.match(line).group(1))]
-        fallback = [line for line in lines if line not in preferred]
-        selected = (preferred + fallback)[:limit]
+    lines = [line for line in output.splitlines()
+             if (m := _SEARCH_HIT_RE.match(line)) and not _MEMORY_COPY_RE.search(m.group(1))]
+    preferred = [line for line in lines if not _LOW_VALUE_RE.search(_SEARCH_HIT_RE.match(line).group(1))]
+    fallback = [line for line in lines if line not in preferred]
+    selected = (preferred + fallback)[:limit]
     if not selected:
         return ""
     return f"Showing top {len(selected)} relevant note(s):\n" + "\n".join(selected)
+
+
+def _is_recency_question(prompt: str) -> bool:
+    return bool(_RECENCY_RE.search(prompt))
+
+
+def _recent_sessions(vault: Path, limit: int = _RECENT_LIMIT) -> list[tuple[str, str, str]]:
+    """Newest sessions across every project: (date, project, title).
+
+    A session logs one note per turn under the same title, so repeats collapse
+    to their newest turn.
+    """
+    runs: list[tuple[str, Path]] = []
+    for path in (vault / "Project Memory").glob("*/Runs/*.md"):
+        stamp = _RUN_STAMP_RE.match(path.name)
+        if stamp and not _MEMORY_COPY_RE.search(path.name):
+            runs.append((stamp.group(1), path))
+    runs.sort(key=lambda item: item[0], reverse=True)
+    sessions: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for stamp, path in runs:
+        if len(sessions) >= limit:
+            break
+        title = _note_title(path) or path.stem[len(stamp) + 1:]
+        key = (path.parts[-3], title)
+        if key in seen:
+            continue
+        seen.add(key)
+        day, time = stamp[:10], f"{stamp[11:13]}:{stamp[13:15]}"
+        sessions.append((f"{day} {time}", path.parts[-3], truncate(title, 90)))
+    return sessions
+
+
+def _recent_projects(vault: Path, limit: int = _RECENT_LIMIT) -> list[tuple[str, str]]:
+    """Projects by their newest session: (date, project)."""
+    latest: dict[str, str] = {}
+    for path in (vault / "Project Memory").glob("*/Runs/*.md"):
+        stamp = _RUN_STAMP_RE.match(path.name)
+        if stamp and not _MEMORY_COPY_RE.search(path.name):
+            project = path.parts[-3]
+            latest[project] = max(latest.get(project, ""), stamp.group(1))
+    ranked = sorted(latest.items(), key=lambda item: item[1], reverse=True)[:limit]
+    return [(stamp[:10], project) for project, stamp in ranked]
+
+
+def _note_title(path: Path) -> str:
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("# "):
+                    return _TURN_ID_RE.sub("", line[2:].strip())
+    except OSError:
+        pass
+    return ""
+
+
+def _vault_path(workspace: str) -> Path | None:
+    try:
+        result = subprocess.run(["obmem", "show-vault", "--workspace", workspace],
+                                text=True, capture_output=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    path = Path(result.stdout.strip()) if result.returncode == 0 else None
+    return path if path and path.is_dir() else None
 
 
 def _clean_excerpt(text: str, limit: int = _EXCERPT_CHARS) -> str:
@@ -215,13 +288,33 @@ def main() -> int:
 
     query = _sanitize_query(prompt)
     # Short acknowledgements ("ok", "tool loaded") don't warrant a memory lookup.
-    if len(prompt.split()) < _MIN_PROMPT_WORDS or len(query.split()) < _MIN_KEYWORDS:
+    recency = _is_recency_question(prompt)
+    if not recency and (len(prompt.split()) < _MIN_PROMPT_WORDS or len(query.split()) < _MIN_KEYWORDS):
         return 0
 
     context = active_context(payload)
     if context is None:
         return 0
     workspace, project = context
+
+    if recency:
+        vault = _vault_path(workspace)
+        sessions = _recent_sessions(vault) if vault else []
+        if sessions:
+            projects = _recent_projects(vault)
+            listing = "\n".join(f"  {when} | {proj} | {title}" for when, proj, title in sessions)
+            by_project = ", ".join(f"{proj} ({day})" for day, proj in projects)
+            print(json.dumps({
+                "systemMessage": f"Memory: listed recent work across {len(projects)} projects",
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "[obsidian-memory] Recency question, so memory is ranked by date, not keywords.\n"
+                                         f"Projects by latest session: {by_project}\n"
+                                         "Newest sessions (date | project | title):\n" + listing
+                                         + "\nRead one with obmem search --project <project> or read-note.",
+                },
+            }))
+            return 0
 
     # Jev (when the private ranker preference enables it) judges relevance against
     # the redacted request, not just the keywords.
