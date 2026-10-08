@@ -59,9 +59,10 @@ _JEV_GATED_RE = re.compile(r"none cleared the Jev threshold")
 _LOW_VALUE_RE = re.compile(r"/(?:Compactions|Archive|Runs)/|/Run Log\.md$")
 _MIN_KEYWORDS = 2
 _MIN_PROMPT_WORDS = 3
-# Jev relevance a note needs before it is injected (TypeSafe's cookbook uses 0.30).
+# Jev relevance a note needs before it is injected (TypeSafe's cookbook uses 0.30; that let
+# loosely related run logs through, so the hook asks for 0.50).
 # Unrelated prompts score ~0.02-0.05, related ones 0.5+. Only applies when Jev ranks.
-_DEFAULT_JEV_MIN = 0.30
+_DEFAULT_JEV_MIN = 0.50
 
 
 def _jev_min() -> float:

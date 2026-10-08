@@ -80,7 +80,7 @@ class ClaudePrePromptHookTests(unittest.TestCase):
             self.assertEqual(HOOK.main(), 0)
         self.assertEqual(stdout.getvalue(), "")
         argv = run.call_args.args[0]
-        self.assertEqual(argv[argv.index("--min-jev") + 1], "0.30")
+        self.assertEqual(argv[argv.index("--min-jev") + 1], "0.50")
 
     def test_clean_excerpt_drops_frontmatter_nav_and_related(self) -> None:
         note = """---
@@ -142,7 +142,7 @@ Progress uses measured counts.
         with patch.dict(os.environ, {"OBMEM_JEV_MIN": "7"}):
             self.assertEqual(HOOK._jev_min(), 1.0)
         with patch.dict(os.environ, {"OBMEM_JEV_MIN": "nope"}):
-            self.assertEqual(HOOK._jev_min(), 0.30)
+            self.assertEqual(HOOK._jev_min(), 0.50)
 
     def test_sanitize_query_never_searches_secrets(self) -> None:
         query = HOOK._sanitize_query(f"Use this key {FAKE_KEY} for Jev ranking")
