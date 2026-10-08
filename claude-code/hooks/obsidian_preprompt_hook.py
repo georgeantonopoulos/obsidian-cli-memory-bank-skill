@@ -10,6 +10,7 @@ Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -161,6 +162,20 @@ def _clean_excerpt(text: str, limit: int = _EXCERPT_CHARS) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
+def _visible_notice(selected_hits: str, excerpts: str) -> str:
+    """One line shown to the person, so they can see memory was used."""
+    found = sum(1 for line in selected_hits.splitlines() if _SEARCH_HIT_RE.match(line))
+    titles: list[str] = []
+    lines = excerpts.splitlines()
+    for index, line in enumerate(lines[:-1]):
+        if line.startswith("--- Project Memory/"):
+            title = lines[index + 1].lstrip("# ").strip()
+            titles.append(title if len(title) <= 50 else title[:47].rstrip() + "...")
+    if not titles:
+        return f"Memory: {found} matching note(s), none readable"
+    return f"Memory: read {len(titles)} of {found} matching notes: " + "; ".join(titles)
+
+
 def _note_excerpts(selected_hits: str, workspace: str) -> str:
     paths = [m.group(1) for line in selected_hits.splitlines()
              if (m := _SEARCH_HIT_RE.match(line))][:_EXCERPT_NOTES]
@@ -230,7 +245,12 @@ def main() -> int:
     header = f"[obsidian-memory] Searched Obsidian vault (project: {project}) with keywords: {query}"
     if selected_hits:
         excerpts = _note_excerpts(selected_hits, workspace)
-        print(f"{header}\n{selected_hits}" + (f"\n\n{excerpts}" if excerpts else ""))
+        context = f"{header}\n{selected_hits}" + (f"\n\n{excerpts}" if excerpts else "")
+        # JSON output lets Claude Code show a one-line notice while the notes go to the agent.
+        print(json.dumps({
+            "systemMessage": _visible_notice(selected_hits, excerpts),
+            "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context},
+        }))
     else:
         print(
             f"{header}\nNo matches. Consider using the obmem skill to search "

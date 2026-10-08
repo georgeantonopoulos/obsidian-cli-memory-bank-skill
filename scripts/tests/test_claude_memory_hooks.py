@@ -127,7 +127,10 @@ Progress uses measured counts.
                 patch("sys.stdout", new_callable=__import__("io").StringIO) as stdout:
             stdin.read.return_value = payload
             self.assertEqual(HOOK.main(), 0)
-        out = stdout.getvalue()
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["systemMessage"], "Memory: read 2 of 3 matching notes: Project Memory/demo/Topics/Export.md; Project Memory/demo/Topics/Render.md")
+        self.assertEqual(result["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+        out = result["hookSpecificOutput"]["additionalContext"]
         self.assertIn("body of Project Memory/demo/Topics/Export.md", out)
         self.assertIn("body of Project Memory/demo/Topics/Render.md", out)
         self.assertNotIn("body of Project Memory/demo/Topics/Other.md", out)
