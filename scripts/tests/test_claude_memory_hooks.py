@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+import unittest.mock
 from unittest.mock import patch
 
 HOOKS_DIR = Path(__file__).resolve().parents[2] / "claude-code" / "hooks"
@@ -23,8 +24,31 @@ HOOK = _load("obsidian_preprompt_hook")
 COMMON = _load("obsidian_hook_common")
 STOP = _load("obsidian_poststop_hook")
 SYNC = _load("obsidian_memory_sync_hook")
+START = _load("obsidian_sessionstart_hook")
 
 FAKE_KEY = "apikey_" + "0123456789abcdef" * 2 + "_" + "fedcba9876543210" * 4
+
+
+class ClaudeSessionStartHookTests(unittest.TestCase):
+    def _run(self, doctor_returncode: int) -> str:
+        doctor = unittest.mock.Mock(returncode=doctor_returncode, stdout="", stderr="vault offline")
+        with patch.object(START, "read_payload", return_value={"cwd": "/tmp/demo"}), \
+             patch.object(START, "active_context", return_value=("/tmp/demo", "demo")), \
+             patch.object(START.subprocess, "run", return_value=doctor), \
+             patch("sys.stdin"), patch("sys.stdout", new_callable=__import__("io").StringIO) as out:
+            self.assertEqual(START.main(), 0)
+        return out.getvalue()
+
+    def test_requires_loading_the_skill_when_vault_is_healthy(self) -> None:
+        output = self._run(0)
+        self.assertIn("Vault healthy for demo", output)
+        self.assertIn('MANDATORY', output)
+        self.assertIn('skill "obsidian-cli-memory-bank"', output)
+
+    def test_requires_loading_the_skill_when_health_check_fails(self) -> None:
+        output = self._run(1)
+        self.assertIn("WARNING", output)
+        self.assertIn('skill "obsidian-cli-memory-bank"', output)
 
 
 class ClaudePrePromptHookTests(unittest.TestCase):

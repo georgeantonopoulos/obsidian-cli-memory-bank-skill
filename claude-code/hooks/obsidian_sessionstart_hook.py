@@ -19,6 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import active_context, read_payload  # noqa: E402
 
+# Mandatory: the skill's recall and capture rules must be in context from the first turn.
+LOAD_SKILL_DIRECTIVE = (
+    "[obsidian-memory] MANDATORY: before your first reply in this session, invoke the "
+    "Skill tool with skill \"obsidian-cli-memory-bank\" (once per session, even if the "
+    "first task looks self-contained). Then follow its rules for recall and capture."
+)
+
 
 def main() -> int:
     payload = read_payload(sys.stdin.read())
@@ -49,6 +56,7 @@ def main() -> int:
             f"{project}. Memory hooks may not work this session. "
             f"Detail: {detail}"
         )
+    print(LOAD_SKILL_DIRECTIVE)
     return 0
 
 
