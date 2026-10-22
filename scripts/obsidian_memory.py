@@ -2104,8 +2104,9 @@ def _archive_runs(
             dest = paths.archived_runs_dir / f"{run.path.stem}-{suffix}.md"
             dest_abs = cli.vault_path / dest
             suffix += 1
+        source_rel = source_abs.relative_to(cli.vault_path)
         if cli.dry_run:
-            moved.append((run.path, dest))
+            moved.append((source_rel, dest))
             continue
         body = source_abs.read_text(encoding="utf-8")
         archived_body = _archive_run_body(
@@ -2119,7 +2120,7 @@ def _archive_runs(
         dest_abs.write_text(archived_body, encoding="utf-8")
         if dest_abs != source_abs:
             source_abs.unlink()
-        moved.append((run.path, dest))
+        moved.append((source_rel, dest))
     return moved
 
 
@@ -2175,6 +2176,34 @@ def _remove_lines_linking_stems(cli: ObsidianCLI, relative_path: Path, stems: se
     if removed and not cli.dry_run:
         absolute.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
     return removed
+
+
+def _retarget_run_links(cli: ObsidianCLI, relative_path: Path, moved: List[Tuple[Path, Path]]) -> int:
+    """Point links at archived runs instead of deleting the lines that hold them.
+
+    Decision and question registers carry the only copy of what was decided, so a
+    compacted run's entry stays and its link follows the run into the archive.
+    """
+    absolute = cli.vault_path / relative_path
+    if not absolute.exists() or not moved:
+        return 0
+    archived = {source.stem: dest.with_suffix("").as_posix() for source, dest in moved}
+    retargeted = 0
+
+    def _retarget(match: "re.Match[str]") -> str:
+        nonlocal retargeted
+        target, alias = match.group(1), match.group(2)
+        dest = archived.get(Path(target).stem)
+        if dest is None or target == dest:
+            return match.group(0)
+        retargeted += 1
+        return f"[[{dest}|{alias or Path(target).stem}]]"
+
+    body = absolute.read_text(encoding="utf-8")
+    updated = re.sub(r"\[\[([^\]|#]+)(?:\|([^\]]*))?\]\]", _retarget, body)
+    if retargeted and not cli.dry_run:
+        absolute.write_text(updated, encoding="utf-8")
+    return retargeted
 
 
 def _append_unique_line(cli: ObsidianCLI, relative_path: Path, line: str) -> None:
@@ -2862,8 +2891,11 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
 
     stems = {run.source_stem or run.stem for run in batch_runs}
     pruned = 0
-    for hub in [paths.run_log, paths.moc, paths.decisions, paths.questions]:
+    # The run log and MOC are indexes of raw runs, so their entries give way to the
+    # compaction summary. Registers keep every entry; only the link moves.
+    for hub in [paths.run_log, paths.moc]:
         pruned += _remove_lines_linking_stems(cli, hub, stems)
+    retargeted = sum(_retarget_run_links(cli, hub, moved) for hub in [paths.decisions, paths.questions])
     summary = (
         f"- {_wikilink(compaction_path)}: Compacted {len(batch_runs)} run note(s) "
         f"and distilled {len(runs)} total source run(s) into {len(topics)} topic note(s); "
@@ -2871,8 +2903,12 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
     )
     _append_unique_line(cli, paths.run_log, summary)
     _append_unique_line(cli, paths.moc, summary)
-    _append_unique_line(cli, paths.decisions, f"- {_wikilink(compaction_path)}: Prefer {_wikilink(paths.current_memory)} and topic notes before raw archived run notes for retrieval.")
+    retrieval_rule = "and topic notes before raw archived run notes for retrieval."
+    decisions_abs = vault_path / paths.decisions
+    if not (decisions_abs.exists() and retrieval_rule in decisions_abs.read_text(encoding="utf-8")):
+        _append_unique_line(cli, paths.decisions, f"- {_wikilink(compaction_path)}: Prefer {_wikilink(paths.current_memory)} {retrieval_rule}")
     print(f"Pruned hub/index lines pointing at compacted runs: {pruned}")
+    print(f"Register links moved to archived runs: {retargeted}")
 
     active_runs = len(list((vault_path / paths.runs_dir).glob("*.md"))) if (vault_path / paths.runs_dir).exists() else 0
     archived_runs = len(list((vault_path / paths.archived_runs_dir).glob("*.md"))) if (vault_path / paths.archived_runs_dir).exists() else 0

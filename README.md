@@ -286,7 +286,7 @@ Use `--workspace "/path"` on any command to target a different workspace.
 
 - Vault mappings persist in `state/vault_config.json` (git-ignored).
 - Auto-audit triggers every 5 runs by default (configurable via `set-audit-frequency`).
-- `compact-project` moves new source notes from `Runs/` to `Archive/Runs/`, marks them `status: "compacted"`, prunes noisy run links from hub indexes, and rebuilds `Current Memory.md` plus `Topics/*.md` from the new batch and prior archived history. Repeated `--max-runs` batches are cumulative instead of destructive.
+- `compact-project` moves new source notes from `Runs/` to `Archive/Runs/`, marks them `status: "compacted"`, prunes noisy run links from the Run Log and MOC indexes, keeps every Decisions and Open Questions entry (its link moves to the archived run), and rebuilds `Current Memory.md` plus `Topics/*.md` from the new batch and prior archived history. Repeated `--max-runs` batches are cumulative instead of destructive.
 - Active distilled notes drop transcript wrappers and instruction boilerplate and redact common private values. Raw archived evidence is not rewritten; use `--include-archive` to refresh distilled memory after filter improvements even when no new runs exist.
 - Search skips `Archive/` by default and ranks compacted memory and topic notes ahead of raw run logs, so retrieval starts from distilled knowledge. Use `--include-archive` when you need archived evidence.
 - Hook adapters are additive — the skill works fine without any hooks installed.

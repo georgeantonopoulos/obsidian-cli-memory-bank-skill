@@ -944,6 +944,17 @@ class CompactionTests(unittest.TestCase):
                     "- [[2026-01-01-1002-export-run]]: noisy\n",
                     encoding="utf-8",
                 )
+                runs_rel = paths.runs_dir.as_posix()
+                (vault / paths.decisions).write_text(
+                    "# Decisions\n\n## Decision Register\n"
+                    f"- [[{runs_rel}/2026-01-01-1001-export-run|2026-01-01-1001-export-run]]: Export writes atomically.\n",
+                    encoding="utf-8",
+                )
+                (vault / paths.questions).write_text(
+                    "# Open Questions\n\n## Question Log\n"
+                    "- [[2026-01-01-1003-permissions-run]]: Should permissions be cached?\n",
+                    encoding="utf-8",
+                )
 
                 args = argparse.Namespace(
                     project="Demo",
@@ -969,6 +980,28 @@ class CompactionTests(unittest.TestCase):
                 run_log = (vault / paths.run_log).read_text(encoding="utf-8")
                 self.assertNotIn("[[2026-01-01-1001-export-run]]: noisy", run_log)
                 self.assertIn("Compacted 3 run note(s)", run_log)
+
+                # Registers keep every entry; the link follows the run into the archive.
+                archive_rel = paths.archived_runs_dir.as_posix()
+                decisions = (vault / paths.decisions).read_text(encoding="utf-8")
+                self.assertIn(
+                    f"- [[{archive_rel}/2026-01-01-1001-export-run|2026-01-01-1001-export-run]]: Export writes atomically.",
+                    decisions,
+                )
+                questions = (vault / paths.questions).read_text(encoding="utf-8")
+                self.assertIn(f"[[{archive_rel}/2026-01-01-1003-permissions-run|2026-01-01-1003-permissions-run]]: Should permissions be cached?", questions)
+
+                # A second compaction does not repeat the retrieval rule.
+                (runs_dir / "2026-01-02-1001-export-run.md").write_text(
+                    '---\ntype: "run"\nproject: "Demo"\ntags:\n  - "export"\ntitle: "export follow-up"\n---\n\n'
+                    "# export follow-up\n\n## Summary\nVerified the export path again.\n",
+                    encoding="utf-8",
+                )
+                cmd_compact_project(args)
+                self.assertEqual(list(runs_dir.glob("*.md")), [])
+                decisions = (vault / paths.decisions).read_text(encoding="utf-8")
+                self.assertEqual(decisions.count("topic notes before raw archived run notes for retrieval."), 1)
+                self.assertIn("Export writes atomically.", decisions)
         finally:
             if original_state_env is None:
                 os.environ.pop("OBMEM_STATE_FILE", None)
