@@ -44,6 +44,8 @@ class ClaudeSessionStartHookTests(unittest.TestCase):
         self.assertIn("Vault healthy for demo", output)
         self.assertIn('MANDATORY', output)
         self.assertIn('skill "obsidian-cli-memory-bank"', output)
+        self.assertIn('obmem record-run --project "demo"', output)
+        self.assertIn("including work done only in a browser", output)
 
     def test_requires_loading_the_skill_when_health_check_fails(self) -> None:
         output = self._run(1)
@@ -161,6 +163,17 @@ class ClaudePrePromptHookTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         argv = run.call_args.args[0]
         self.assertEqual(argv[argv.index("--min-jev") + 1], "0.50")
+
+    def test_search_output_carries_the_end_of_turn_recording_rule(self) -> None:
+        payload = json.dumps({"prompt": "Why does the compositor viewer flicker on resize?", "cwd": tempfile.gettempdir()})
+        completed = HOOK.subprocess.CompletedProcess([], 0, "No matches found.", "")
+        with patch("sys.stdin") as stdin, patch.object(HOOK, "active_context", return_value=("/w", "demo")), \
+                patch.object(HOOK.subprocess, "run", return_value=completed), \
+                patch("sys.stdout", new_callable=__import__("io").StringIO) as stdout:
+            stdin.read.return_value = payload
+            self.assertEqual(HOOK.main(), 0)
+        self.assertIn("No matches.", stdout.getvalue())
+        self.assertIn('obmem record-run --project "demo"', stdout.getvalue())
 
     def test_clean_excerpt_drops_frontmatter_nav_and_related(self) -> None:
         note = """---

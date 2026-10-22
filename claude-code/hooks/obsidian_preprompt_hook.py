@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
+    capture_directive,
     read_payload,
     redact_secrets,
     truncate,
@@ -328,7 +329,8 @@ def main() -> int:
                     "additionalContext": "[obsidian-memory] Recency question, so memory is ranked by date, not keywords.\n"
                                          f"Projects by latest session: {by_project}\n"
                                          "Newest sessions (date | project | title):\n" + listing
-                                         + "\nRead one with obmem search --project <project> or read-note.",
+                                         + "\nRead one with obmem search --project <project> or read-note.\n"
+                                         + capture_directive(project),
                 },
             }))
             return 0
@@ -356,7 +358,8 @@ def main() -> int:
     header = f"[obsidian-memory] Searched Obsidian vault (project: {project}) with keywords: {query}"
     if selected_hits:
         excerpts = _note_excerpts(selected_hits, workspace)
-        context = f"{header}\n{selected_hits}" + (f"\n\n{excerpts}" if excerpts else "")
+        context = (f"{header}\n{selected_hits}" + (f"\n\n{excerpts}" if excerpts else "")
+                   + f"\n\n{capture_directive(project)}")
         # JSON output lets Claude Code show a one-line notice while the notes go to the agent.
         print(json.dumps({
             "systemMessage": _visible_notice(selected_hits, excerpts),
@@ -365,7 +368,8 @@ def main() -> int:
     else:
         print(
             f"{header}\nNo matches. Consider using the obmem skill to search "
-            f"with domain-specific keywords (e.g. project name, technology, feature names)."
+            f"with domain-specific keywords (e.g. project name, technology, feature names).\n"
+            f"{capture_directive(project)}"
         )
     return 0
 

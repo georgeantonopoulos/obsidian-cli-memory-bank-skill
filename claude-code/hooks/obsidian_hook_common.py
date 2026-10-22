@@ -17,6 +17,21 @@ from typing import Any, Dict, List, Optional, Tuple
 EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 _DISABLED_VALUES = frozenset({"0", "off", "false", "no"})
 
+
+def capture_directive(project: str) -> str:
+    """The end-of-turn recording rule, stated wherever the hooks speak to Claude.
+
+    The Stop hook only auto-captures turns that edited files, and its summary is thin,
+    so milestones reached in a browser or another tool are lost unless Claude records them.
+    """
+    return (
+        "[obsidian-memory] MANDATORY at the end of every turn that reached a milestone (a decision, a "
+        "cause or fix, a verified result, something shipped, published or scheduled), including work done "
+        "only in a browser or another tool with no file edits: record it yourself with "
+        f"`obmem record-run --project \"{project}\"` before your final reply. The Stop hook only "
+        "auto-captures turns that edited files, so do not rely on it."
+    )
+
 # ---------------------------------------------------------------------------
 # Secret redaction: nothing that looks like a credential may reach a search
 # query, a Jev request, or a vault note.

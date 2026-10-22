@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
-from obsidian_hook_common import active_context, read_payload  # noqa: E402
+from obsidian_hook_common import active_context, capture_directive, read_payload  # noqa: E402
 
 # Mandatory: the skill's recall and capture rules must be in context from the first turn.
 LOAD_SKILL_DIRECTIVE = (
@@ -57,6 +57,7 @@ def main() -> int:
             f"Detail: {detail}"
         )
     print(LOAD_SKILL_DIRECTIVE)
+    print(capture_directive(project))
     return 0
 
 

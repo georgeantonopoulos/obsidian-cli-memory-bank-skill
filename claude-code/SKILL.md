@@ -26,7 +26,7 @@ Prefer relevant `Current Memory.md` and `Topics/` over indexes and raw runs. Nev
 
 `SessionStart` validates connectivity; `UserPromptSubmit` injects search results; `Stop` records turns that edited files; `PreCompact` preserves summaries; `PostToolUse` mirrors memory-file writes. Reuse their output. Hooks are non-blocking; reported failures may require manual fallback. Sources and setup are in the repository's `claude-code/hooks/` and `claude-code/INSTALL.md`.
 
-Record manually once only when authorized and automatic recording is inactive or has failed. Capture reusable decisions, causes/fixes, verification, or open questions. Skip chatter, retries, and unchanged outcomes. Never persist secrets, private access links, personal data, or transcripts.
+Record manually with `record-run` at the end of every turn that reached a milestone (a decision, cause/fix, verified result, or something shipped, published or scheduled) and that the `Stop` hook will not capture well: turns with no file edits, such as browser or external-tool work, or turns whose outcome its short summary misses. Capture reusable decisions, causes/fixes, verification, or open questions. Skip chatter, retries, and unchanged outcomes. Never persist secrets, private access links, personal data, or transcripts.
 
 ```bash
 obmem record-run --project "ProjectName" --title "Fix export progress" \
