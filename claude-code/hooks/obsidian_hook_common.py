@@ -7,8 +7,10 @@ from its own directory, so copies and symlinks both work.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import time
 import re
 import subprocess
 from pathlib import Path
@@ -303,8 +305,19 @@ def last_turn(transcript_path: str) -> Dict[str, Any]:
     edited: List[str] = []
     assistant_text = ""
     recorded = False
+    record_ids: set = set()
     for entry in entries[start + 1:]:
-        if entry.get("type") != "assistant" or entry.get("isSidechain"):
+        if entry.get("isSidechain"):
+            continue
+        if entry.get("type") == "user":
+            # Only a record-run that finished without error counts as a manual note.
+            content = (entry.get("message") or {}).get("content") if isinstance(entry.get("message"), dict) else None
+            for block in content if isinstance(content, list) else []:
+                if (isinstance(block, dict) and block.get("type") == "tool_result"
+                        and str(block.get("tool_use_id", "")) in record_ids and not block.get("is_error")):
+                    recorded = True
+            continue
+        if entry.get("type") != "assistant":
             continue
         message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
         content = message.get("content")
@@ -319,7 +332,7 @@ def last_turn(transcript_path: str) -> Dict[str, Any]:
                 if name in EDIT_TOOLS and file_path and file_path not in edited:
                     edited.append(str(file_path))
                 if name == "Bash" and _RECORD_RUN_RE.search(str(tool_input.get("command", ""))):
-                    recorded = True
+                    record_ids.add(str(block.get("id", "")))
             elif block.get("type") == "text" and isinstance(block.get("text"), str) and block["text"].strip():
                 assistant_text = block["text"].strip()
     first = entries[start]
@@ -337,43 +350,44 @@ def last_turn(transcript_path: str) -> Dict[str, Any]:
 # Stop-hook de-duplication: one auto note per turn, even if Stop fires again
 # ---------------------------------------------------------------------------
 
-_SEEN_LIMIT = 200
+_SEEN_MAX_AGE = 14 * 24 * 3600
 
 
-def _seen_path() -> Path:
+def _seen_dir() -> Path:
     override = os.environ.get("OBMEM_STOP_STATE", "").strip()
-    return Path(override) if override else Path.home() / ".cache" / "obmem" / "stop-hook-seen.json"
+    return Path(override) if override else Path.home() / ".cache" / "obmem" / "stop-hook-seen"
+
+
+def _seen_file(session_id: str) -> Path:
+    # One small file per session: concurrent sessions never rewrite each other's state.
+    return _seen_dir() / (hashlib.sha1(session_id.encode("utf-8")).hexdigest() + ".txt")
 
 
 def turn_already_logged(session_id: str, start_id: str) -> bool:
     if not session_id or not start_id:
         return False
     try:
-        seen = json.loads(_seen_path().read_text(encoding="utf-8"))
+        return _seen_file(session_id).read_text(encoding="utf-8").strip() == start_id
     except (OSError, ValueError):
         return False
-    return isinstance(seen, dict) and seen.get(session_id) == start_id
 
 
 def mark_turn_logged(session_id: str, start_id: str) -> None:
     if not session_id or not start_id:
         return
-    path = _seen_path()
     try:
-        try:
-            seen = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            seen = {}
-        if not isinstance(seen, dict):
-            seen = {}
-        seen.pop(session_id, None)
-        seen[session_id] = start_id
-        while len(seen) > _SEEN_LIMIT:
-            seen.pop(next(iter(seen)))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(seen), encoding="utf-8")
-        tmp.replace(path)
+        target = _seen_file(session_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(start_id, encoding="utf-8")
+        tmp.replace(target)
+        cutoff = time.time() - _SEEN_MAX_AGE
+        for old in target.parent.glob("*.txt"):
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
     except OSError:
         pass
 

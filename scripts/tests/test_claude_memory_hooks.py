@@ -445,13 +445,27 @@ class HookCommonTests(unittest.TestCase):
         ])
         self.assertEqual(COMMON.last_turn(path)["prompt"], "go")
 
-    def test_last_turn_notices_a_manual_record_run(self) -> None:
-        path = self._transcript([
+    def _record_run_turn(self, is_error):
+        return self._transcript([
             {"type": "user", "message": {"content": "ship it"}},
             {"type": "assistant", "message": {"content": [
-                {"type": "tool_use", "name": "Bash", "input": {"command": 'obmem record-run --project "X" --title t'}}]}},
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": 'obmem record-run --project "X" --title t'}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": is_error, "content": "x"}]}},
         ])
-        self.assertTrue(COMMON.last_turn(path)["recorded"])
+
+    def test_last_turn_notices_a_manual_record_run(self) -> None:
+        self.assertTrue(COMMON.last_turn(self._record_run_turn(False))["recorded"])
+
+    def test_failed_record_run_does_not_count(self) -> None:
+        self.assertFalse(COMMON.last_turn(self._record_run_turn(True))["recorded"])
+
+    def test_concurrent_sessions_keep_their_own_dedup_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"OBMEM_STOP_STATE": tmp}):
+            COMMON.mark_turn_logged("s1", "u1")
+            COMMON.mark_turn_logged("s2", "u9")
+            self.assertTrue(COMMON.turn_already_logged("s1", "u1"))
+            self.assertTrue(COMMON.turn_already_logged("s2", "u9"))
+            self.assertFalse(COMMON.turn_already_logged("s1", "u2"))
 
 
 class StopHookTests(unittest.TestCase):
@@ -483,7 +497,7 @@ class StopHookTests(unittest.TestCase):
     def _state(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        return patch.dict(os.environ, {"OBMEM_STOP_LOG": "", "OBMEM_STOP_STATE": str(Path(tmp.name) / "seen.json")})
+        return patch.dict(os.environ, {"OBMEM_STOP_LOG": "", "OBMEM_STOP_STATE": str(Path(tmp.name) / "seen")})
 
     EDIT_TURN = [
         {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}},
@@ -516,7 +530,8 @@ class StopHookTests(unittest.TestCase):
 
     def test_turn_that_ran_record_run_is_not_auto_logged(self) -> None:
         turn = self.EDIT_TURN + [{"type": "assistant", "message": {"content": [
-            {"type": "tool_use", "name": "Bash", "input": {"command": "obmem record-run --project Demo --title x"}}]}}]
+            {"type": "tool_use", "id": "r1", "name": "Bash", "input": {"command": "obmem record-run --project Demo --title x"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r1", "content": "Recorded"}]}}]
         with self._state():
             self.assertEqual(self._run_stop(turn).call_count, 0)
 
