@@ -19,9 +19,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
     last_turn,
+    mark_turn_logged,
     read_payload,
     record_run,
     truncate,
+    turn_already_logged,
 )
 
 
@@ -41,8 +43,16 @@ def main() -> int:
     transcript_path = payload.get("transcript_path")
     turn = last_turn(transcript_path) if isinstance(transcript_path, str) else {
         "prompt": "", "assistant": "", "tools": [], "edited_files": [],
+        "recorded": False, "start_id": "",
     }
     if mode == "edits" and not turn["edited_files"]:
+        return 0
+    # Claude already wrote a note for this turn; a second, thinner one is noise.
+    if turn.get("recorded"):
+        return 0
+    session_id = str(payload.get("session_id") or "")
+    start_id = str(turn.get("start_id") or "")
+    if turn_already_logged(session_id, start_id):
         return 0
 
     context = active_context(payload)
@@ -70,6 +80,7 @@ def main() -> int:
         tags="claude,auto-log",
     )
     if result.returncode == 0:
+        mark_turn_logged(session_id, start_id)
         print("[obsidian-memory] Logged run note to Obsidian.", file=sys.stderr)
     else:
         print(f"[obsidian-memory] record-run failed (non-blocking): {result.stderr[:200]}", file=sys.stderr)
@@ -77,4 +88,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:  # a memory hook must never break or block the session
+        sys.exit(0)

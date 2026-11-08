@@ -181,6 +181,21 @@ chmod +x ~/.claude/hooks/obsidian_*.py
 
 All hooks silently no-op when no vault is mapped for the current workspace.
 
+**Tuning the prompt search (optional).** The search picks a few keywords from each prompt. If your prompts often mention words that never help find a note (the names of people or agents you work with, a recurring sign-off), list them in `~/.config/obmem/query-ignore.txt`, one per line:
+
+```text
+# names: skipped only when written with a capital ("Rose", but not "rose gold")
+Rose
+# lowercase words: always skipped
+standup
+# re: patterns: matching text is removed before keywords are picked
+re:\(sent from my phone\)
+```
+
+No file means no extra words. Set `OBMEM_QUERY_IGNORE_FILE` to use another path.
+
+**Updating.** `pipx upgrade obsidian-cli-memory-bank`, then copy all hook scripts again (`cp claude-code/hooks/*.py ~/.claude/hooks/`); they share `obsidian_hook_common.py`, so old and new copies must not be mixed. Symlinked hooks need nothing. See [`CHANGELOG.md`](CHANGELOG.md).
+
 ### Codex
 
 ```bash
