@@ -202,6 +202,8 @@ _TASK_SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
 _PEER_WRAPPER_RE = re.compile(r"^Another Claude session sent a message:\s*", re.IGNORECASE)
 _IDLE_NOTICE_PREFIX = "[Cross-session idle notice]"
 _RECORD_RUN_RE = re.compile(r"\bobmem\s+record-run\b")
+# What `obmem record-run` prints once the note is written: proof it really ran.
+_RECORDED_OUTPUT = "Recorded run note:"
 
 
 def _entry_text(entry: Dict[str, Any]) -> Optional[str]:
@@ -262,8 +264,19 @@ def turn_start_prompt(entry: Dict[str, Any]) -> str:
 
 
 def _is_typed(entry: Dict[str, Any]) -> bool:
+    if entry.get("isMeta"):
+        return False  # idle notices and other injected entries are not typed
     origin = entry.get("origin") if isinstance(entry.get("origin"), dict) else {}
     return origin.get("kind") in (None, "human")
+
+
+def _result_text(block: Dict[str, Any]) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(b.get("text", "") for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return ""
 
 
 def _after_finished_reply(entries: List[Dict[str, Any]], index: int) -> bool:
@@ -310,11 +323,12 @@ def last_turn(transcript_path: str) -> Dict[str, Any]:
         if entry.get("isSidechain"):
             continue
         if entry.get("type") == "user":
-            # Only a record-run that finished without error counts as a manual note.
+            # Only a record-run that actually wrote a note counts (not a grep or echo of the text).
             content = (entry.get("message") or {}).get("content") if isinstance(entry.get("message"), dict) else None
             for block in content if isinstance(content, list) else []:
                 if (isinstance(block, dict) and block.get("type") == "tool_result"
-                        and str(block.get("tool_use_id", "")) in record_ids and not block.get("is_error")):
+                        and str(block.get("tool_use_id", "")) in record_ids and not block.get("is_error")
+                        and _RECORDED_OUTPUT in _result_text(block)):
                     recorded = True
             continue
         if entry.get("type") != "assistant":

@@ -463,16 +463,31 @@ class HookCommonTests(unittest.TestCase):
         ])
         self.assertEqual(COMMON.last_turn(path)["prompt"], "go")
 
-    def _record_run_turn(self, is_error):
+    def _record_run_turn(self, is_error, output="Recorded run note: Project Memory/x/Runs/a.md"):
         return self._transcript([
             {"type": "user", "message": {"content": "ship it"}},
             {"type": "assistant", "message": {"content": [
                 {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": 'obmem record-run --project "X" --title t'}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": is_error, "content": "x"}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": is_error, "content": output}]}},
         ])
 
     def test_last_turn_notices_a_manual_record_run(self) -> None:
         self.assertTrue(COMMON.last_turn(self._record_run_turn(False))["recorded"])
+
+    def test_command_merely_mentioning_record_run_does_not_count(self) -> None:
+        self.assertFalse(COMMON.last_turn(self._record_run_turn(False, output="SKILL.md:12: obmem record-run"))["recorded"])
+
+    def test_idle_notice_mid_turn_stays_in_that_turn(self) -> None:
+        path = self._transcript([
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "fix export"}},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "/a.py"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}},
+            {"type": "user", "isMeta": True, "message": {"content": "[Cross-session idle notice] worker is idle"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Done."}]}},
+        ])
+        turn = COMMON.last_turn(path)
+        self.assertEqual(turn["prompt"], "fix export")
+        self.assertEqual(turn["edited_files"], ["/a.py"])
 
     def test_failed_record_run_does_not_count(self) -> None:
         self.assertFalse(COMMON.last_turn(self._record_run_turn(True))["recorded"])
@@ -549,7 +564,7 @@ class StopHookTests(unittest.TestCase):
     def test_turn_that_ran_record_run_is_not_auto_logged(self) -> None:
         turn = self.EDIT_TURN + [{"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "r1", "name": "Bash", "input": {"command": "obmem record-run --project Demo --title x"}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r1", "content": "Recorded"}]}}]
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "r1", "content": "Recorded run note: Project Memory/demo/Runs/x.md"}]}}]
         with self._state():
             self.assertEqual(self._run_stop(turn).call_count, 0)
 
