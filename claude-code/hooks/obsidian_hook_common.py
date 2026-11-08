@@ -195,19 +195,86 @@ def recent_prompts(transcript_path: str, limit: int = 5) -> List[str]:
     return prompts[-limit:]
 
 
+_TAG_RE = re.compile(r"<[^>]+>")
+_TASK_SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
+_PEER_WRAPPER_RE = re.compile(r"^Another Claude session sent a message:\s*", re.IGNORECASE)
+_IDLE_NOTICE_PREFIX = "[Cross-session idle notice]"
+_RECORD_RUN_RE = re.compile(r"\bobmem\s+record-run\b")
+
+
+def _entry_text(entry: Dict[str, Any]) -> Optional[str]:
+    """Plain text of a user entry, or None for tool results."""
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            return None
+        return " ".join(
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+        ).strip()
+    return None
+
+
+def _strip_tags(text: str) -> str:
+    return " ".join(_TAG_RE.sub(" ", _PEER_WRAPPER_RE.sub("", text)).split())
+
+
+def turn_start_prompt(entry: Dict[str, Any]) -> str:
+    """The prompt text if this entry starts a turn, else ''.
+
+    A turn starts on a typed prompt and also on anything that wakes the session
+    by itself: a message from another session, a background task notice, an idle
+    notice. Those used to be skipped (they start with '<' or are meta entries),
+    so the Stop hook paired the reply to an office message with the last typed
+    prompt and re-logged every edit since it.
+    """
+    if entry.get("type") != "user" or entry.get("isSidechain"):
+        return ""
+    text = _entry_text(entry)
+    if text is None:
+        return ""
+    origin = entry.get("origin") if isinstance(entry.get("origin"), dict) else {}
+    kind = origin.get("kind")
+    if kind == "peer":
+        body = str(origin.get("body") or "").strip() or _strip_tags(text)
+        return f"Message from {origin.get('name') or 'another session'}: {body}"
+    if kind == "task-notification":
+        match = _TASK_SUMMARY_RE.search(text)
+        return "Background task: " + (" ".join(match.group(1).split()) if match else _strip_tags(text))
+    if kind == "human":
+        if text.startswith("<") and not text.startswith("<pasted"):
+            return _strip_tags(text)
+        return text
+    if entry.get("isMeta"):
+        return text if text.startswith(_IDLE_NOTICE_PREFIX) else ""
+    # Transcripts without an origin field: typed prompts only.
+    if (text.startswith("<") and not text.startswith("<pasted")) or text.startswith("[Request interrupted"):
+        return ""
+    return text
+
+
 def last_turn(transcript_path: str) -> Dict[str, Any]:
-    """Summarise the latest turn: prompt, final assistant text, and edited files."""
+    """Summarise the latest turn: prompt, final assistant text, edited files.
+
+    ``recorded`` is True when the turn already ran ``obmem record-run`` itself;
+    ``start_id`` identifies the entry that started the turn.
+    """
     entries = _load_transcript(transcript_path)
     start = None
+    prompt = ""
     for index in range(len(entries) - 1, -1, -1):
-        if _user_prompt_text(entries[index]):
+        prompt = turn_start_prompt(entries[index])
+        if prompt:
             start = index
             break
     if start is None:
-        return {"prompt": "", "assistant": "", "tools": [], "edited_files": []}
+        return {"prompt": "", "assistant": "", "tools": [], "edited_files": [],
+                "recorded": False, "start_id": ""}
     tools: List[str] = []
     edited: List[str] = []
     assistant_text = ""
+    recorded = False
     for entry in entries[start + 1:]:
         if entry.get("type") != "assistant" or entry.get("isSidechain"):
             continue
@@ -217,17 +284,68 @@ def last_turn(transcript_path: str) -> Dict[str, Any]:
             if block.get("type") == "tool_use":
                 name = str(block.get("name", ""))
                 tools.append(name)
-                file_path = (block.get("input") or {}).get("file_path") or (block.get("input") or {}).get("notebook_path")
+                tool_input = block.get("input") or {}
+                file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
                 if name in EDIT_TOOLS and file_path and file_path not in edited:
                     edited.append(str(file_path))
+                if name == "Bash" and _RECORD_RUN_RE.search(str(tool_input.get("command", ""))):
+                    recorded = True
             elif block.get("type") == "text" and block.get("text", "").strip():
                 assistant_text = block["text"].strip()
+    first = entries[start]
     return {
-        "prompt": _user_prompt_text(entries[start]),
+        "prompt": prompt,
         "assistant": assistant_text,
         "tools": tools,
         "edited_files": edited,
+        "recorded": recorded,
+        "start_id": str(first.get("uuid") or first.get("promptId") or f"line-{start}"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Stop-hook de-duplication: one auto note per turn, even if Stop fires again
+# ---------------------------------------------------------------------------
+
+_SEEN_LIMIT = 200
+
+
+def _seen_path() -> Path:
+    override = os.environ.get("OBMEM_STOP_STATE", "").strip()
+    return Path(override) if override else Path.home() / ".cache" / "obmem" / "stop-hook-seen.json"
+
+
+def turn_already_logged(session_id: str, start_id: str) -> bool:
+    if not session_id or not start_id:
+        return False
+    try:
+        seen = json.loads(_seen_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(seen, dict) and seen.get(session_id) == start_id
+
+
+def mark_turn_logged(session_id: str, start_id: str) -> None:
+    if not session_id or not start_id:
+        return
+    path = _seen_path()
+    try:
+        try:
+            seen = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            seen = {}
+        if not isinstance(seen, dict):
+            seen = {}
+        seen.pop(session_id, None)
+        seen[session_id] = start_id
+        while len(seen) > _SEEN_LIMIT:
+            seen.pop(next(iter(seen)))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(seen), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
 
 
 def record_run(workspace: str, project: str, *, title: str, prompt: str, summary: str,

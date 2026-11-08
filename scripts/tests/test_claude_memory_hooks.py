@@ -75,7 +75,7 @@ class ClaudePrePromptHookTests(unittest.TestCase):
     def test_select_search_hits_handles_no_matches(self) -> None:
         self.assertEqual(HOOK._select_search_hits("No matches found."), "")
 
-    def test_jev_order_kept_within_distilled_notes_ahead_of_logs(self) -> None:
+    def test_ranker_order_kept_and_run_notes_not_buried(self) -> None:
         output = """Found 12 hits; showing 4. Ranked by Jev.
   Project Memory/demo/Runs/2026-06-18-0900-fix-export.md (score 160; Jev 0.91; best)
   Project Memory/demo/Topics/Search.md (score 120; Jev 0.70)
@@ -83,10 +83,24 @@ class ClaudePrePromptHookTests(unittest.TestCase):
   Project Memory/demo/Runs/2026-06-19-0900-memory-sync-notes-md-demo.md (score 100; Jev 0.95)
 """
         lines = HOOK._select_search_hits(output).splitlines()[1:]
-        self.assertIn("Topics/Search.md", lines[0])
-        self.assertIn("Current Memory.md", lines[1])
-        self.assertIn("fix-export", lines[2])
+        self.assertIn("fix-export", lines[0])
+        self.assertIn("Topics/Search.md", lines[1])
+        self.assertIn("Current Memory.md", lines[2])
         self.assertFalse(any("memory-sync" in line for line in lines))
+
+    def test_moc_and_run_log_go_behind_the_run_they_list(self) -> None:
+        # Pixel's 7 Nov slip: the MOC listing the "$0 sale" run was injected instead of the run.
+        output = """Found 4 hits; showing 4. Ranked by Jev.
+  Project Memory/google-watch/MOC.md (score 300; Jev 0.90)
+  Project Memory/google-watch/Run Log.md (score 290; Jev 0.88)
+  Project Memory/google-watch/Runs/2026-11-05-0558-testers-community-0-sale-scheduled.md (score 272; Jev 0.95; best)
+  Project Memory/google-watch/Decisions.md (score 250; Jev 0.60)
+"""
+        lines = HOOK._select_search_hits(output).splitlines()[1:]
+        self.assertIn("0-sale-scheduled", lines[0])
+        self.assertIn("Decisions.md", lines[1])
+        self.assertIn("MOC.md", lines[2])
+        self.assertFalse(any("Run Log.md" in line for line in lines))
 
     def test_local_order_demotes_compactions(self) -> None:
         output = """Found 3 hits; showing 3.
@@ -256,6 +270,44 @@ Progress uses measured counts.
         self.assertEqual(set(query.split()[:2]), {"nuke", "oklch"})
 
 
+    def _office(self, names):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        roster = {f"/p/{i}": {"name": name} for i, name in enumerate(names)}
+        (Path(tmp.name) / "leads.json").write_text(json.dumps(roster))
+        return patch.dict(os.environ, {"OBMEM_OFFICE_DIR": tmp.name, "OBMEM_OFFICE_NAMES": ""})
+
+    def test_office_message_searches_the_topic_not_the_people(self) -> None:
+        prompt = ('Another Claude session sent a message:\n<cross-session-message from="uds:/tmp/x.sock" '
+                  'from-name="Gary" from-mode="prompting">\nPixel: George wants testers on Dew Drop for '
+                  'free, set up the free tester sale. SendMessage me when done.</cross-session-message>')
+        with self._office(["Pixel Pete", "Cleo Clang"]):
+            words = HOOK._sanitize_query(prompt).split()
+        self.assertIn("sale", words)
+        for noise in ("gary", "george", "pixel", "sendmessage", "cross", "session", "message", "uds"):
+            self.assertNotIn(noise, words)
+
+    def test_roster_names_dropped_only_when_written_as_names(self) -> None:
+        with self._office(["Merge Margaret", "Pixel Pete"]):
+            words = HOOK._sanitize_query("Merge the loader branch. Ask Margaret about the pixel shader").split()
+        self.assertIn("pixel", words)
+        self.assertNotIn("margaret", words)
+
+    def test_money_and_version_tokens_survive(self) -> None:
+        with self._office([]):
+            words = HOOK._sanitize_query("Create a $0 sale on Dew Drop so testers get it free").split()
+            self.assertIn("$0", words)
+            self.assertIn("sale", words)
+            words = HOOK._sanitize_query("[Scheduled: Sequency 1.5 App Store review] check Gmail").split()
+            self.assertIn("1.5", words)
+            self.assertNotIn("scheduled", words)
+            self.assertNotIn("2", HOOK._sanitize_query("fix 2 bugs in the export queue").split())
+
+    def test_missing_roster_fails_open(self) -> None:
+        with patch.dict(os.environ, {"OBMEM_OFFICE_DIR": "/nonexistent/obmem-office"}):
+            self.assertIn("nuke", HOOK._sanitize_query("George: the Nuke gizmo colour pipeline broke").split())
+
+
 class HookCommonTests(unittest.TestCase):
     def test_redact_secrets_covers_common_shapes(self) -> None:
         text = (
@@ -324,6 +376,51 @@ class HookCommonTests(unittest.TestCase):
         ])
         self.assertEqual(COMMON.recent_prompts(path), ["first", "second"])
 
+    def test_office_message_starts_its_own_turn(self) -> None:
+        # Gary's 7 Nov note paired "Cody seems stuck?" with the reply to a later message from Cody.
+        path = self._transcript([
+            {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "Cody seems stuck?"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Edit", "input": {"file_path": "/notes.md"}},
+                {"type": "text", "text": "Asked Cody."}]}},
+            {"type": "user", "uuid": "u2", "isMeta": True,
+             "origin": {"kind": "peer", "name": "Cody", "body": "Glimmerwild final"},
+             "message": {"content": 'Another Claude session sent a message:\n<cross-session-message from="x">'
+                                    "Glimmerwild final</cross-session-message>"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Glimmerwild 1.0.0 is finished."}]}},
+        ])
+        turn = COMMON.last_turn(path)
+        self.assertEqual(turn["prompt"], "Message from Cody: Glimmerwild final")
+        self.assertEqual(turn["assistant"], "Glimmerwild 1.0.0 is finished.")
+        self.assertEqual(turn["edited_files"], [])
+        self.assertEqual(turn["start_id"], "u2")
+
+    def test_task_notice_and_typed_office_prompts_start_turns(self) -> None:
+        notice = ("<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n"
+                  "<summary>Background command \"make test\" completed (exit code 0)</summary>\n</task-notification>")
+        path = self._transcript([
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "[Scheduled: Daily brief] read mail"}},
+            {"type": "user", "origin": {"kind": "task-notification"}, "message": {"content": notice}},
+        ])
+        self.assertEqual(COMMON.last_turn(path)["prompt"],
+                         'Background task: Background command "make test" completed (exit code 0)')
+
+    def test_skill_and_reminder_meta_entries_do_not_start_turns(self) -> None:
+        path = self._transcript([
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "fix export"}},
+            {"type": "user", "isMeta": True, "message": {"content": "Base directory for this skill: x"}},
+            {"type": "user", "isMeta": True, "message": {"content": "<system-reminder>x</system-reminder>"}},
+        ])
+        self.assertEqual(COMMON.last_turn(path)["prompt"], "fix export")
+
+    def test_last_turn_notices_a_manual_record_run(self) -> None:
+        path = self._transcript([
+            {"type": "user", "message": {"content": "ship it"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": 'obmem record-run --project "X" --title t'}}]}},
+        ])
+        self.assertTrue(COMMON.last_turn(path)["recorded"])
+
 
 class StopHookTests(unittest.TestCase):
     def test_question_only_turns_are_not_logged_by_default(self) -> None:
@@ -336,6 +433,60 @@ class StopHookTests(unittest.TestCase):
             stdin.read.return_value = payload
             self.assertEqual(STOP.main(), 0)
             record_run.assert_not_called()
+
+    def _run_stop(self, entries, session="s1"):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        for entry in entries:
+            handle.write(json.dumps(entry) + "\n")
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        payload = json.dumps({"transcript_path": handle.name, "session_id": session, "cwd": tempfile.gettempdir()})
+        ok = __import__("subprocess").CompletedProcess([], 0, "", "")
+        with patch("sys.stdin") as stdin, patch.object(STOP, "record_run", return_value=ok) as record_run, \
+                patch.object(STOP, "active_context", return_value=("/w", "Demo")):
+            stdin.read.return_value = payload
+            STOP.main()
+        return record_run
+
+    def _state(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return patch.dict(os.environ, {"OBMEM_STOP_LOG": "", "OBMEM_STOP_STATE": str(Path(tmp.name) / "seen.json")})
+
+    EDIT_TURN = [
+        {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Edit", "input": {"file_path": "/b.py"}},
+            {"type": "text", "text": "Fixed."}]}},
+    ]
+
+    def test_same_turn_is_logged_once_even_if_stop_fires_again(self) -> None:
+        with self._state():
+            self.assertEqual(self._run_stop(self.EDIT_TURN).call_count, 1)
+            # An unrecognised wake (e.g. a relay) adds no new turn start: no second note.
+            later = self.EDIT_TURN + [
+                {"type": "user", "isMeta": True, "message": {"content": "<relay from=\"c\">ping</relay>"}},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}},
+            ]
+            self.assertEqual(self._run_stop(later).call_count, 0)
+            # Another session's turn with the same start id is still logged.
+            self.assertEqual(self._run_stop(self.EDIT_TURN, session="s2").call_count, 1)
+
+    def test_office_reply_after_edit_turn_is_not_relogged(self) -> None:
+        with self._state():
+            self._run_stop(self.EDIT_TURN)
+            later = self.EDIT_TURN + [
+                {"type": "user", "uuid": "u2", "isMeta": True, "origin": {"kind": "peer", "name": "Gary", "body": "status?"},
+                 "message": {"content": "Another Claude session sent a message: status?"}},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "All done."}]}},
+            ]
+            self.assertEqual(self._run_stop(later).call_count, 0)
+
+    def test_turn_that_ran_record_run_is_not_auto_logged(self) -> None:
+        turn = self.EDIT_TURN + [{"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "obmem record-run --project Demo --title x"}}]}}]
+        with self._state():
+            self.assertEqual(self._run_stop(turn).call_count, 0)
 
 
 class MemorySyncHookTests(unittest.TestCase):

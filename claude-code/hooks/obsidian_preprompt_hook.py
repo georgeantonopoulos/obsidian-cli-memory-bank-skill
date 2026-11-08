@@ -56,8 +56,10 @@ _CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _SENTENCE_START_RE = re.compile(r"(?:^|[.!?\n]\s*)([A-Za-z][\w\-]*)")
 _SEARCH_HIT_RE = re.compile(r"^\s{2}(Project Memory/.+\.md) \(score \d+(?:; Jev [\d.]+)?(?:; best)?\)$")
 _JEV_GATED_RE = re.compile(r"none cleared the Jev threshold")
-# Distilled and topical notes answer questions; raw logs mostly repeat them.
-_LOW_VALUE_RE = re.compile(r"/(?:Compactions|Archive|Runs)/|/Run Log\.md$")
+# Index pages that only repeat one-line copies of other notes, and old batches.
+# Run notes are not here: they hold the actual record (the 5 Nov "$0 sale" run
+# was buried behind the MOC that merely listed it).
+_LOW_VALUE_RE = re.compile(r"/(?:Compactions|Archive)/|/(?:Run Log|MOC)\.md$")
 _MIN_KEYWORDS = 2
 _MIN_PROMPT_WORDS = 3
 # Jev relevance a note needs before it is injected (TypeSafe's cookbook uses 0.30; that let
@@ -94,6 +96,59 @@ _NAV_LINE_RE = re.compile(r"^(?:Parent note|MOC|Run log|Decision register|Questi
 _READ_FOOTER_RE = re.compile(r"^\[Excerpt: characters .*\]$")
 
 
+# Office traffic: words that say who is talking or how, never what about.
+_MESSAGE_WORDS = frozenset(
+    "sendmessage message messages cross-session crosssession session sessions "
+    "pushnotification notification notifications notify notice idle reply replied "
+    "ping boss office room rooms teammate teammates coffee scheduled schedule "
+    "claude agent agents wants wanted asks asked says said create created".split()
+)
+_ALWAYS_NAMES = frozenset({"george", "gary"})
+# Wrappers the office puts around a message; the text inside is the request.
+_WRAPPER_RES = (
+    re.compile(r"Another Claude session sent a message:", re.IGNORECASE),
+    re.compile(r"\(He clicked[^)]*\)", re.IGNORECASE),
+    re.compile(r"\[(?:Scheduled|Office)\s*:", re.IGNORECASE),
+    re.compile(r"\[Cross-session [^\]]*\]", re.IGNORECASE),
+    re.compile(r"</?[A-Za-z][\w-]*(?:\s[^<>]*)?/?>"),
+)
+# Prices, versions and codes: "$0", "£4.99", "1.5", "30%", "404". Lone small
+# counts ("fix 2 bugs") say nothing and are left out.
+_NUMBER_TOKEN_RE = re.compile(r"(?<![\w.])[$£€]?\d+(?:[.,]\d+)*%?(?![\w.])")
+
+
+def _specific_number(token: str) -> bool:
+    return token[0] in "$£€" or token.endswith("%") or "." in token or "," in token or len(token) >= 3
+
+
+def _office_dir() -> Path:
+    override = os.environ.get("OBMEM_OFFICE_DIR", "").strip()
+    return Path(override) if override else Path.home() / ".claude-manager"
+
+
+def _office_names() -> frozenset:
+    """People in the office (lowercase name parts), from its roster when present."""
+    names = set(_ALWAYS_NAMES)
+    try:
+        roster = json.loads((_office_dir() / "leads.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        roster = {}
+    if isinstance(roster, dict):
+        for lead in roster.values():
+            name = lead.get("name") if isinstance(lead, dict) else None
+            if isinstance(name, str):
+                names.update(part.lower() for part in re.findall(r"[A-Za-z]+", name))
+    extra = os.environ.get("OBMEM_OFFICE_NAMES", "")
+    names.update(part.lower() for part in re.findall(r"[A-Za-z]+", extra))
+    return frozenset(names)
+
+
+def _strip_office_wrappers(text: str) -> str:
+    for pattern in _WRAPPER_RES:
+        text = pattern.sub(" ", text)
+    return text
+
+
 def _split_identifier(name: str) -> str:
     """Split a code identifier into words (underscores and camelCase)."""
     parts = name.replace("-", "_").split("_")
@@ -110,15 +165,21 @@ def _is_named(token: str, sentence_starts: set[str]) -> bool:
     return token[:1].isupper() and token not in sentence_starts
 
 
-def _sanitize_query(prompt: str, max_words: int = 4) -> str:
+def _sanitize_query(prompt: str, max_words: int = 5) -> str:
     """Extract meaningful search keywords from a raw user prompt.
 
-    Named things (proper nouns, identifiers in backticks) rank ahead of plain
-    words; within each group longer words win.
+    Named things (proper nouns, identifiers in backticks, prices and versions)
+    rank ahead of plain words; within each group longer words win. Office
+    traffic is dropped first: the wrapper around a message, people's names
+    when written as names, and words like SendMessage that only say how a
+    request arrived. Otherwise "Gary: George wants the $0 sale" searched for
+    george/gary and lost the sale.
     """
     text = redact_secrets(prompt).replace("[redacted secret]", " ")
+    text = _strip_office_wrappers(text)
     for pattern in (_URL_RE, _FILE_PATH_RE, _DATE_STAMP_RE):
         text = pattern.sub(" ", text)
+    office_names = _office_names()
     identifiers: set[str] = set()
 
     def _expand(match: re.Match) -> str:
@@ -127,13 +188,32 @@ def _sanitize_query(prompt: str, max_words: int = 4) -> str:
         return " " + words + " "
 
     text = _INLINE_CODE_RE.sub(_expand, text)
+    numbers: list[tuple[int, str]] = []
+
+    def _keep_number(match: re.Match) -> str:
+        numbers.append((match.start(), match.group()))
+        return " "
+
+    text = _NUMBER_TOKEN_RE.sub(_keep_number, text)
     sentence_starts = set(_SENTENCE_START_RE.findall(text))
     text = _NON_ALPHA_RE.sub(" ", text)
     seen: set[str] = set()
     ranked: list[tuple[int, int, int, str]] = []
+    # Specific numbers are the most selective terms there are: rank them first.
+    for offset, number in numbers:
+        if number not in seen and _specific_number(number):
+            seen.add(number)
+            ranked.append((-1, -len(number), offset, number))
     for position, token in enumerate(text.split()):
         word = token.lower().strip("-")
-        if len(word) < 2 or word in seen or word in _STOP_WORDS:
+        if len(word) < 2 or word in seen or word in _STOP_WORDS or word in _MESSAGE_WORDS:
+            continue
+        # "tester" after "testers" (or the reverse) adds nothing.
+        if word + "s" in seen or (word.endswith("s") and word[:-1] in seen):
+            continue
+        # A roster name is dropped when written as a name ("Pixel"), kept as a
+        # plain word ("merge", "pixel art").
+        if word in office_names and (token[:1].isupper() or word in _ALWAYS_NAMES):
             continue
         seen.add(word)
         named = word in identifiers or _is_named(token, sentence_starts)
@@ -146,8 +226,8 @@ def _select_search_hits(output: str, limit: int = 3) -> str:
     """Pick the top note paths.
 
     Copies of the agent's own memory files are dropped (they already load at
-    session start), and distilled notes go ahead of raw logs; within each group
-    the search's order (Jev's, when it ranks) is kept.
+    session start) and index pages (Run Log, MOC, compactions, archive) go last;
+    otherwise the search's own order (Jev's, when it ranks) is kept.
     """
     lines = [line for line in output.splitlines()
              if (m := _SEARCH_HIT_RE.match(line)) and not _MEMORY_COPY_RE.search(m.group(1))]
