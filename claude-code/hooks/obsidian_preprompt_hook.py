@@ -56,8 +56,10 @@ _CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _SENTENCE_START_RE = re.compile(r"(?:^|[.!?\n]\s*)([A-Za-z][\w\-]*)")
 _SEARCH_HIT_RE = re.compile(r"^\s{2}(Project Memory/.+\.md) \(score \d+(?:; Jev [\d.]+)?(?:; best)?\)$")
 _JEV_GATED_RE = re.compile(r"none cleared the Jev threshold")
-# Distilled and topical notes answer questions; raw logs mostly repeat them.
-_LOW_VALUE_RE = re.compile(r"/(?:Compactions|Archive|Runs)/|/Run Log\.md$")
+# Index pages that only repeat one-line copies of other notes, and old batches.
+# Run notes are not here: they hold the actual record, and demoting them let
+# the MOC line that merely listed a run outrank the run itself.
+_LOW_VALUE_RE = re.compile(r"/(?:Compactions|Archive)/|/(?:Run Log|MOC)\.md$")
 _MIN_KEYWORDS = 2
 _MIN_PROMPT_WORDS = 3
 # Jev relevance a note needs before it is injected (TypeSafe's cookbook uses 0.30; that let
@@ -94,6 +96,73 @@ _NAV_LINE_RE = re.compile(r"^(?:Parent note|MOC|Run log|Decision register|Questi
 _READ_FOOTER_RE = re.compile(r"^\[Excerpt: characters .*\]$")
 
 
+# Words that say how a request arrived (Claude Code's messaging and
+# notification vocabulary, request verbs), never what it is about.
+_MESSAGE_WORDS = frozenset(
+    "sendmessage message messages cross-session crosssession session sessions "
+    "pushnotification notification notifications notify notice idle reply replied "
+    "ping teammate teammates scheduled claude agent agents "
+    "wants wanted asks asked says said create created".split()
+)
+# Wrappers Claude Code puts around messages from other sessions, task notices
+# and labelled prompts ("[Scheduled: ...]"); the text inside is the request.
+_WRAPPER_RES = (
+    re.compile(r"Another Claude session sent a message:", re.IGNORECASE),
+    re.compile(r"\[Cross-session [^\]]*\]", re.IGNORECASE),
+    re.compile(r"\[[A-Z][\w-]*(?: [\w-]+)?\s*:"),
+    re.compile(r"</?[A-Za-z][\w-]*(?:\s[^<>]*)?/?>"),
+)
+# Prices, versions and codes: "$0", "£4.99", "1.5", "30%", "404". Lone small
+# counts ("fix 2 bugs") say nothing and are left out.
+_NUMBER_TOKEN_RE = re.compile(r"(?<![\w.])[$£€]?\d+(?:[.,]\d+)*%?(?![\w.])")
+
+
+def _specific_number(token: str) -> bool:
+    return token[0] in "$£€" or token.endswith("%") or "." in token or "," in token or len(token) >= 3
+
+
+def _ignore_file() -> Path:
+    override = os.environ.get("OBMEM_QUERY_IGNORE_FILE", "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".config" / "obmem" / "query-ignore.txt"
+
+
+def _query_ignore() -> tuple[frozenset, frozenset, tuple]:
+    """Optional per-user list of words the prompt search should skip.
+
+    One entry per line, ``#`` for comments:
+      ``Alice``      a name: skipped when written capitalised, kept as a plain word
+      ``standup``    lowercase: always skipped
+      ``re:<regex>`` text removed from the prompt before keywords are picked
+    A missing or unreadable file means no extra words.
+    """
+    names: set[str] = set()
+    words: set[str] = set()
+    patterns: list = []
+    try:
+        lines = _ignore_file().read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        lines = []
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("re:"):
+            try:
+                patterns.append(re.compile(line[3:].strip()))
+            except re.error:
+                pass
+            continue
+        for part in re.findall(r"[A-Za-z][\w-]*", line):
+            (names if part[:1].isupper() else words).add(part.lower())
+    return frozenset(names), frozenset(words), tuple(patterns)
+
+
+def _strip_wrappers(text: str, extra: tuple = ()) -> str:
+    for pattern in (*extra, *_WRAPPER_RES):
+        text = pattern.sub(" ", text)
+    return text
+
+
 def _split_identifier(name: str) -> str:
     """Split a code identifier into words (underscores and camelCase)."""
     parts = name.replace("-", "_").split("_")
@@ -110,13 +179,19 @@ def _is_named(token: str, sentence_starts: set[str]) -> bool:
     return token[:1].isupper() and token not in sentence_starts
 
 
-def _sanitize_query(prompt: str, max_words: int = 4) -> str:
+def _sanitize_query(prompt: str, max_words: int = 5) -> str:
     """Extract meaningful search keywords from a raw user prompt.
 
-    Named things (proper nouns, identifiers in backticks) rank ahead of plain
-    words; within each group longer words win.
+    Named things (proper nouns, identifiers in backticks, prices and versions)
+    rank ahead of plain words; within each group longer words win.
+    Messaging noise is dropped first: the wrapper around a message, names from
+    the optional ignore file when written as names, and words like SendMessage that only say how a
+    request arrived. Otherwise "Alice: Bob wants the $0 sale" searched for
+    the people and lost the sale.
     """
     text = redact_secrets(prompt).replace("[redacted secret]", " ")
+    ignored_names, ignored_words, ignored_patterns = _query_ignore()
+    text = _strip_wrappers(text, ignored_patterns)
     for pattern in (_URL_RE, _FILE_PATH_RE, _DATE_STAMP_RE):
         text = pattern.sub(" ", text)
     identifiers: set[str] = set()
@@ -127,13 +202,33 @@ def _sanitize_query(prompt: str, max_words: int = 4) -> str:
         return " " + words + " "
 
     text = _INLINE_CODE_RE.sub(_expand, text)
+    numbers: list[tuple[int, str]] = []
+
+    def _keep_number(match: re.Match) -> str:
+        numbers.append((match.start(), match.group()))
+        return " "
+
+    text = _NUMBER_TOKEN_RE.sub(_keep_number, text)
     sentence_starts = set(_SENTENCE_START_RE.findall(text))
     text = _NON_ALPHA_RE.sub(" ", text)
     seen: set[str] = set()
     ranked: list[tuple[int, int, int, str]] = []
+    # Specific numbers are the most selective terms there are: rank them first.
+    for offset, number in numbers:
+        if number not in seen and _specific_number(number):
+            seen.add(number)
+            ranked.append((-1, -len(number), offset, number))
     for position, token in enumerate(text.split()):
         word = token.lower().strip("-")
-        if len(word) < 2 or word in seen or word in _STOP_WORDS:
+        if (len(word) < 2 or word in seen or word in _STOP_WORDS or word in _MESSAGE_WORDS
+                or word in ignored_words):
+            continue
+        # "tester" after "testers" (or the reverse) adds nothing.
+        if word + "s" in seen or (word.endswith("s") and word[:-1] in seen):
+            continue
+        # A listed name is dropped when written as a name ("Rose"), kept as a
+        # plain word ("rose gold").
+        if word in ignored_names and token[:1].isupper():
             continue
         seen.add(word)
         named = word in identifiers or _is_named(token, sentence_starts)
@@ -146,8 +241,8 @@ def _select_search_hits(output: str, limit: int = 3) -> str:
     """Pick the top note paths.
 
     Copies of the agent's own memory files are dropped (they already load at
-    session start), and distilled notes go ahead of raw logs; within each group
-    the search's order (Jev's, when it ranks) is kept.
+    session start) and index pages (Run Log, MOC, compactions, archive) go last;
+    otherwise the search's own order (Jev's, when it ranks) is kept.
     """
     lines = [line for line in output.splitlines()
              if (m := _SEARCH_HIT_RE.match(line)) and not _MEMORY_COPY_RE.search(m.group(1))]
@@ -375,4 +470,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:  # a memory hook must never break or block the session
+        sys.exit(0)
