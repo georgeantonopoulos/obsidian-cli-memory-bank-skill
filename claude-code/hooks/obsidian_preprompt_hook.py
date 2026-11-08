@@ -455,4 +455,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:  # a memory hook must never break or block the session
+        sys.exit(0)

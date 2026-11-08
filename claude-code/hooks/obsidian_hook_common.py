@@ -156,7 +156,7 @@ def active_context(payload: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 def _load_transcript(path: str) -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
     try:
-        with open(path, encoding="utf-8") as handle:
+        with open(path, encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 try:
                     entry = json.loads(line)
@@ -204,7 +204,8 @@ _RECORD_RUN_RE = re.compile(r"\bobmem\s+record-run\b")
 
 def _entry_text(entry: Dict[str, Any]) -> Optional[str]:
     """Plain text of a user entry, or None for tool results."""
-    content = (entry.get("message") or {}).get("content")
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
@@ -236,6 +237,8 @@ def turn_start_prompt(entry: Dict[str, Any]) -> str:
         return ""
     origin = entry.get("origin") if isinstance(entry.get("origin"), dict) else {}
     kind = origin.get("kind")
+    if text.startswith("[Request interrupted"):
+        return ""
     if kind == "peer":
         body = str(origin.get("body") or "").strip() or _strip_tags(text)
         return f"Message from {origin.get('name') or 'another session'}: {body}"
@@ -243,15 +246,40 @@ def turn_start_prompt(entry: Dict[str, Any]) -> str:
         match = _TASK_SUMMARY_RE.search(text)
         return "Background task: " + (" ".join(match.group(1).split()) if match else _strip_tags(text))
     if kind == "human":
+        if entry.get("isMeta"):
+            return ""
         if text.startswith("<") and not text.startswith("<pasted"):
             return _strip_tags(text)
         return text
     if entry.get("isMeta"):
         return text if text.startswith(_IDLE_NOTICE_PREFIX) else ""
     # Transcripts without an origin field: typed prompts only.
-    if (text.startswith("<") and not text.startswith("<pasted")) or text.startswith("[Request interrupted"):
+    if text.startswith("<") and not text.startswith("<pasted"):
         return ""
     return text
+
+
+def _is_typed(entry: Dict[str, Any]) -> bool:
+    origin = entry.get("origin") if isinstance(entry.get("origin"), dict) else {}
+    return origin.get("kind") in (None, "human")
+
+
+def _after_finished_reply(entries: List[Dict[str, Any]], index: int) -> bool:
+    """True when the session was idle before this entry (the last reply did not end in a tool call).
+
+    A message or task notice that lands mid-turn is delivered between a tool
+    result and the next reply; it is part of that turn, not the start of one.
+    """
+    for entry in reversed(entries[:index]):
+        if entry.get("isSidechain"):
+            continue
+        if entry.get("type") == "user" and _entry_text(entry) is None:
+            return False  # a tool result: the turn was still running
+        if entry.get("type") == "assistant":
+            content = (entry.get("message") or {}).get("content") if isinstance(entry.get("message"), dict) else None
+            blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+            return not blocks or blocks[-1].get("type") != "tool_use"
+    return True
 
 
 def last_turn(transcript_path: str) -> Dict[str, Any]:
@@ -265,7 +293,7 @@ def last_turn(transcript_path: str) -> Dict[str, Any]:
     prompt = ""
     for index in range(len(entries) - 1, -1, -1):
         prompt = turn_start_prompt(entries[index])
-        if prompt:
+        if prompt and (_is_typed(entries[index]) or _after_finished_reply(entries, index)):
             start = index
             break
     if start is None:
@@ -278,19 +306,21 @@ def last_turn(transcript_path: str) -> Dict[str, Any]:
     for entry in entries[start + 1:]:
         if entry.get("type") != "assistant" or entry.get("isSidechain"):
             continue
-        for block in (entry.get("message") or {}).get("content") or []:
+        message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        content = message.get("content")
+        for block in content if isinstance(content, list) else []:
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "tool_use":
                 name = str(block.get("name", ""))
                 tools.append(name)
-                tool_input = block.get("input") or {}
+                tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
                 file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
                 if name in EDIT_TOOLS and file_path and file_path not in edited:
                     edited.append(str(file_path))
                 if name == "Bash" and _RECORD_RUN_RE.search(str(tool_input.get("command", ""))):
                     recorded = True
-            elif block.get("type") == "text" and block.get("text", "").strip():
+            elif block.get("type") == "text" and isinstance(block.get("text"), str) and block["text"].strip():
                 assistant_text = block["text"].strip()
     first = entries[start]
     return {

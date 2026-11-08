@@ -413,6 +413,38 @@ class HookCommonTests(unittest.TestCase):
         ])
         self.assertEqual(COMMON.last_turn(path)["prompt"], "fix export")
 
+    def test_message_arriving_mid_turn_stays_part_of_that_turn(self) -> None:
+        notice = "<task-notification><summary>Background command done</summary></task-notification>"
+        path = self._transcript([
+            {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix export"}},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "/a.py"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}},
+            {"type": "user", "origin": {"kind": "task-notification"}, "message": {"content": notice}},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "/b.py"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Done."}]}},
+        ])
+        turn = COMMON.last_turn(path)
+        self.assertEqual(turn["prompt"], "fix export")
+        self.assertEqual(turn["edited_files"], ["/a.py", "/b.py"])
+
+    def test_interrupt_and_meta_entries_never_start_turns(self) -> None:
+        path = self._transcript([
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "fix export"}},
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "[Request interrupted by user]"}},
+            {"type": "user", "origin": {"kind": "human"}, "isMeta": True, "message": {"content": "<local-command-caveat>x"}},
+        ])
+        self.assertEqual(COMMON.last_turn(path)["prompt"], "fix export")
+
+    def test_odd_transcript_shapes_do_not_crash(self) -> None:
+        path = self._transcript([
+            {"type": "user", "message": "not a dict"},
+            {"type": "user", "message": {"content": "go"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Edit", "input": ["x"]}, {"type": "text", "text": None}, "junk"]}},
+        ])
+        self.assertEqual(COMMON.last_turn(path)["prompt"], "go")
+
     def test_last_turn_notices_a_manual_record_run(self) -> None:
         path = self._transcript([
             {"type": "user", "message": {"content": "ship it"}},
