@@ -202,8 +202,9 @@ _TASK_SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
 _PEER_WRAPPER_RE = re.compile(r"^Another Claude session sent a message:\s*", re.IGNORECASE)
 _IDLE_NOTICE_PREFIX = "[Cross-session idle notice]"
 _RECORD_RUN_RE = re.compile(r"\bobmem\s+record-run\b")
-# What `obmem record-run` prints once the note is written: proof it really ran.
-_RECORDED_OUTPUT = "Recorded run note:"
+# Lines `obmem record-run` prints only after the note is written: proof it
+# really ran. The later ones survive when long output is cut from the top.
+_RECORDED_MARKERS = ("Recorded run note:", "auto-relate:", "Auto-audit:")
 
 
 def _entry_text(entry: Dict[str, Any]) -> Optional[str]:
@@ -328,7 +329,7 @@ def last_turn(transcript_path: str) -> Dict[str, Any]:
             for block in content if isinstance(content, list) else []:
                 if (isinstance(block, dict) and block.get("type") == "tool_result"
                         and str(block.get("tool_use_id", "")) in record_ids and not block.get("is_error")
-                        and _RECORDED_OUTPUT in _result_text(block)):
+                        and any(marker in _result_text(block) for marker in _RECORDED_MARKERS)):
                     recorded = True
             continue
         if entry.get("type") != "assistant":

@@ -474,6 +474,14 @@ class HookCommonTests(unittest.TestCase):
     def test_last_turn_notices_a_manual_record_run(self) -> None:
         self.assertTrue(COMMON.last_turn(self._record_run_turn(False))["recorded"])
 
+    def test_record_run_with_output_cut_from_the_top_still_counts(self) -> None:
+        output = "  linked: Project Memory/x/Runs/b.md\nAuto-audit: skipped (2/5 runs)."
+        self.assertTrue(COMMON.last_turn(self._record_run_turn(False, output=output))["recorded"])
+
+    def test_record_run_usage_error_does_not_count(self) -> None:
+        output = "obmem record-run: error: the following arguments are required: --prompt"
+        self.assertFalse(COMMON.last_turn(self._record_run_turn(False, output=output))["recorded"])
+
     def test_command_merely_mentioning_record_run_does_not_count(self) -> None:
         self.assertFalse(COMMON.last_turn(self._record_run_turn(False, output="SKILL.md:12: obmem record-run"))["recorded"])
 
