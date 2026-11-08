@@ -310,6 +310,17 @@ Progress uses measured counts.
             self.assertNotIn("scheduled", words)
             self.assertNotIn("2", HOOK._sanitize_query("fix 2 bugs in the export queue").split())
 
+    def test_typed_prompt_keeps_messaging_words_as_topic(self) -> None:
+        # Without a relayed-message wrapper these words are the subject, not delivery noise.
+        words = HOOK._sanitize_query("Fix the agent message session timeout").split()
+        for topic in ("message", "session", "agent"):
+            self.assertIn(topic, words)
+
+    def test_typed_prompt_keeps_versions_and_error_codes(self) -> None:
+        words = HOOK._sanitize_query("Why does the 2.4.1 build return 404 when exporting thumbnails?").split()
+        self.assertEqual(words[:2], ["2.4.1", "404"])
+        self.assertIn("thumbnails", words)
+
     def test_missing_ignore_file_fails_open(self) -> None:
         with patch.dict(os.environ, {"OBMEM_QUERY_IGNORE_FILE": "/nonexistent/obmem-ignore.txt"}):
             self.assertIn("nuke", HOOK._sanitize_query("Bob: the Nuke gizmo colour pipeline broke").split())

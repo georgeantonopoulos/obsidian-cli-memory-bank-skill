@@ -96,16 +96,22 @@ _NAV_LINE_RE = re.compile(r"^(?:Parent note|MOC|Run log|Decision register|Questi
 _READ_FOOTER_RE = re.compile(r"^\[Excerpt: characters .*\]$")
 
 
-# Words that say how a request arrived (Claude Code's messaging and
-# notification vocabulary, request verbs), never what it is about.
+# Reporting and request verbs ("Bob wants...", "create a...") carry no topic in
+# any prompt, like "make" and "check" in the stop words.
+_REQUEST_VERBS = frozenset("wants wanted asks asked says said create created".split())
+# Inside a message relayed from another session or a task notice, these words
+# only describe the delivery. A typed prompt keeps them: "fix the message
+# queue session timeout" is about messages and sessions.
 _MESSAGE_WORDS = frozenset(
     "sendmessage message messages cross-session crosssession session sessions "
     "pushnotification notification notifications notify notice idle reply replied "
-    "ping teammate teammates scheduled claude agent agents "
-    "wants wanted asks asked says said create created".split()
+    "ping teammate teammates claude agent agents".split()
 )
-# Wrappers Claude Code puts around messages from other sessions, task notices
-# and labelled prompts ("[Scheduled: ...]"); the text inside is the request.
+# Claude Code's wrappers around relayed messages and task notices.
+_RELAYED_RE = re.compile(
+    r"Another Claude session sent a message:|<(?:cross-session-message|agent-message|task-notification)\b"
+    r"|\[Cross-session [^\]]*\]", re.IGNORECASE)
+# Wrappers and labels removed before keywords are picked; the text inside is the request.
 _WRAPPER_RES = (
     re.compile(r"Another Claude session sent a message:", re.IGNORECASE),
     re.compile(r"\[Cross-session [^\]]*\]", re.IGNORECASE),
@@ -184,13 +190,14 @@ def _sanitize_query(prompt: str, max_words: int = 5) -> str:
 
     Named things (proper nouns, identifiers in backticks, prices and versions)
     rank ahead of plain words; within each group longer words win.
-    Messaging noise is dropped first: the wrapper around a message, names from
-    the optional ignore file when written as names, and words like SendMessage that only say how a
-    request arrived. Otherwise "Alice: Bob wants the $0 sale" searched for
-    the people and lost the sale.
+    Noise is dropped first: Claude Code's wrapper around a relayed message
+    (and, inside one, words like SendMessage that only describe the delivery),
+    reporting verbs, and anything in the optional ignore file (for example the
+    names of people a user often mentions, which otherwise crowd out the topic).
     """
     text = redact_secrets(prompt).replace("[redacted secret]", " ")
     ignored_names, ignored_words, ignored_patterns = _query_ignore()
+    delivery_words = _MESSAGE_WORDS if _RELAYED_RE.search(text) else frozenset()
     text = _strip_wrappers(text, ignored_patterns)
     for pattern in (_URL_RE, _FILE_PATH_RE, _DATE_STAMP_RE):
         text = pattern.sub(" ", text)
@@ -220,8 +227,8 @@ def _sanitize_query(prompt: str, max_words: int = 5) -> str:
             ranked.append((-1, -len(number), offset, number))
     for position, token in enumerate(text.split()):
         word = token.lower().strip("-")
-        if (len(word) < 2 or word in seen or word in _STOP_WORDS or word in _MESSAGE_WORDS
-                or word in ignored_words):
+        if (len(word) < 2 or word in seen or word in _STOP_WORDS or word in _REQUEST_VERBS
+                or word in delivery_words or word in ignored_words):
             continue
         # "tester" after "testers" (or the reverse) adds nothing.
         if word + "s" in seen or (word.endswith("s") and word[:-1] in seen):
