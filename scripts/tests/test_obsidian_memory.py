@@ -1109,6 +1109,46 @@ class SearchExcludesSessionTests(unittest.TestCase):
                 self.assertIn("own-", cli.search_files('kafka path:"Project Memory/demo"', limit=20))
 
 
+class WriteSummaryOnceTests(unittest.TestCase):
+    def test_brief_takes_the_first_sentence_and_cuts_on_a_word(self) -> None:
+        from scripts.obsidian_memory import _brief
+        self.assertEqual(_brief("Fixed the lag.  Raised fetch size to 4 MB.", 160), "Fixed the lag.")
+        self.assertEqual(_brief("v1.5 shipped to testers", 160), "v1.5 shipped to testers")
+        long = "word " * 60
+        cut = _brief(long, 40)
+        self.assertLessEqual(len(cut), 40)
+        self.assertTrue(cut.endswith("..."))
+        self.assertEqual(_brief("", 40), "")
+
+    def test_related_entry_keeps_an_explicit_reason_whole(self) -> None:
+        from scripts.obsidian_memory import _related_entry
+        reason = "Supersedes X. Do not use the old flow."
+        self.assertEqual(_related_entry("note-a", reason), f"- [[note-a]] — {reason}")
+        self.assertEqual(_related_entry("note-a", "a\nb"), "- [[note-a]] — a b")
+        self.assertEqual(_related_entry("note-a", None), "- [[note-a]]")
+
+    def test_brief_never_leaves_half_a_link_or_code_span(self) -> None:
+        from scripts.obsidian_memory import _brief, _extract_wikilinks
+        text = "Moved the export flow and the cache reader " * 3 + "see [[Decision Register|the notes]] here"
+        for limit in range(60, 200, 7):
+            out = _brief(text, limit)
+            self.assertEqual(out.count("[["), out.count("]]"), out)
+        self.assertEqual(_brief("Run `git log --oneline` then rebase", 12).count("`") % 2, 0)
+        lines = "- [[a]]: " + _brief(text, 150) + "\n- [[b]]: next"
+        self.assertIn("b", _extract_wikilinks(lines))
+
+    def test_brief_does_not_stop_at_abbreviations(self) -> None:
+        from scripts.obsidian_memory import _brief
+        self.assertEqual(_brief("Use e.g. Redis for the cache. Then more.", 160), "Use e.g. Redis for the cache.")
+        self.assertEqual(_brief("- fixed X\n- fixed Y", 160), "fixed X - fixed Y")
+
+    def test_empty_values_mean_no_section(self) -> None:
+        from scripts.obsidian_memory import _has_content
+        for value in (None, "", " ", "None", "None.", "none", "N/A", "-"):
+            self.assertFalse(_has_content(value))
+        self.assertTrue(_has_content("Prefer measured counts."))
+
+
 class RunSessionStampTests(unittest.TestCase):
     def test_session_comes_from_flag_then_environment(self) -> None:
         from scripts.obsidian_memory import _run_extra

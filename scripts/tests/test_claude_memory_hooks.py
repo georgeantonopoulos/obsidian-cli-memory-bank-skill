@@ -739,6 +739,14 @@ class MemorySyncHookTests(unittest.TestCase):
         self.assertLessEqual(len(cut), 3000)
         self.assertEqual(cut.count("[["), cut.count("]]"))
 
+    def test_memory_summary_drops_frontmatter_and_leads_with_description(self) -> None:
+        text = '---\nname: rule\ndescription: "Always test twice"\nmetadata:\n  type: feedback\n---\nBody here.'
+        self.assertEqual(SYNC.without_frontmatter(text), "Always test twice.\n\nBody here.")
+        self.assertEqual(SYNC.without_frontmatter("No header."), "No header.")
+        for marker in (">", "|", ">-"):
+            folded = f"---\nname: rule\ndescription: {marker}\n  Always test\n  twice\ntype: feedback\n---\nBody."
+            self.assertEqual(SYNC.without_frontmatter(folded), "Always test twice.\n\nBody.")
+
     def test_memory_links_become_text_without_a_vault(self) -> None:
         self.assertEqual(SYNC.rewrite_memory_links("a [[x-y]] b", None), "a x-y b")
 

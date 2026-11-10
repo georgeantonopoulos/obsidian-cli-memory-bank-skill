@@ -1257,15 +1257,61 @@ def resolve_note_path(vault_path: Path, paths: NotePaths, reference: str) -> Opt
     return matches[0].relative_to(vault_path) if len(matches) == 1 else None
 
 
+_BRIEF_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9`*\[(])")
+# A full stop after these does not end the sentence.
+_ABBREVIATIONS = {"e.g.", "i.e.", "etc.", "vs.", "approx.", "incl.", "cf.", "no.", "fig."}
+
+
+def _first_sentence(flat: str) -> str:
+    for match in _BRIEF_SENTENCE_RE.finditer(flat):
+        words = flat[: match.start()].split()
+        if words and words[-1].lower() in _ABBREVIATIONS:
+            continue
+        return flat[: match.start()]
+    return flat
+
+
+def _balanced(text: str) -> str:
+    """Drop a trailing half link or half code span: an unclosed `[[` or an odd
+    backtick would make wikilink parsers read on into the next line."""
+    open_link = text.rfind("[[")
+    if open_link != -1 and text.find("]]", open_link) == -1:
+        text = text[:open_link]
+    if text.count("`") % 2:
+        text = text[: text.rfind("`")]
+    return text.rstrip(" ,;:-")
+
+
+def _brief(text: str, limit: int) -> str:
+    """First sentence of `text` on one line, cut to `limit` characters.
+
+    Index lines and Related entries point at a note; they don't repeat it. A
+    full copy of each summary in Run Log, MOC and up to ten Related lists made
+    those copies a fifth of a busy vault, and let neighbours match searches
+    meant for the note itself.
+    """
+    flat = " ".join((text or "").split()).lstrip("-* ")
+    first = _balanced(_first_sentence(flat))
+    if len(first) <= limit:
+        return first
+    cut = first[: limit - 3]
+    if " " in cut[limit // 2:]:
+        cut = cut[: cut.rfind(" ")]
+    return _balanced(cut) + "..."
+
+
+_INDEX_BRIEF_CHARS = 160
+_RELATED_BRIEF_CHARS = 120
+
+
 def _related_entry(target_stem: str, reason: Optional[str]) -> str:
     if "/" in target_stem:
         target = Path(target_stem)
         base = f"- {_wikilink(target)}"
     else:
         base = f"- [[{target_stem}]]"
-    if reason and reason.strip():
-        return f"{base} — {reason.strip()}"
-    return base
+    reason = " ".join((reason or "").split())
+    return f"{base} — {reason}" if reason else base
 
 
 def _has_link_to(body: str, target_stem: str) -> bool:
@@ -2355,6 +2401,10 @@ def cmd_bootstrap(args: argparse.Namespace) -> None:
     bootstrap_project(cli, project)
 
 
+def _has_content(value: Optional[str]) -> bool:
+    return bool(value and value.strip() and value.strip().rstrip(".").lower() not in ("none", "n/a", "-"))
+
+
 def _run_extra(args: argparse.Namespace) -> Dict[str, str]:
     """Title, plus the session that wrote the note so prompt search can skip
     notes the current conversation already holds."""
@@ -2405,25 +2455,18 @@ def cmd_record_run(args: argparse.Namespace) -> None:
             "## Actions Taken",
             args.actions.strip(),
             "",
-            "## Decisions",
-            args.decisions.strip() if args.decisions else "None.",
-            "",
-            "## Open Questions",
-            args.questions.strip() if args.questions else "None.",
         ]
+        # Empty sections are left out rather than written as "None.".
+        + (["", "## Decisions", args.decisions.strip()] if _has_content(args.decisions) else [])
+        + (["", "## Open Questions", args.questions.strip()] if _has_content(args.questions) else [])
     )
     cli.ensure_note(run_note_path, run_note)
-    cli.append(
-        paths.run_log,
-        f"- {_wikilink(run_note_path)}: {args.summary.strip()}",
-    )
-    cli.append(
-        paths.moc,
-        f"- {_wikilink(run_note_path)}: {args.summary.strip()}",
-    )
-    if args.decisions:
+    index_line = f"- {_wikilink(run_note_path)}: {_brief(args.summary, _INDEX_BRIEF_CHARS)}"
+    cli.append(paths.run_log, index_line)
+    cli.append(paths.moc, index_line)
+    if _has_content(args.decisions):
         cli.append(paths.decisions, f"- {_wikilink(run_note_path)}: {args.decisions.strip()}")
-    if args.questions:
+    if _has_content(args.questions):
         cli.append(paths.questions, f"- {_wikilink(run_note_path)}: {args.questions.strip()}")
     print(f"Recorded run note: {run_note_path.as_posix()}")
 
@@ -2464,7 +2507,7 @@ def cmd_record_run(args: argparse.Namespace) -> None:
 
     if neighbor_paths:
         print(f"auto-relate: weaving {len(neighbor_paths)} neighbor(s)")
-        reason = args.summary.strip() or None
+        reason = _brief(args.summary, _RELATED_BRIEF_CHARS) or None
         for status in weave_bidirectional(cli, run_note_path, neighbor_paths, reason):
             print(f"  {status}")
     elif auto_mode:
