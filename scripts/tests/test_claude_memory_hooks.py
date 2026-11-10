@@ -245,6 +245,11 @@ class ClaudePrePromptHookTests(unittest.TestCase):
         self.assertGreater(COMMON.compacted_at("s-compact"), 0)
         self.assertEqual(COMMON.compacted_at("s-never"), 0.0)
 
+    def test_hook_notes_are_not_auto_related(self) -> None:
+        with patch.object(COMMON.subprocess, "run") as run:
+            COMMON.record_run("/w", "demo", title="t", prompt="p", summary="s", actions="a", tags="x")
+        self.assertIn("--no-auto-relate", run.call_args.args[0])
+
     def test_session_goes_by_environment_not_flag(self) -> None:
         with patch.object(COMMON.subprocess, "run") as run:
             COMMON.record_run("/w", "demo", title="t", prompt="p", summary="s", actions="a",

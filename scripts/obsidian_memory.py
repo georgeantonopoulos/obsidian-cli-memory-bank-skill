@@ -1487,6 +1487,32 @@ def _parse_search_output_paths(output: str) -> List[str]:
     return paths
 
 
+# A note that already lists this many Related links takes no more automatic ones.
+_RELATED_CAP = 12
+_RELATED_LINK_RE = re.compile(r"^- \[\[", re.MULTILINE)
+
+
+def _good_neighbor(path: Path) -> bool:
+    """Automatic links go between notes someone wrote on purpose.
+
+    Notes the hooks capture by themselves (tag ``auto-log``) are titled after
+    the message that started the turn, so title matching linked them by sender
+    ("Message from X: ...") rather than by topic; they stay reachable from
+    Run Log, MOC and compaction. A note whose Related list is already full is
+    skipped too, so one popular note can't collect dozens of links.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1 and re.search(r"^\s*-\s*\"?auto-log\"?\s*$", text[:end], re.MULTILINE):
+            return False
+    related = re.search(r"^## Related\s*$(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    return not related or len(_RELATED_LINK_RE.findall(related.group(1))) < _RELATED_CAP
+
+
 def auto_discover_neighbors(
     cli: ObsidianCLI,
     paths: NotePaths,
@@ -1529,6 +1555,8 @@ def auto_discover_neighbors(
         if candidate.stem in hub_stems:
             continue
         if not (cli.vault_path / candidate).exists():
+            continue
+        if not _good_neighbor(cli.vault_path / candidate):
             continue
         results.append(candidate)
         if len(results) >= limit:
