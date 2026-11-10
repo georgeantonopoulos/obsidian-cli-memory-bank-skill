@@ -138,6 +138,25 @@ def rewrite_memory_links(text: str, project_dir: Optional[Path], project: str = 
     return "".join(pieces)
 
 
+def _description(header: str) -> str:
+    """`description:` from YAML frontmatter, including folded (`>`) and literal
+    (`|`) values that continue on indented lines."""
+    lines = header.splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("description:"):
+            continue
+        value = line.split(":", 1)[1].strip()
+        if value[:1] in (">", "|"):
+            block = []
+            for follow in lines[index + 1:]:
+                if follow.strip() and not follow[:1].isspace():
+                    break
+                block.append(follow.strip())
+            return " ".join(part for part in block if part)
+        return value.strip('"\'')
+    return ""
+
+
 def without_frontmatter(text: str) -> str:
     """Memory body, led by its `description:` so the first sentence (which goes
     into the vault's index lines) says what the memory is."""
@@ -147,8 +166,7 @@ def without_frontmatter(text: str) -> str:
     if end == -1:
         return text
     header, body = text[3:end], text[end + 4:].strip()
-    match = re.search(r"^description:\s*(.+)$", header, re.MULTILINE)
-    description = match.group(1).strip().strip('"\'') if match else ""
+    description = _description(header)
     if description and not description.endswith((".", "!", "?")):
         description += "."
     return f"{description}\n\n{body}".strip() if description else body
