@@ -57,6 +57,19 @@ class ClaudeSessionStartHookTests(unittest.TestCase):
 
 
 class ClaudePrePromptHookTests(unittest.TestCase):
+    def test_task_notice_ids_are_not_keywords(self) -> None:
+        prompt = (
+            "<task-notification>\n<task-id>bkke3cqsg</task-id>\n"
+            "<tool-use-id>toolu_01BodeKnmAoTCFAHV9QPYiWs</tool-use-id>\n"
+            "<output-file>/private/tmp/x/tasks/bkke3cqsg.output</output-file>\n"
+            "<status>completed</status>\n<summary>Background command \"Count unresolved links\" "
+            "completed</summary>\n</task-notification>"
+        )
+        query = HOOK._sanitize_query(prompt)
+        self.assertNotIn("bkke3cqsg", query)
+        self.assertNotIn("toolu", query)
+        self.assertIn("unresolved", query)
+
     def test_select_search_hits_caps_ranked_output(self) -> None:
         output = """Found 5 hits.
   Project Memory/demo/Current Memory.md (score 9)
@@ -583,6 +596,74 @@ class MemorySyncHookTests(unittest.TestCase):
         self.assertTrue(SYNC._is_memory_path("/Users/me/.claude/projects/-Users-me-Dev-X/memory/MEMORY.md"))
         self.assertFalse(SYNC._is_memory_path("/Users/me/Dev/app/src/memory/cache.md"))
         self.assertFalse(SYNC._is_memory_path("/Users/me/Dev/app/GPU_MEMORY.md"))
+
+    def _vault(self, tmp: str) -> Path:
+        project = Path(tmp) / "Project Memory" / "demo"
+        (project / "Runs").mkdir(parents=True)
+        (project / "Archive" / "Runs").mkdir(parents=True)
+        for rel in ("Archive/Runs/2026-10-01-1038-memory-sync-cli-parity-md-demo.md",
+                    "Runs/2026-10-21-1607-memory-sync-cli-parity-md-demo.md",
+                    "Runs/2026-10-22-0900-memory-sync-cli-parity-extra-md-demo.md",
+                    "Runs/2026-10-22-0901-memory-sync-user-md-prefs-md-demo.md",
+                    "Decisions.md"):
+            (project / rel).write_text("x")
+        return project
+
+    def test_memory_links_point_at_mirrored_notes_or_become_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._vault(tmp)
+            text = (
+                "See [[cli-parity]], [[cli-parity|the parity rule]], [[cli-parity.md#Why]], "
+                "[[not-written-yet]], [[user]], [[Decisions]] and [[Project Memory/demo/MOC|MOC]]."
+            )
+            self.assertEqual(
+                SYNC.rewrite_memory_links(text, project, "demo"),
+                "See [[2026-10-21-1607-memory-sync-cli-parity-md-demo|cli-parity]], "
+                "[[2026-10-21-1607-memory-sync-cli-parity-md-demo|the parity rule]], "
+                "[[2026-10-21-1607-memory-sync-cli-parity-md-demo#Why|cli-parity]], "
+                "not-written-yet, user, [[Decisions]] and [[Project Memory/demo/MOC|MOC]].",
+            )
+
+    def test_embeds_and_code_are_left_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._vault(tmp)
+            text = "![[diagram.png]] `[[cli-parity]]`\n```\n[[cli-parity]]\n```\n"
+            self.assertEqual(SYNC.rewrite_memory_links(text, project, "demo"), text)
+
+    def test_truncated_titles_still_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._vault(tmp)
+            name = "feedback_always_use_worktrees_for_parallel_branch_work"
+            long_project = "obsidian-cli-memory-bank"
+            stem = "2026-11-01-1200-" + SYNC._mirror_slug(f"{name}.md", long_project)
+            self.assertFalse(stem.endswith("-md-obsidian-cli-memory-bank"))  # the title was cut
+            (project / "Runs" / f"{stem}.md").write_text("x")
+            self.assertEqual(SYNC.rewrite_memory_links(f"[[{name}]]", project, long_project),
+                             f"[[{stem}|{name}]]")
+
+    def test_summary_cut_never_splits_a_link(self) -> None:
+        text = "a" * 2990 + " [[2026-10-21-1607-memory-sync-cli-parity-md-demo|cli-parity]]"
+        cut = SYNC.fit_summary(text)
+        self.assertLessEqual(len(cut), 3000)
+        self.assertEqual(cut.count("[["), cut.count("]]"))
+
+    def test_memory_links_become_text_without_a_vault(self) -> None:
+        self.assertEqual(SYNC.rewrite_memory_links("a [[x-y]] b", None), "a x-y b")
+
+    def test_synced_summary_has_no_bare_memory_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Path(tmp) / ".claude" / "projects" / "-x" / "memory" / "rule.md"
+            memory.parent.mkdir(parents=True)
+            memory.write_text("Rule. Extends [[other-rule]].", encoding="utf-8")
+            payload = {"tool_name": "Write", "tool_input": {"file_path": str(memory)}}
+            done = unittest.mock.Mock(returncode=0, stderr="")
+            with patch.object(SYNC, "read_payload", return_value=payload), \
+                 patch.object(SYNC, "active_context", return_value=(tmp, "demo")), \
+                 patch.object(SYNC, "_project_dir", return_value=None), \
+                 patch.object(SYNC, "record_run", return_value=done) as record, \
+                 patch("sys.stdin"), patch("sys.stderr"):
+                self.assertEqual(SYNC.main(), 0)
+            self.assertEqual(record.call_args.kwargs["summary"], "Rule. Extends other-rule.")
 
 
 if __name__ == "__main__":
