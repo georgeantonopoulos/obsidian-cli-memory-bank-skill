@@ -1167,6 +1167,12 @@ class RelatedNeighborTests(unittest.TestCase):
             self.assertFalse(_good_neighbor(full))
             self.assertTrue(_good_neighbor(body_mention))
             self.assertFalse(_good_neighbor(root / "missing.md"))
+            mirror = root / "mirror.md"
+            mirror.write_text('---\ntags:\n  - "auto-log"\n  - "memory-sync"\n---\n# Memory sync\n')
+            self.assertTrue(_good_neighbor(mirror))
+            inline = root / "inline.md"
+            inline.write_text("---\ntags: [claude, 'auto-log']\n---\n# x\n")
+            self.assertFalse(_good_neighbor(inline))
 
 
 class RunSessionStampTests(unittest.TestCase):

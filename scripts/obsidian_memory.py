@@ -1492,24 +1492,37 @@ _RELATED_CAP = 12
 _RELATED_LINK_RE = re.compile(r"^- \[\[", re.MULTILINE)
 
 
+def _note_tags(head: str) -> List[str]:
+    """Tags from frontmatter: block list, inline [a, b] list, or a single value."""
+    tags = _extract_frontmatter(head.replace("\r\n", "\n")).get("tags", [])
+    if isinstance(tags, str):
+        tags = tags.strip("[]").split(",")
+    return [str(tag).strip().strip("\"'") for tag in tags]
+
+
 def _good_neighbor(path: Path) -> bool:
     """Automatic links go between notes someone wrote on purpose.
 
-    Notes the hooks capture by themselves (tag ``auto-log``) are titled after
-    the message that started the turn, so title matching linked them by sender
+    Notes the hooks capture from a turn (tag ``auto-log``) are titled after the
+    message that started it, so title matching linked them by sender
     ("Message from X: ...") rather than by topic; they stay reachable from
-    Run Log, MOC and compaction. A note whose Related list is already full is
-    skipped too, so one popular note can't collect dozens of links.
+    Run Log, MOC and compaction. Mirrored memory files (``memory-sync``) were
+    written on purpose and stay linkable. A note whose Related list is already
+    full is skipped too, so one popular note can't collect dozens of links.
     """
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return False
+    tags = _note_tags(head)
+    if "auto-log" in tags and "memory-sync" not in tags:
+        return False
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end != -1 and re.search(r"^\s*-\s*\"?auto-log\"?\s*$", text[:end], re.MULTILINE):
-            return False
-    related = re.search(r"^## Related\s*$(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    related = re.search(r"^## Related\s*$(.*?)(?=^#{1,2} |\Z)", text, re.MULTILINE | re.DOTALL)
     return not related or len(_RELATED_LINK_RE.findall(related.group(1))) < _RELATED_CAP
 
 
