@@ -19,7 +19,9 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
-from obsidian_hook_common import active_context, read_payload, record_run  # noqa: E402
+from obsidian_hook_common import (  # noqa: E402
+    active_context, read_payload, record_run, redact_secrets, truncate,
+)
 
 
 def _is_memory_path(file_path: str) -> bool:
@@ -33,13 +35,26 @@ def _is_memory_path(file_path: str) -> bool:
     return False
 
 
-_WIKILINK_RE = re.compile(r"\[\[([^\[\]|#]+)(#[^\[\]|]*)?(?:\|([^\[\]]*))?\]\]")
+_WIKILINK_RE = re.compile(r"(?<!!)\[\[([^\[\]|#]+)(#[^\[\]|]*)?(?:\|([^\[\]]*))?\]\]")
+# Fenced blocks and inline code are left exactly as written.
+_CODE_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]+`", re.DOTALL)
+_RUN_STAMP = r"\d{4}-\d{2}-\d{2}-\d{4}-"
+SUMMARY_LIMIT = 3000
 
 
 def _slugify(value: str) -> str:
     """Same rule obmem uses for note file names."""
     value = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
     return re.sub(r"-{2,}", "-", value).strip("-")
+
+
+def sync_title(memory_filename: str, project: str) -> str:
+    return f"Memory sync: {memory_filename} ({project})"
+
+
+def _mirror_slug(memory_filename: str, project: str) -> str:
+    """The slug record_run gives a mirror note: built from the same title, cut the same way."""
+    return _slugify(truncate(redact_secrets(sync_title(memory_filename, project)), 80))
 
 
 def _project_dir(workspace: str, project: str) -> Optional[Path]:
@@ -57,30 +72,48 @@ def _project_dir(workspace: str, project: str) -> Optional[Path]:
     return folder if folder.is_dir() else None
 
 
-def _mirror_stem(project_dir: Optional[Path], memory_name: str) -> Optional[str]:
-    """Newest vault note that mirrors the memory file `memory_name`, if any."""
-    if project_dir is None:
-        return None
-    slug = _slugify(memory_name)
-    if not slug:
-        return None
-    matches = sorted(
-        (note.stem for note in project_dir.rglob(f"*-memory-sync-{slug}-md*.md")),
-        reverse=True,
-    )
-    return matches[0] if matches else None
+class _VaultIndex:
+    """Run-note stems of one project, plus every note stem in the vault, read once."""
+
+    def __init__(self, project_dir: Optional[Path]):
+        self.project_dir = project_dir
+        self._mirrors: Optional[dict] = None
+        self._stems: Optional[set] = None
+
+    def mirror(self, slug: str) -> Optional[str]:
+        if self.project_dir is None:
+            return None
+        if self._mirrors is None:
+            self._mirrors = {}
+            stamp = re.compile(_RUN_STAMP)
+            for note in self.project_dir.rglob("*-memory-sync-*.md"):
+                if stamp.match(note.stem):
+                    key = note.stem[16:]
+                    if note.stem > self._mirrors.get(key, ""):
+                        self._mirrors[key] = note.stem
+        return self._mirrors.get(slug)
+
+    def has_note(self, stem: str) -> bool:
+        if self.project_dir is None:
+            return False
+        if self._stems is None:
+            vault = self.project_dir.parent.parent
+            self._stems = {note.stem for note in vault.rglob("*.md")}
+        return stem in self._stems
 
 
-def rewrite_memory_links(text: str, project_dir: Optional[Path]) -> str:
+def rewrite_memory_links(text: str, project_dir: Optional[Path], project: str = "") -> str:
     """Point `[[memory-name]]` links at the vault note that mirrors that memory.
 
     Claude memory files link to each other by bare memory name. Copied into the
     vault unchanged, those links resolve to nothing (and the note's summary is
-    repeated into Run Log and MOC, so each one breaks several times). A link to
-    a memory already in the vault becomes `[[<its note>|name]]`; a link to one
-    that is not there yet becomes plain text so no broken link is written.
-    Path-style links (containing "/") are vault links already and stay as they are.
+    repeated into Run Log and MOC, so each one breaks several times).
+      - a memory already mirrored in the vault becomes `[[<its note>|name]]`;
+      - a name that already resolves in the vault (a note with that name) stays;
+      - anything else becomes plain text, so no broken link is written.
+    Path links (with "/"), embeds (`![[...]]`) and code are left as written.
     """
+    index = _VaultIndex(project_dir)
 
     def replace(match: "re.Match[str]") -> str:
         target, heading, alias = match.group(1).strip(), match.group(2) or "", match.group(3)
@@ -88,12 +121,32 @@ def rewrite_memory_links(text: str, project_dir: Optional[Path]) -> str:
             return match.group(0)
         name = target[:-3] if target.lower().endswith(".md") else target
         label = (alias or name).strip()
-        stem = _mirror_stem(project_dir, name)
-        if stem is None:
-            return label
-        return f"[[{stem}{heading}|{label}]]"
+        stem = index.mirror(_mirror_slug(f"{name}.md", project))
+        if stem is not None:
+            return f"[[{stem}{heading}|{label}]]"
+        if index.has_note(target):
+            return match.group(0)
+        return label
 
-    return _WIKILINK_RE.sub(replace, text)
+    pieces: list = []
+    last = 0
+    for code in _CODE_RE.finditer(text):
+        pieces.append(_WIKILINK_RE.sub(replace, text[last:code.start()]))
+        pieces.append(code.group(0))
+        last = code.end()
+    pieces.append(_WIKILINK_RE.sub(replace, text[last:]))
+    return "".join(pieces)
+
+
+def fit_summary(text: str, limit: int = SUMMARY_LIMIT) -> str:
+    """Cut to the summary limit without leaving half a `[[link`."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 3]
+    if cut.rfind("[[") > cut.rfind("]]"):
+        cut = cut[: cut.rfind("[[")]
+    return cut.rstrip() + "..."
 
 
 def main() -> int:
@@ -131,10 +184,14 @@ def main() -> int:
         return 0
 
     memory_filename = Path(file_path).name
-    content = rewrite_memory_links(content, _project_dir(workspace, project))
+    try:
+        content = rewrite_memory_links(content, _project_dir(workspace, project), project)
+    except Exception:  # never lose the sync over a link rewrite
+        pass
+    content = fit_summary(content)
     result = record_run(
         workspace, project,
-        title=f"Memory sync: {memory_filename} ({project})",
+        title=sync_title(memory_filename, project),
         prompt=f"Auto-memory file written: {file_path}",
         summary=content,
         actions=f"Claude wrote to {memory_filename}. Content synced to Obsidian vault.",

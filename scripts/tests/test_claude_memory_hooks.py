@@ -597,25 +597,55 @@ class MemorySyncHookTests(unittest.TestCase):
         self.assertFalse(SYNC._is_memory_path("/Users/me/Dev/app/src/memory/cache.md"))
         self.assertFalse(SYNC._is_memory_path("/Users/me/Dev/app/GPU_MEMORY.md"))
 
+    def _vault(self, tmp: str) -> Path:
+        project = Path(tmp) / "Project Memory" / "demo"
+        (project / "Runs").mkdir(parents=True)
+        (project / "Archive" / "Runs").mkdir(parents=True)
+        for rel in ("Archive/Runs/2026-10-01-1038-memory-sync-cli-parity-md-demo.md",
+                    "Runs/2026-10-21-1607-memory-sync-cli-parity-md-demo.md",
+                    "Runs/2026-10-22-0900-memory-sync-cli-parity-extra-md-demo.md",
+                    "Runs/2026-10-22-0901-memory-sync-user-md-prefs-md-demo.md",
+                    "Decisions.md"):
+            (project / rel).write_text("x")
+        return project
+
     def test_memory_links_point_at_mirrored_notes_or_become_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            (project / "Runs").mkdir()
-            (project / "Archive" / "Runs").mkdir(parents=True)
-            (project / "Archive" / "Runs" / "2026-10-01-1038-memory-sync-cli-parity-md-demo.md").write_text("old")
-            (project / "Runs" / "2026-10-21-1607-memory-sync-cli-parity-md-demo.md").write_text("new")
-            (project / "Runs" / "2026-10-21-1607-memory-sync-cli-parity-extra-md-demo.md").write_text("other")
+            project = self._vault(tmp)
             text = (
                 "See [[cli-parity]], [[cli-parity|the parity rule]], [[cli-parity.md#Why]], "
-                "[[not-written-yet]] and [[Project Memory/demo/MOC|MOC]]."
+                "[[not-written-yet]], [[user]], [[Decisions]] and [[Project Memory/demo/MOC|MOC]]."
             )
             self.assertEqual(
-                SYNC.rewrite_memory_links(text, project),
+                SYNC.rewrite_memory_links(text, project, "demo"),
                 "See [[2026-10-21-1607-memory-sync-cli-parity-md-demo|cli-parity]], "
                 "[[2026-10-21-1607-memory-sync-cli-parity-md-demo|the parity rule]], "
                 "[[2026-10-21-1607-memory-sync-cli-parity-md-demo#Why|cli-parity]], "
-                "not-written-yet and [[Project Memory/demo/MOC|MOC]].",
+                "not-written-yet, user, [[Decisions]] and [[Project Memory/demo/MOC|MOC]].",
             )
+
+    def test_embeds_and_code_are_left_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._vault(tmp)
+            text = "![[diagram.png]] `[[cli-parity]]`\n```\n[[cli-parity]]\n```\n"
+            self.assertEqual(SYNC.rewrite_memory_links(text, project, "demo"), text)
+
+    def test_truncated_titles_still_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._vault(tmp)
+            name = "feedback_always_use_worktrees_for_parallel_branch_work"
+            long_project = "obsidian-cli-memory-bank"
+            stem = "2026-11-01-1200-" + SYNC._mirror_slug(f"{name}.md", long_project)
+            self.assertFalse(stem.endswith("-md-obsidian-cli-memory-bank"))  # the title was cut
+            (project / "Runs" / f"{stem}.md").write_text("x")
+            self.assertEqual(SYNC.rewrite_memory_links(f"[[{name}]]", project, long_project),
+                             f"[[{stem}|{name}]]")
+
+    def test_summary_cut_never_splits_a_link(self) -> None:
+        text = "a" * 2990 + " [[2026-10-21-1607-memory-sync-cli-parity-md-demo|cli-parity]]"
+        cut = SYNC.fit_summary(text)
+        self.assertLessEqual(len(cut), 3000)
+        self.assertEqual(cut.count("[["), cut.count("]]"))
 
     def test_memory_links_become_text_without_a_vault(self) -> None:
         self.assertEqual(SYNC.rewrite_memory_links("a [[x-y]] b", None), "a x-y b")
