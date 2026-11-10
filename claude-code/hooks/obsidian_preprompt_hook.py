@@ -510,12 +510,19 @@ def main() -> int:
     # Jev (when the private ranker preference enables it) judges relevance against
     # the redacted request, not just the keywords.
     intent = truncate(redact_secrets(prompt), 500)
+    # The search leaves out notes this session still holds, before it cuts the
+    # list to the candidate limit (an older obmem ignores these; the filter
+    # below still applies then).
+    session_id = str(payload.get("session_id") or "")
+    since = compacted_at(session_id)
+    search_env = {**os.environ, "OBMEM_EXCLUDE_SESSION": session_id,
+                  "OBMEM_EXCLUDE_SINCE": str(since)} if session_id else None
     try:
         result = subprocess.run(
             ["obmem", "search", "--project", project, "--query", query,
              "--intent", intent, "--min-jev", f"{_jev_min():.2f}",
              "--limit", str(_CANDIDATE_LIMIT), "--workspace", workspace],
-            text=True, capture_output=True, check=False, timeout=20,
+            text=True, capture_output=True, check=False, timeout=20, env=search_env,
         )
         output = result.stdout.strip() if result.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
@@ -523,9 +530,8 @@ def main() -> int:
     # Jev judged every candidate irrelevant: stay quiet rather than suggest a search.
     if _JEV_GATED_RE.search(output):
         return 0
-    session_id = str(payload.get("session_id") or "")
     if session_id and output:
-        output = _drop_own_session(output, _vault_path(workspace), session_id, compacted_at(session_id))
+        output = _drop_own_session(output, _vault_path(workspace), session_id, since)
     selected_hits = _select_search_hits(output)
 
     # Always tell the LLM what keywords were searched so it can refine
