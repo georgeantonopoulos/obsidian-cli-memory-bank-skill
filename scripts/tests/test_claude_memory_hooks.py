@@ -641,6 +641,27 @@ class MemorySyncHookTests(unittest.TestCase):
             self.assertEqual(SYNC.rewrite_memory_links(f"[[{name}]]", project, long_project),
                              f"[[{stem}|{name}]]")
 
+    def test_note_link_with_md_extension_is_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._vault(tmp)
+            text = "[[Decisions.md#Choice|decision]]"
+            self.assertEqual(SYNC.rewrite_memory_links(text, project, "demo"), text)
+
+    def test_secret_at_the_cut_is_redacted_not_half_written(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Path(tmp) / ".claude" / "projects" / "-x" / "memory" / "rule.md"
+            memory.parent.mkdir(parents=True)
+            memory.write_text("x" * 2977 + " ghp_" + "A" * 36, encoding="utf-8")
+            payload = {"tool_name": "Write", "tool_input": {"file_path": str(memory)}}
+            done = unittest.mock.Mock(returncode=0, stderr="")
+            with patch.object(SYNC, "read_payload", return_value=payload), \
+                 patch.object(SYNC, "active_context", return_value=(tmp, "demo")), \
+                 patch.object(SYNC, "_project_dir", return_value=None), \
+                 patch.object(SYNC, "record_run", return_value=done) as record, \
+                 patch("sys.stdin"), patch("sys.stderr"):
+                self.assertEqual(SYNC.main(), 0)
+            self.assertNotIn("ghp_", record.call_args.kwargs["summary"])
+
     def test_summary_cut_never_splits_a_link(self) -> None:
         text = "a" * 2990 + " [[2026-10-21-1607-memory-sync-cli-parity-md-demo|cli-parity]]"
         cut = SYNC.fit_summary(text)

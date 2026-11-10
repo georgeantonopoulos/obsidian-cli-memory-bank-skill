@@ -124,7 +124,7 @@ def rewrite_memory_links(text: str, project_dir: Optional[Path], project: str = 
         stem = index.mirror(_mirror_slug(f"{name}.md", project))
         if stem is not None:
             return f"[[{stem}{heading}|{label}]]"
-        if index.has_note(target):
+        if index.has_note(name):
             return match.group(0)
         return label
 
@@ -188,7 +188,8 @@ def main() -> int:
         content = rewrite_memory_links(content, _project_dir(workspace, project), project)
     except Exception:  # never lose the sync over a link rewrite
         pass
-    content = fit_summary(content)
+    # Redact before cutting: a cut key is too short for redact_secrets to spot.
+    content = fit_summary(redact_secrets(content))
     result = record_run(
         workspace, project,
         title=sync_title(memory_filename, project),
