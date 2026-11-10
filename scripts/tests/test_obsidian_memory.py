@@ -1109,6 +1109,30 @@ class SearchExcludesSessionTests(unittest.TestCase):
                 self.assertIn("own-", cli.search_files('kafka path:"Project Memory/demo"', limit=20))
 
 
+class WriteSummaryOnceTests(unittest.TestCase):
+    def test_brief_takes_the_first_sentence_and_cuts_on_a_word(self) -> None:
+        from scripts.obsidian_memory import _brief
+        self.assertEqual(_brief("Fixed the lag.  Raised fetch size to 4 MB.", 160), "Fixed the lag.")
+        self.assertEqual(_brief("v1.5 shipped to testers", 160), "v1.5 shipped to testers")
+        long = "word " * 60
+        cut = _brief(long, 40)
+        self.assertLessEqual(len(cut), 40)
+        self.assertTrue(cut.endswith("..."))
+        self.assertEqual(_brief("", 40), "")
+
+    def test_related_entry_carries_a_brief_reason(self) -> None:
+        from scripts.obsidian_memory import _related_entry
+        entry = _related_entry("note-a", "First sentence here. " + "More detail " * 40)
+        self.assertEqual(entry, "- [[note-a]] — First sentence here.")
+        self.assertEqual(_related_entry("note-a", None), "- [[note-a]]")
+
+    def test_empty_values_mean_no_section(self) -> None:
+        from scripts.obsidian_memory import _has_content
+        for value in (None, "", " ", "None", "None.", "none", "N/A", "-"):
+            self.assertFalse(_has_content(value))
+        self.assertTrue(_has_content("Prefer measured counts."))
+
+
 class RunSessionStampTests(unittest.TestCase):
     def test_session_comes_from_flag_then_environment(self) -> None:
         from scripts.obsidian_memory import _run_extra
