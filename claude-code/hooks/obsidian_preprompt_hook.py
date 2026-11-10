@@ -11,6 +11,7 @@ Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import os
 import re
 import subprocess
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
+    compacted_at,
     capture_directive,
     read_payload,
     redact_secrets,
@@ -49,10 +51,7 @@ _STOP_WORDS = frozenset(
 # Words about running the work rather than what it is about: they sit in a
 # large share of prompts and notes alike, so they pull in loosely related notes.
 _WORKFLOW_WORDS = frozenset(
-    "pr prs approve approved approval progress wait waiting next question questions "
-    "instruction instructions yourself one-line permission permissions allow allowed "
-    "background automated recommendation recommend report reply answer update "
-    "status phase step done finished ready start started continue proceed go-ahead".split()
+    "pr prs approve approved approval proceed go-ahead yourself one-line continue".split()
 )
 
 _FILE_PATH_RE = re.compile(r"@?(?:[A-Za-z]:)?(?:[/\\][\w.\-]+){2,}")
@@ -415,32 +414,44 @@ def _note_excerpts(selected_hits: str, workspace: str) -> str:
             "read the rest with obmem read-note --path <note> if cut short):\n" + "\n\n".join(blocks))
 
 
-def _note_session(path: Path) -> str:
-    """The `session:` field from a note's frontmatter, or ""."""
+def _note_meta(path: Path) -> dict:
+    """`session:` and `created:` from a note's frontmatter."""
+    meta: dict = {}
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
             if handle.readline().strip() != "---":
-                return ""
+                return meta
             for _ in range(40):
                 line = handle.readline()
                 if not line or line.strip() == "---":
                     break
-                if line.startswith("session:"):
-                    return line.split(":", 1)[1].strip().strip('"\'')
+                key, _, value = line.partition(":")
+                if key in ("session", "created"):
+                    meta[key] = value.strip().strip('"').replace('\\"', '"')
     except OSError:
         pass
-    return ""
+    return meta
 
 
-def _drop_own_session(output: str, vault: Path | None, session_id: str) -> str:
-    """Remove hits written by the asking session: the conversation already holds them."""
+def _created_epoch(value: str) -> float:
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _drop_own_session(output: str, vault: Path | None, session_id: str, since: float = 0.0) -> str:
+    """Remove hits the asking session wrote and still holds in its context:
+    all of them, or after a compaction only those written since."""
     if not session_id or vault is None:
         return output
     kept = []
     for line in output.splitlines():
         match = _SEARCH_HIT_RE.match(line)
-        if match and _note_session(vault / match.group(1)) == session_id:
-            continue
+        if match:
+            meta = _note_meta(vault / match.group(1))
+            if meta.get("session") == session_id and (not since or _created_epoch(meta.get("created", "")) >= since):
+                continue
         kept.append(line)
     return "\n".join(kept)
 
@@ -459,14 +470,18 @@ def main() -> int:
     if not prompt:
         return 0
 
+    # Short acknowledgements ("ok", "tool loaded") don't warrant a memory lookup.
+    recency = _is_recency_question(prompt)
+    if not recency and (len(prompt.split()) < _MIN_PROMPT_WORDS
+                        or len(_sanitize_query(prompt).split()) < _MIN_KEYWORDS):
+        return 0
+
     context = active_context(payload)
     if context is None:
         return 0
     workspace, project = context
     query = _sanitize_query(prompt, project=project)
-    # Short acknowledgements ("ok", "tool loaded") don't warrant a memory lookup.
-    recency = _is_recency_question(prompt)
-    if not recency and (len(prompt.split()) < _MIN_PROMPT_WORDS or len(query.split()) < _MIN_KEYWORDS):
+    if not recency and len(query.split()) < _MIN_KEYWORDS:
         return 0
 
     if recency:
@@ -510,7 +525,7 @@ def main() -> int:
         return 0
     session_id = str(payload.get("session_id") or "")
     if session_id and output:
-        output = _drop_own_session(output, _vault_path(workspace), session_id)
+        output = _drop_own_session(output, _vault_path(workspace), session_id, compacted_at(session_id))
     selected_hits = _select_search_hits(output)
 
     # Always tell the LLM what keywords were searched so it can refine

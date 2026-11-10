@@ -378,6 +378,28 @@ def _seen_file(session_id: str) -> Path:
     return _seen_dir() / (hashlib.sha1(session_id.encode("utf-8")).hexdigest() + ".txt")
 
 
+def mark_compacted(session_id: str) -> None:
+    """Remember when this session last lost its context to compaction."""
+    if not session_id:
+        return
+    try:
+        target = _seen_file(session_id).with_suffix(".compacted")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def compacted_at(session_id: str) -> float:
+    """Epoch seconds of the session's last compaction, or 0.0 if none."""
+    if not session_id:
+        return 0.0
+    try:
+        return float(_seen_file(session_id).with_suffix(".compacted").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0.0
+
+
 def turn_already_logged(session_id: str, start_id: str) -> bool:
     if not session_id or not start_id:
         return False
@@ -419,9 +441,10 @@ def record_run(workspace: str, project: str, *, title: str, prompt: str, summary
         "--tags", tags,
         "--workspace", workspace,
     ]
-    if session:
-        cmd += ["--session", session]
+    # Through the environment, not a flag: an older obmem without --session would
+    # reject the flag and lose the note; it simply ignores the variable.
+    env = {**os.environ, "OBMEM_SESSION_ID": session} if session else None
     try:
-        return subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=60)
+        return subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=60, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(cmd, 1, "", str(exc))
