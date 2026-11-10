@@ -1258,6 +1258,28 @@ def resolve_note_path(vault_path: Path, paths: NotePaths, reference: str) -> Opt
 
 
 _BRIEF_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9`*\[(])")
+# A full stop after these does not end the sentence.
+_ABBREVIATIONS = {"e.g.", "i.e.", "etc.", "vs.", "approx.", "incl.", "cf.", "no.", "fig."}
+
+
+def _first_sentence(flat: str) -> str:
+    for match in _BRIEF_SENTENCE_RE.finditer(flat):
+        words = flat[: match.start()].split()
+        if words and words[-1].lower() in _ABBREVIATIONS:
+            continue
+        return flat[: match.start()]
+    return flat
+
+
+def _balanced(text: str) -> str:
+    """Drop a trailing half link or half code span: an unclosed `[[` or an odd
+    backtick would make wikilink parsers read on into the next line."""
+    open_link = text.rfind("[[")
+    if open_link != -1 and text.find("]]", open_link) == -1:
+        text = text[:open_link]
+    if text.count("`") % 2:
+        text = text[: text.rfind("`")]
+    return text.rstrip(" ,;:-")
 
 
 def _brief(text: str, limit: int) -> str:
@@ -1268,14 +1290,14 @@ def _brief(text: str, limit: int) -> str:
     those copies a fifth of a busy vault, and let neighbours match searches
     meant for the note itself.
     """
-    flat = " ".join((text or "").split())
-    first = _BRIEF_SENTENCE_RE.split(flat, maxsplit=1)[0]
+    flat = " ".join((text or "").split()).lstrip("-* ")
+    first = _balanced(_first_sentence(flat))
     if len(first) <= limit:
         return first
     cut = first[: limit - 3]
     if " " in cut[limit // 2:]:
         cut = cut[: cut.rfind(" ")]
-    return cut.rstrip(" ,;:-") + "..."
+    return _balanced(cut) + "..."
 
 
 _INDEX_BRIEF_CHARS = 160
@@ -1288,8 +1310,8 @@ def _related_entry(target_stem: str, reason: Optional[str]) -> str:
         base = f"- {_wikilink(target)}"
     else:
         base = f"- [[{target_stem}]]"
-    brief = _brief(reason or "", _RELATED_BRIEF_CHARS)
-    return f"{base} — {brief}" if brief else base
+    reason = " ".join((reason or "").split())
+    return f"{base} — {reason}" if reason else base
 
 
 def _has_link_to(body: str, target_stem: str) -> bool:
@@ -2485,7 +2507,7 @@ def cmd_record_run(args: argparse.Namespace) -> None:
 
     if neighbor_paths:
         print(f"auto-relate: weaving {len(neighbor_paths)} neighbor(s)")
-        reason = args.summary.strip() or None
+        reason = _brief(args.summary, _RELATED_BRIEF_CHARS) or None
         for status in weave_bidirectional(cli, run_note_path, neighbor_paths, reason):
             print(f"  {status}")
     elif auto_mode:

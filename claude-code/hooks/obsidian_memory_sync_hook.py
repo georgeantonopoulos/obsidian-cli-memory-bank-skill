@@ -138,6 +138,22 @@ def rewrite_memory_links(text: str, project_dir: Optional[Path], project: str = 
     return "".join(pieces)
 
 
+def without_frontmatter(text: str) -> str:
+    """Memory body, led by its `description:` so the first sentence (which goes
+    into the vault's index lines) says what the memory is."""
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return text
+    header, body = text[3:end], text[end + 4:].strip()
+    match = re.search(r"^description:\s*(.+)$", header, re.MULTILINE)
+    description = match.group(1).strip().strip('"\'') if match else ""
+    if description and not description.endswith((".", "!", "?")):
+        description += "."
+    return f"{description}\n\n{body}".strip() if description else body
+
+
 def fit_summary(text: str, limit: int = SUMMARY_LIMIT) -> str:
     """Cut to the summary limit without leaving half a `[[link`."""
     text = " ".join(text.split())
@@ -189,7 +205,7 @@ def main() -> int:
     except Exception:  # never lose the sync over a link rewrite
         pass
     # Redact before cutting: a cut key is too short for redact_secrets to spot.
-    content = fit_summary(redact_secrets(content))
+    content = fit_summary(redact_secrets(without_frontmatter(content)))
     result = record_run(
         workspace, project,
         title=sync_title(memory_filename, project),

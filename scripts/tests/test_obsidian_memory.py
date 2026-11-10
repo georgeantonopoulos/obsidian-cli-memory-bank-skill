@@ -1120,11 +1120,27 @@ class WriteSummaryOnceTests(unittest.TestCase):
         self.assertTrue(cut.endswith("..."))
         self.assertEqual(_brief("", 40), "")
 
-    def test_related_entry_carries_a_brief_reason(self) -> None:
+    def test_related_entry_keeps_an_explicit_reason_whole(self) -> None:
         from scripts.obsidian_memory import _related_entry
-        entry = _related_entry("note-a", "First sentence here. " + "More detail " * 40)
-        self.assertEqual(entry, "- [[note-a]] — First sentence here.")
+        reason = "Supersedes X. Do not use the old flow."
+        self.assertEqual(_related_entry("note-a", reason), f"- [[note-a]] — {reason}")
+        self.assertEqual(_related_entry("note-a", "a\nb"), "- [[note-a]] — a b")
         self.assertEqual(_related_entry("note-a", None), "- [[note-a]]")
+
+    def test_brief_never_leaves_half_a_link_or_code_span(self) -> None:
+        from scripts.obsidian_memory import _brief, _extract_wikilinks
+        text = "Moved the export flow and the cache reader " * 3 + "see [[Decision Register|the notes]] here"
+        for limit in range(60, 200, 7):
+            out = _brief(text, limit)
+            self.assertEqual(out.count("[["), out.count("]]"), out)
+        self.assertEqual(_brief("Run `git log --oneline` then rebase", 12).count("`") % 2, 0)
+        lines = "- [[a]]: " + _brief(text, 150) + "\n- [[b]]: next"
+        self.assertIn("b", _extract_wikilinks(lines))
+
+    def test_brief_does_not_stop_at_abbreviations(self) -> None:
+        from scripts.obsidian_memory import _brief
+        self.assertEqual(_brief("Use e.g. Redis for the cache. Then more.", 160), "Use e.g. Redis for the cache.")
+        self.assertEqual(_brief("- fixed X\n- fixed Y", 160), "fixed X - fixed Y")
 
     def test_empty_values_mean_no_section(self) -> None:
         from scripts.obsidian_memory import _has_content
