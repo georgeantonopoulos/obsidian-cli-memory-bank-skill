@@ -1088,5 +1088,38 @@ class CompactionTests(unittest.TestCase):
                 os.environ["OBMEM_STATE_FILE"] = original_state_env
 
 
+class SearchExcludesSessionTests(unittest.TestCase):
+    def test_own_notes_are_left_out_before_the_limit(self) -> None:
+        from scripts.obsidian_memory import ObsidianCLI
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "Project Memory" / "demo" / "Runs"
+            runs.mkdir(parents=True)
+            for i in range(10):
+                (runs / f"own-{i}.md").write_text(
+                    f'---\nsession: "s-1"\ncreated: "2026-11-10T12:00:00+00:00"\n---\n# kafka lag {i}\n')
+            (runs / "earlier.md").write_text('---\nsession: "s-0"\n---\n# kafka lag earlier\n')
+            cli = ObsidianCLI(vault_path=Path(tmp), dry_run=False)
+            with patch.dict(os.environ, {"OBMEM_EXCLUDE_SESSION": "s-1", "OBMEM_EXCLUDE_SINCE": "0"}):
+                hits = cli.search_files('kafka path:"Project Memory/demo"', limit=10)
+            self.assertIn("earlier.md", hits)
+            self.assertNotIn("own-", hits)
+            # After a compaction at 13:00, the 12:00 notes count again.
+            since = "1794315600"  # 2026-11-10T13:00:00Z
+            with patch.dict(os.environ, {"OBMEM_EXCLUDE_SESSION": "s-1", "OBMEM_EXCLUDE_SINCE": since}):
+                self.assertIn("own-", cli.search_files('kafka path:"Project Memory/demo"', limit=20))
+
+
+class RunSessionStampTests(unittest.TestCase):
+    def test_session_comes_from_flag_then_environment(self) -> None:
+        from scripts.obsidian_memory import _run_extra
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "env-1"}, clear=False):
+            os.environ.pop("OBMEM_SESSION_ID", None)
+            self.assertEqual(_run_extra(argparse.Namespace(title=" T ", session="flag-1")),
+                             {"title": "T", "session": "flag-1"})
+            self.assertEqual(_run_extra(argparse.Namespace(title="T", session=None))["session"], "env-1")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_run_extra(argparse.Namespace(title="T", session=None)), {"title": "T"})
+
+
 if __name__ == "__main__":
     unittest.main()

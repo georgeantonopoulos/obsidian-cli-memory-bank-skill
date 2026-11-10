@@ -78,6 +78,7 @@ def main() -> int:
         summary=truncate(summary, 1500) or "No assistant summary captured.",
         actions=actions,
         tags="claude,auto-log",
+        session=session_id,
     )
     if result.returncode == 0:
         mark_turn_logged(session_id, start_id)

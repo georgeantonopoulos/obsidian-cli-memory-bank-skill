@@ -202,8 +202,79 @@ class ClaudePrePromptHookTests(unittest.TestCase):
                 patch("sys.stdout", new_callable=__import__("io").StringIO) as stdout:
             stdin.read.return_value = payload
             self.assertEqual(HOOK.main(), 0)
-        self.assertIn("No matches.", stdout.getvalue())
+        # Nothing fits: no search header, no advice, only the recording rule.
+        self.assertNotIn("Searched", stdout.getvalue())
         self.assertIn('obmem record-run --project "demo"', stdout.getvalue())
+
+    def test_filler_years_percentages_and_project_name_are_not_keywords(self) -> None:
+        query = HOOK._sanitize_query(
+            "Demo audit: 46% of hits in 2026 echo; approve the next PR and report progress "
+            "on the Kafka consumer lag fix before v2.3 ships", project="Demo")
+        words = query.split()
+        for noise in ("46%", "2026", "approve", "pr", "demo"):
+            self.assertNotIn(noise, words)
+        self.assertIn("kafka", words)
+        self.assertIn("v2", " ".join(words))
+
+    def test_words_inside_the_project_name_are_kept(self) -> None:
+        self.assertIn("nuke", HOOK._sanitize_query("Why does the gizmo break on Nuke 17 loading", project="oklch-nuke").split())
+
+    def test_topic_nouns_that_look_like_workflow_are_kept(self) -> None:
+        for prompt, word in (("Next.js hydration error on the dashboard", "next"),
+                             ("fix background removal in the keyer", "background"),
+                             ("progress bar flickers on export", "progress")):
+            self.assertIn(word, HOOK._sanitize_query(prompt, project="x").split())
+
+    def test_after_compaction_older_own_notes_come_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            runs = vault / "Project Memory" / "demo" / "Runs"
+            runs.mkdir(parents=True)
+            (runs / "before.md").write_text('---\nsession: "s-1"\ncreated: "2026-11-10T10:00:00+00:00"\n---\n')
+            (runs / "after.md").write_text('---\nsession: "s-1"\ncreated: "2026-11-10T12:00:00+00:00"\n---\n')
+            output = ("  Project Memory/demo/Runs/before.md (score 9)\n"
+                      "  Project Memory/demo/Runs/after.md (score 8)")
+            from datetime import datetime
+            since = datetime.fromisoformat("2026-11-10T11:00:00+00:00").timestamp()
+            kept = HOOK._drop_own_session(output, vault, "s-1", since)
+            self.assertIn("before.md", kept)
+            self.assertNotIn("after.md", kept)
+
+    def test_compaction_marker_round_trip(self) -> None:
+        COMMON.mark_compacted("s-compact")
+        self.assertGreater(COMMON.compacted_at("s-compact"), 0)
+        self.assertEqual(COMMON.compacted_at("s-never"), 0.0)
+
+    def test_session_goes_by_environment_not_flag(self) -> None:
+        with patch.object(COMMON.subprocess, "run") as run:
+            COMMON.record_run("/w", "demo", title="t", prompt="p", summary="s", actions="a",
+                              tags="x", session="s-9")
+        self.assertNotIn("--session", run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs["env"]["OBMEM_SESSION_ID"], "s-9")
+
+    def test_at_most_two_numbers(self) -> None:
+        query = HOOK._sanitize_query("Figures 1.43 2.71 3.14 9.99 for the kafka consumer", project="x")
+        self.assertEqual(sum(1 for w in query.split() if w[0].isdigit()), 2)
+
+    def test_notes_from_the_asking_session_are_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            runs = vault / "Project Memory" / "demo" / "Runs"
+            runs.mkdir(parents=True)
+            (runs / "own.md").write_text('---\ntype: "run"\nsession: "s-1"\n---\n# own\n')
+            (runs / "other.md").write_text('---\ntype: "run"\nsession: "s-2"\n---\n# other\n')
+            (runs / "old.md").write_text('---\ntype: "run"\n---\n# old\n')
+            output = "\n".join([
+                "Found 3 hits; showing 3.",
+                "  Project Memory/demo/Runs/own.md (score 9)",
+                "  Project Memory/demo/Runs/other.md (score 8)",
+                "  Project Memory/demo/Runs/old.md (score 7)",
+            ])
+            kept = HOOK._drop_own_session(output, vault, "s-1")
+            self.assertNotIn("own.md", kept)
+            self.assertIn("other.md", kept)
+            self.assertIn("old.md", kept)
+            self.assertEqual(HOOK._drop_own_session(output, vault, ""), output)
 
     def test_clean_excerpt_drops_frontmatter_nav_and_related(self) -> None:
         note = """---

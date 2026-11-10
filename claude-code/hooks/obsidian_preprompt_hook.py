@@ -11,6 +11,7 @@ Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import os
 import re
 import subprocess
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
+    compacted_at,
     capture_directive,
     read_payload,
     redact_secrets,
@@ -45,6 +47,11 @@ _STOP_WORDS = frozenset(
     "obvious obviously currently current actually really basically maybe "
     "interested wondering think thought guess seems seem able done doing "
     "improve better best again here there one ones im ive dont cant".split()
+)
+# Words about running the work rather than what it is about: they sit in a
+# large share of prompts and notes alike, so they pull in loosely related notes.
+_WORKFLOW_WORDS = frozenset(
+    "pr prs approve approved approval proceed go-ahead yourself one-line continue".split()
 )
 
 _FILE_PATH_RE = re.compile(r"@?(?:[A-Za-z]:)?(?:[/\\][\w.\-]+){2,}")
@@ -126,8 +133,17 @@ _WRAPPER_RES = (
 _NUMBER_TOKEN_RE = re.compile(r"(?<![\w.])[$£€]?\d+(?:[.,]\d+)*%?(?![\w.])")
 
 
+_YEAR_RE = re.compile(r"^(?:19|20)\d\d$")
+# At most this many numbers per search, so a pasted report's figures can't fill it.
+_MAX_NUMBERS = 2
+
+
 def _specific_number(token: str) -> bool:
-    return token[0] in "$£€" or token.endswith("%") or "." in token or "," in token or len(token) >= 3
+    """Prices, versions and codes; not percentages or years, which most reports
+    and notes are full of and which match nothing in particular."""
+    if token.endswith("%") or _YEAR_RE.match(token):
+        return False
+    return token[0] in "$£€" or "." in token or "," in token or len(token) >= 3
 
 
 def _ignore_file() -> Path:
@@ -188,7 +204,7 @@ def _is_named(token: str, sentence_starts: set[str]) -> bool:
     return token[:1].isupper() and token not in sentence_starts
 
 
-def _sanitize_query(prompt: str, max_words: int = 5) -> str:
+def _sanitize_query(prompt: str, max_words: int = 5, project: str = "") -> str:
     """Extract meaningful search keywords from a raw user prompt.
 
     Named things (proper nouns, identifiers in backticks, prices and versions)
@@ -199,6 +215,9 @@ def _sanitize_query(prompt: str, max_words: int = 5) -> str:
     names of people a user often mentions, which otherwise crowd out the topic).
     """
     text = redact_secrets(prompt).replace("[redacted secret]", " ")
+    # Every note in the project carries its name, so it selects nothing. Only the
+    # whole name: "nuke" in a project called oklch-nuke still means something.
+    own_names = {project.lower(), re.sub(r"[^a-z0-9]+", "-", project.lower()).strip("-")} if project else set()
     ignored_names, ignored_words, ignored_patterns = _query_ignore()
     delivery_words = _MESSAGE_WORDS if _RELAYED_RE.search(text) else frozenset()
     text = _strip_wrappers(text, ignored_patterns)
@@ -225,13 +244,16 @@ def _sanitize_query(prompt: str, max_words: int = 5) -> str:
     ranked: list[tuple[int, int, int, str]] = []
     # Specific numbers are the most selective terms there are: rank them first.
     for offset, number in numbers:
+        if sum(1 for rank, *_ in ranked if rank == -1) >= _MAX_NUMBERS:
+            break
         if number not in seen and _specific_number(number):
             seen.add(number)
             ranked.append((-1, -len(number), offset, number))
     for position, token in enumerate(text.split()):
         word = token.lower().strip("-")
         if (len(word) < 2 or word in seen or word in _STOP_WORDS or word in _REQUEST_VERBS
-                or word in delivery_words or word in ignored_words):
+                or word in _WORKFLOW_WORDS or word in delivery_words or word in ignored_words
+                or word in own_names):
             continue
         # "tester" after "testers" (or the reverse) adds nothing.
         if word + "s" in seen or (word.endswith("s") and word[:-1] in seen):
@@ -392,6 +414,48 @@ def _note_excerpts(selected_hits: str, workspace: str) -> str:
             "read the rest with obmem read-note --path <note> if cut short):\n" + "\n\n".join(blocks))
 
 
+def _note_meta(path: Path) -> dict:
+    """`session:` and `created:` from a note's frontmatter."""
+    meta: dict = {}
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            if handle.readline().strip() != "---":
+                return meta
+            for _ in range(40):
+                line = handle.readline()
+                if not line or line.strip() == "---":
+                    break
+                key, _, value = line.partition(":")
+                if key in ("session", "created"):
+                    meta[key] = value.strip().strip('"').replace('\\"', '"')
+    except OSError:
+        pass
+    return meta
+
+
+def _created_epoch(value: str) -> float:
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _drop_own_session(output: str, vault: Path | None, session_id: str, since: float = 0.0) -> str:
+    """Remove hits the asking session wrote and still holds in its context:
+    all of them, or after a compaction only those written since."""
+    if not session_id or vault is None:
+        return output
+    kept = []
+    for line in output.splitlines():
+        match = _SEARCH_HIT_RE.match(line)
+        if match:
+            meta = _note_meta(vault / match.group(1))
+            if meta.get("session") == session_id and (not since or _created_epoch(meta.get("created", "")) >= since):
+                continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def main() -> int:
     payload = read_payload(sys.stdin.read())
     if payload is None:
@@ -406,16 +470,19 @@ def main() -> int:
     if not prompt:
         return 0
 
-    query = _sanitize_query(prompt)
     # Short acknowledgements ("ok", "tool loaded") don't warrant a memory lookup.
     recency = _is_recency_question(prompt)
-    if not recency and (len(prompt.split()) < _MIN_PROMPT_WORDS or len(query.split()) < _MIN_KEYWORDS):
+    if not recency and (len(prompt.split()) < _MIN_PROMPT_WORDS
+                        or len(_sanitize_query(prompt).split()) < _MIN_KEYWORDS):
         return 0
 
     context = active_context(payload)
     if context is None:
         return 0
     workspace, project = context
+    query = _sanitize_query(prompt, project=project)
+    if not recency and len(query.split()) < _MIN_KEYWORDS:
+        return 0
 
     if recency:
         vault = _vault_path(workspace)
@@ -443,12 +510,19 @@ def main() -> int:
     # Jev (when the private ranker preference enables it) judges relevance against
     # the redacted request, not just the keywords.
     intent = truncate(redact_secrets(prompt), 500)
+    # The search leaves out notes this session still holds, before it cuts the
+    # list to the candidate limit (an older obmem ignores these; the filter
+    # below still applies then).
+    session_id = str(payload.get("session_id") or "")
+    since = compacted_at(session_id)
+    search_env = {**os.environ, "OBMEM_EXCLUDE_SESSION": session_id,
+                  "OBMEM_EXCLUDE_SINCE": str(since)} if session_id else None
     try:
         result = subprocess.run(
             ["obmem", "search", "--project", project, "--query", query,
              "--intent", intent, "--min-jev", f"{_jev_min():.2f}",
              "--limit", str(_CANDIDATE_LIMIT), "--workspace", workspace],
-            text=True, capture_output=True, check=False, timeout=20,
+            text=True, capture_output=True, check=False, timeout=20, env=search_env,
         )
         output = result.stdout.strip() if result.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
@@ -456,6 +530,8 @@ def main() -> int:
     # Jev judged every candidate irrelevant: stay quiet rather than suggest a search.
     if _JEV_GATED_RE.search(output):
         return 0
+    if session_id and output:
+        output = _drop_own_session(output, _vault_path(workspace), session_id, since)
     selected_hits = _select_search_hits(output)
 
     # Always tell the LLM what keywords were searched so it can refine
@@ -471,11 +547,8 @@ def main() -> int:
             "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context},
         }))
     else:
-        print(
-            f"{header}\nNo matches. Consider using the obmem skill to search "
-            f"with domain-specific keywords (e.g. project name, technology, feature names).\n"
-            f"{capture_directive(project)}"
-        )
+        # Nothing fits: add nothing but the capture reminder.
+        print(capture_directive(project))
     return 0
 
 

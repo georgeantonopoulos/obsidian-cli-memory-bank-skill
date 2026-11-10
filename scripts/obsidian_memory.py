@@ -525,6 +525,7 @@ class ObsidianCLI:
             return "Found 0 hits."
 
         patterns = _compile_term_patterns(terms)
+        exclude_session, exclude_since = _excluded_session()
 
         # First pass: per-note term frequencies and lengths. BM25 needs corpus
         # statistics, so nothing can be scored until every note has been seen.
@@ -536,6 +537,8 @@ class ObsidianCLI:
             try:
                 text = note.read_text(encoding="utf-8")
             except UnicodeDecodeError:
+                continue
+            if exclude_session and _written_by(text, exclude_session, exclude_since):
                 continue
             haystack = f"{note.stem}\n{text}"
             # The title is worth more than a passing mention in the body, so it
@@ -2352,6 +2355,17 @@ def cmd_bootstrap(args: argparse.Namespace) -> None:
     bootstrap_project(cli, project)
 
 
+def _run_extra(args: argparse.Namespace) -> Dict[str, str]:
+    """Title, plus the session that wrote the note so prompt search can skip
+    notes the current conversation already holds."""
+    extra = {"title": args.title.strip()}
+    session = (getattr(args, "session", None) or os.environ.get("OBMEM_SESSION_ID")
+               or os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    if session:
+        extra["session"] = session
+    return extra
+
+
 def cmd_record_run(args: argparse.Namespace) -> None:
     store = ConfigStore()
     workspace = resolve_workspace_path(args.workspace)
@@ -2368,7 +2382,7 @@ def cmd_record_run(args: argparse.Namespace) -> None:
         note_type="run",
         project=project,
         tags=run_tags,
-        extra={"title": args.title.strip()},
+        extra=_run_extra(args),
     )
     run_note = "\n".join(
         [
@@ -2593,6 +2607,40 @@ def _jev_option_name(path: str, taken: Dict[str, int]) -> str:
     while candidate in taken:
         candidate, suffix = f"{name} ({suffix})", suffix + 1
     return candidate
+
+
+_FRONT_SESSION_RE = re.compile(r'^session:\s*"?(.*?)"?\s*$', re.MULTILINE)
+_FRONT_CREATED_RE = re.compile(r'^created:\s*"?(.*?)"?\s*$', re.MULTILINE)
+
+
+def _excluded_session() -> Tuple[str, float]:
+    """Session whose notes search leaves out ($OBMEM_EXCLUDE_SESSION), and the
+    time ($OBMEM_EXCLUDE_SINCE, epoch seconds) before which they count again."""
+    session = os.environ.get("OBMEM_EXCLUDE_SESSION", "").strip()
+    try:
+        since = float(os.environ.get("OBMEM_EXCLUDE_SINCE", "0") or 0)
+    except ValueError:
+        since = 0.0
+    return session, since
+
+
+def _written_by(text: str, session: str, since: float) -> bool:
+    """True when the note's frontmatter names `session` (and, with `since`,
+    the note was created at or after it)."""
+    if not text.startswith("---"):
+        return False
+    end = text.find("\n---", 3)
+    head = text[:end] if end != -1 else text[:2000]
+    match = _FRONT_SESSION_RE.search(head)
+    if not match or match.group(1).replace('\\"', '"') != session:
+        return False
+    if not since:
+        return True
+    created = _FRONT_CREATED_RE.search(head)
+    try:
+        return datetime.fromisoformat(created.group(1)).timestamp() >= since if created else True
+    except ValueError:
+        return True
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -3077,6 +3125,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--decisions", help="Decision summary")
     parser_run.add_argument("--questions", help="Open questions summary")
     parser_run.add_argument("--tags", default="", help="Comma-separated tags")
+    parser_run.add_argument(
+        "--session",
+        help="Id of the agent session writing the note (default: $OBMEM_SESSION_ID or "
+             "$CLAUDE_CODE_SESSION_ID). Prompt search skips notes from the asking session.",
+    )
     parser_run.add_argument(
         "--related",
         help=(

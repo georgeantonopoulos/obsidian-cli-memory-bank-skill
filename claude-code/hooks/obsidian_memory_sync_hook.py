@@ -197,6 +197,7 @@ def main() -> int:
         summary=content,
         actions=f"Claude wrote to {memory_filename}. Content synced to Obsidian vault.",
         tags="claude,auto-log,memory-sync",
+        session=str(payload.get("session_id") or ""),
     )
     if result.returncode == 0:
         print(f"[obsidian-memory] Synced {memory_filename} to Obsidian vault.", file=sys.stderr)

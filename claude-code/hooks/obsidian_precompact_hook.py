@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
+    mark_compacted,
     active_context,
     read_payload,
     recent_prompts,
@@ -29,6 +30,9 @@ def main() -> int:
     payload = read_payload(sys.stdin.read())
     if payload is None:
         return 0
+    # Notes this session wrote before now are no longer in its context, so
+    # prompt search may bring them back from here on.
+    mark_compacted(str(payload.get("session_id") or ""))
     context = active_context(payload)
     if context is None:
         return 0
