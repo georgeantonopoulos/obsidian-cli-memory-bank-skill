@@ -1149,6 +1149,32 @@ class WriteSummaryOnceTests(unittest.TestCase):
         self.assertTrue(_has_content("Prefer measured counts."))
 
 
+class RelatedNeighborTests(unittest.TestCase):
+    def test_auto_notes_and_full_notes_are_not_linked_automatically(self) -> None:
+        from scripts.obsidian_memory import _good_neighbor
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manual = root / "manual.md"
+            manual.write_text('---\ntags:\n  - "export"\n  - "run"\n---\n# Fix export\n')
+            auto = root / "auto.md"
+            auto.write_text('---\ntags:\n  - "claude"\n  - "auto-log"\n---\n# Message from X\n')
+            full = root / "full.md"
+            full.write_text("# Busy\n\n## Related\n" + "".join(f"- [[n{i}]]\n" for i in range(12)))
+            body_mention = root / "mention.md"
+            body_mention.write_text('---\ntags:\n  - "run"\n---\nWe stopped tagging notes\n  - auto-log\n')
+            self.assertTrue(_good_neighbor(manual))
+            self.assertFalse(_good_neighbor(auto))
+            self.assertFalse(_good_neighbor(full))
+            self.assertTrue(_good_neighbor(body_mention))
+            self.assertFalse(_good_neighbor(root / "missing.md"))
+            mirror = root / "mirror.md"
+            mirror.write_text('---\ntags:\n  - "auto-log"\n  - "memory-sync"\n---\n# Memory sync\n')
+            self.assertTrue(_good_neighbor(mirror))
+            inline = root / "inline.md"
+            inline.write_text("---\ntags: [claude, 'auto-log']\n---\n# x\n")
+            self.assertFalse(_good_neighbor(inline))
+
+
 class RunSessionStampTests(unittest.TestCase):
     def test_session_comes_from_flag_then_environment(self) -> None:
         from scripts.obsidian_memory import _run_extra

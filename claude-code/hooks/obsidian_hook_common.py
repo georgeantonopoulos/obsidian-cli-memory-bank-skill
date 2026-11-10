@@ -440,6 +440,9 @@ def record_run(workspace: str, project: str, *, title: str, prompt: str, summary
         "--actions", truncate(redact_secrets(actions), 1000),
         "--tags", tags,
         "--workspace", workspace,
+        # Captured turns are titled after the message that started them, so
+        # title-matched links would join notes by sender, not topic.
+        "--no-auto-relate",
     ]
     # Through the environment, not a flag: an older obmem without --session would
     # reject the flag and lose the note; it simply ignores the variable.

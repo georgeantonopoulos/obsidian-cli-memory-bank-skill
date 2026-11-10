@@ -1487,6 +1487,45 @@ def _parse_search_output_paths(output: str) -> List[str]:
     return paths
 
 
+# A note that already lists this many Related links takes no more automatic ones.
+_RELATED_CAP = 12
+_RELATED_LINK_RE = re.compile(r"^- \[\[", re.MULTILINE)
+
+
+def _note_tags(head: str) -> List[str]:
+    """Tags from frontmatter: block list, inline [a, b] list, or a single value."""
+    tags = _extract_frontmatter(head.replace("\r\n", "\n")).get("tags", [])
+    if isinstance(tags, str):
+        tags = tags.strip("[]").split(",")
+    return [str(tag).strip().strip("\"'") for tag in tags]
+
+
+def _good_neighbor(path: Path) -> bool:
+    """Automatic links go between notes someone wrote on purpose.
+
+    Notes the hooks capture from a turn (tag ``auto-log``) are titled after the
+    message that started it, so title matching linked them by sender
+    ("Message from X: ...") rather than by topic; they stay reachable from
+    Run Log, MOC and compaction. Mirrored memory files (``memory-sync``) were
+    written on purpose and stay linkable. A note whose Related list is already
+    full is skipped too, so one popular note can't collect dozens of links.
+    """
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return False
+    tags = _note_tags(head)
+    if "auto-log" in tags and "memory-sync" not in tags:
+        return False
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    related = re.search(r"^## Related\s*$(.*?)(?=^#{1,2} |\Z)", text, re.MULTILINE | re.DOTALL)
+    return not related or len(_RELATED_LINK_RE.findall(related.group(1))) < _RELATED_CAP
+
+
 def auto_discover_neighbors(
     cli: ObsidianCLI,
     paths: NotePaths,
@@ -1529,6 +1568,8 @@ def auto_discover_neighbors(
         if candidate.stem in hub_stems:
             continue
         if not (cli.vault_path / candidate).exists():
+            continue
+        if not _good_neighbor(cli.vault_path / candidate):
             continue
         results.append(candidate)
         if len(results) >= limit:
