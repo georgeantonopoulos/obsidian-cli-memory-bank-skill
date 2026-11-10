@@ -408,7 +408,7 @@ def mark_turn_logged(session_id: str, start_id: str) -> None:
 
 
 def record_run(workspace: str, project: str, *, title: str, prompt: str, summary: str,
-               actions: str, tags: str) -> subprocess.CompletedProcess:
+               actions: str, tags: str, session: str = "") -> subprocess.CompletedProcess:
     cmd = [
         "obmem", "record-run",
         "--project", project,
@@ -419,6 +419,8 @@ def record_run(workspace: str, project: str, *, title: str, prompt: str, summary
         "--tags", tags,
         "--workspace", workspace,
     ]
+    if session:
+        cmd += ["--session", session]
     try:
         return subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:

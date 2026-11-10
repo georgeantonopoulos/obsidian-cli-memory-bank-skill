@@ -2352,6 +2352,17 @@ def cmd_bootstrap(args: argparse.Namespace) -> None:
     bootstrap_project(cli, project)
 
 
+def _run_extra(args: argparse.Namespace) -> Dict[str, str]:
+    """Title, plus the session that wrote the note so prompt search can skip
+    notes the current conversation already holds."""
+    extra = {"title": args.title.strip()}
+    session = (getattr(args, "session", None) or os.environ.get("OBMEM_SESSION_ID")
+               or os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    if session:
+        extra["session"] = session
+    return extra
+
+
 def cmd_record_run(args: argparse.Namespace) -> None:
     store = ConfigStore()
     workspace = resolve_workspace_path(args.workspace)
@@ -2368,7 +2379,7 @@ def cmd_record_run(args: argparse.Namespace) -> None:
         note_type="run",
         project=project,
         tags=run_tags,
-        extra={"title": args.title.strip()},
+        extra=_run_extra(args),
     )
     run_note = "\n".join(
         [
@@ -3077,6 +3088,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--decisions", help="Decision summary")
     parser_run.add_argument("--questions", help="Open questions summary")
     parser_run.add_argument("--tags", default="", help="Comma-separated tags")
+    parser_run.add_argument(
+        "--session",
+        help="Id of the agent session writing the note (default: $OBMEM_SESSION_ID or "
+             "$CLAUDE_CODE_SESSION_ID). Prompt search skips notes from the asking session.",
+    )
     parser_run.add_argument(
         "--related",
         help=(
