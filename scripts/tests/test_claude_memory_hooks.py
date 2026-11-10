@@ -57,6 +57,19 @@ class ClaudeSessionStartHookTests(unittest.TestCase):
 
 
 class ClaudePrePromptHookTests(unittest.TestCase):
+    def test_task_notice_ids_are_not_keywords(self) -> None:
+        prompt = (
+            "<task-notification>\n<task-id>bkke3cqsg</task-id>\n"
+            "<tool-use-id>toolu_01BodeKnmAoTCFAHV9QPYiWs</tool-use-id>\n"
+            "<output-file>/private/tmp/x/tasks/bkke3cqsg.output</output-file>\n"
+            "<status>completed</status>\n<summary>Background command \"Count unresolved links\" "
+            "completed</summary>\n</task-notification>"
+        )
+        query = HOOK._sanitize_query(prompt)
+        self.assertNotIn("bkke3cqsg", query)
+        self.assertNotIn("toolu", query)
+        self.assertIn("unresolved", query)
+
     def test_select_search_hits_caps_ranked_output(self) -> None:
         output = """Found 5 hits.
   Project Memory/demo/Current Memory.md (score 9)

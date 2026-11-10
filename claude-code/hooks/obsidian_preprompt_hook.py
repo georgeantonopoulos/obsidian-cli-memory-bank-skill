@@ -113,6 +113,9 @@ _RELAYED_RE = re.compile(
     r"|\[Cross-session [^\]]*\]", re.IGNORECASE)
 # Wrappers and labels removed before keywords are picked; the text inside is the request.
 _WRAPPER_RES = (
+    # Task notices carry ids and file paths (<task-id>bkke3cqsg</task-id>,
+    # toolu_01...) that match nothing in memory: drop the tag and what it holds.
+    re.compile(r"<(task-id|tool-use-id|agent-id|output-file)>.*?</\1>", re.IGNORECASE | re.DOTALL),
     re.compile(r"Another Claude session sent a message:", re.IGNORECASE),
     re.compile(r"\[Cross-session [^\]]*\]", re.IGNORECASE),
     re.compile(r"\[[A-Z][\w-]*(?: [\w-]+)?\s*:"),
