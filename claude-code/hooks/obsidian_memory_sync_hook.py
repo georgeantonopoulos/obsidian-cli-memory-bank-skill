@@ -11,8 +11,11 @@ Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
@@ -28,6 +31,69 @@ def _is_memory_path(file_path: str) -> bool:
         if parts[index] == ".claude" and parts[index + 1] == "projects" and "memory" in parts[index + 3:-1]:
             return True
     return False
+
+
+_WIKILINK_RE = re.compile(r"\[\[([^\[\]|#]+)(#[^\[\]|]*)?(?:\|([^\[\]]*))?\]\]")
+
+
+def _slugify(value: str) -> str:
+    """Same rule obmem uses for note file names."""
+    value = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+    return re.sub(r"-{2,}", "-", value).strip("-")
+
+
+def _project_dir(workspace: str, project: str) -> Optional[Path]:
+    try:
+        result = subprocess.run(
+            ["obmem", "show-vault", "--workspace", workspace],
+            text=True, capture_output=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    vault = result.stdout.strip().splitlines()[-1:] if result.returncode == 0 else []
+    if not vault:
+        return None
+    folder = Path(vault[0]) / "Project Memory" / _slugify(project)
+    return folder if folder.is_dir() else None
+
+
+def _mirror_stem(project_dir: Optional[Path], memory_name: str) -> Optional[str]:
+    """Newest vault note that mirrors the memory file `memory_name`, if any."""
+    if project_dir is None:
+        return None
+    slug = _slugify(memory_name)
+    if not slug:
+        return None
+    matches = sorted(
+        (note.stem for note in project_dir.rglob(f"*-memory-sync-{slug}-md*.md")),
+        reverse=True,
+    )
+    return matches[0] if matches else None
+
+
+def rewrite_memory_links(text: str, project_dir: Optional[Path]) -> str:
+    """Point `[[memory-name]]` links at the vault note that mirrors that memory.
+
+    Claude memory files link to each other by bare memory name. Copied into the
+    vault unchanged, those links resolve to nothing (and the note's summary is
+    repeated into Run Log and MOC, so each one breaks several times). A link to
+    a memory already in the vault becomes `[[<its note>|name]]`; a link to one
+    that is not there yet becomes plain text so no broken link is written.
+    Path-style links (containing "/") are vault links already and stay as they are.
+    """
+
+    def replace(match: "re.Match[str]") -> str:
+        target, heading, alias = match.group(1).strip(), match.group(2) or "", match.group(3)
+        if "/" in target:
+            return match.group(0)
+        name = target[:-3] if target.lower().endswith(".md") else target
+        label = (alias or name).strip()
+        stem = _mirror_stem(project_dir, name)
+        if stem is None:
+            return label
+        return f"[[{stem}{heading}|{label}]]"
+
+    return _WIKILINK_RE.sub(replace, text)
 
 
 def main() -> int:
@@ -65,6 +131,7 @@ def main() -> int:
         return 0
 
     memory_filename = Path(file_path).name
+    content = rewrite_memory_links(content, _project_dir(workspace, project))
     result = record_run(
         workspace, project,
         title=f"Memory sync: {memory_filename} ({project})",

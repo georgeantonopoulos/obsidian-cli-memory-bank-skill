@@ -584,6 +584,44 @@ class MemorySyncHookTests(unittest.TestCase):
         self.assertFalse(SYNC._is_memory_path("/Users/me/Dev/app/src/memory/cache.md"))
         self.assertFalse(SYNC._is_memory_path("/Users/me/Dev/app/GPU_MEMORY.md"))
 
+    def test_memory_links_point_at_mirrored_notes_or_become_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "Runs").mkdir()
+            (project / "Archive" / "Runs").mkdir(parents=True)
+            (project / "Archive" / "Runs" / "2026-10-01-1038-memory-sync-cli-parity-md-demo.md").write_text("old")
+            (project / "Runs" / "2026-10-21-1607-memory-sync-cli-parity-md-demo.md").write_text("new")
+            (project / "Runs" / "2026-10-21-1607-memory-sync-cli-parity-extra-md-demo.md").write_text("other")
+            text = (
+                "See [[cli-parity]], [[cli-parity|the parity rule]], [[cli-parity.md#Why]], "
+                "[[not-written-yet]] and [[Project Memory/demo/MOC|MOC]]."
+            )
+            self.assertEqual(
+                SYNC.rewrite_memory_links(text, project),
+                "See [[2026-10-21-1607-memory-sync-cli-parity-md-demo|cli-parity]], "
+                "[[2026-10-21-1607-memory-sync-cli-parity-md-demo|the parity rule]], "
+                "[[2026-10-21-1607-memory-sync-cli-parity-md-demo#Why|cli-parity]], "
+                "not-written-yet and [[Project Memory/demo/MOC|MOC]].",
+            )
+
+    def test_memory_links_become_text_without_a_vault(self) -> None:
+        self.assertEqual(SYNC.rewrite_memory_links("a [[x-y]] b", None), "a x-y b")
+
+    def test_synced_summary_has_no_bare_memory_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Path(tmp) / ".claude" / "projects" / "-x" / "memory" / "rule.md"
+            memory.parent.mkdir(parents=True)
+            memory.write_text("Rule. Extends [[other-rule]].", encoding="utf-8")
+            payload = {"tool_name": "Write", "tool_input": {"file_path": str(memory)}}
+            done = unittest.mock.Mock(returncode=0, stderr="")
+            with patch.object(SYNC, "read_payload", return_value=payload), \
+                 patch.object(SYNC, "active_context", return_value=(tmp, "demo")), \
+                 patch.object(SYNC, "_project_dir", return_value=None), \
+                 patch.object(SYNC, "record_run", return_value=done) as record, \
+                 patch("sys.stdin"), patch("sys.stderr"):
+                self.assertEqual(SYNC.main(), 0)
+            self.assertEqual(record.call_args.kwargs["summary"], "Rule. Extends other-rule.")
+
 
 if __name__ == "__main__":
     unittest.main()
