@@ -1189,6 +1189,24 @@ class TopicSentenceTests(unittest.TestCase):
         for bad in ("Could you either", "Tatiana", "and then it broke", "Insight", "Honest answer"):
             self.assertFalse(any(bad in sentence for sentence in got), bad)
 
+    def test_review_cases_keep_meaning_and_short_decisions(self) -> None:
+        from scripts.obsidian_memory import _distilled_sentences as d
+        self.assertEqual(d("No migration is required."), ["No migration is required."])
+        self.assertEqual(d("Use Postgres."), ["Use Postgres."])
+        self.assertEqual(d("We target Python 3."), ["We target Python 3."])
+        self.assertEqual(d("to-do list is broken in obmem"), ["to-do list is broken in obmem"])
+        self.assertEqual(d("we decided to use\nPostgres because it is faster."),
+                         ["we decided to use Postgres because it is faster."])
+        self.assertEqual(len(d("Πρώτη πρόταση εδώ. Δεύτερη πρόταση εκεί.")), 2)
+        self.assertEqual(d("Keep src/**/*.ts in the build."), ["Keep src/**/*.ts in the build."])
+        self.assertEqual(d("Fixed one; it now writes atomically."), ["Fixed one; it now writes atomically."])
+
+    def test_secret_on_the_next_line_is_not_kept(self) -> None:
+        from scripts.obsidian_memory import _distilled_sentences as d
+        got = d("Password:\nCorrect Horse Battery Staple\n\nThe deploy worked fine today.")
+        self.assertFalse(any("Horse" in sentence for sentence in got), got)
+        self.assertIn("The deploy worked fine today.", got)
+
 
 class RunSessionStampTests(unittest.TestCase):
     def test_session_comes_from_flag_then_environment(self) -> None:

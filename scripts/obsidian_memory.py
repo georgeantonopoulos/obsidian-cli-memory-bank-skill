@@ -1658,36 +1658,55 @@ def _section(body: str, heading: str) -> str:
     return match.group("body").strip()
 
 
-_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9`\"'(\[*])")
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;])\s+")
 _SENTENCE_ABBREVIATIONS = {"e.g.", "i.e.", "etc.", "vs.", "approx.", "incl.", "cf.", "no.", "fig.", "mr.", "dr."}
-# Markdown that carries no meaning once a reply is flattened into sentences.
-_MARKUP_RE = re.compile(r"`?★ Insight[^`\n]*`?|`?─{3,}`?|\*\*|^#{1,6}\s+", re.MULTILINE)
-_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+", re.MULTILINE)
+# Markdown that carries no meaning once a reply is flattened into sentences:
+# Insight-box markers, rules, code fences, heading marks, and **bold** pairs
+# (only pairs around text, so globs like src/**/*.ts survive).
+_MARKUP_RE = re.compile(r"`?★ Insight[^`\n]*`?|`?─{3,}`?|```\w*|^#{1,6}[ \t]+", re.MULTILINE)
+_BOLD_RE = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
+_LIST_ITEM_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", re.MULTILINE)
+# A label whose value sits on the next line: join them so the secret check
+# below still sees "password: <value>" as one piece.
+_SECRET_LABEL_BREAK_RE = re.compile(r"(?i)\b(api[ _-]?key|access token|password|passphrase|secret|token)\s*([:=])\s*\n\s*")
+
+
+def _starts_sentence(char: str) -> bool:
+    return char.isupper() or char.isdigit() or char in "`\"'([*"
 
 
 def _split_sentences(unit: str) -> List[str]:
+    """Split at . ! ? (and the Greek question mark ;) followed by the start of
+    a sentence in any script, but not after common abbreviations."""
     parts: List[str] = []
     start = 0
-    for match in _SENTENCE_END_RE.finditer(unit):
-        words = unit[start: match.start()].split()
+    for match in _SENTENCE_BREAK_RE.finditer(unit):
+        following = unit[match.end(): match.end() + 1]
+        if not following or not _starts_sentence(following):
+            continue
+        before = unit[start: match.start()]
+        if before.endswith(";") and following.isascii():
+            continue  # an English ';' joins clauses; only a Greek question mark ends one
+        words = before.split()
         if words and words[-1].lower() in _SENTENCE_ABBREVIATIONS:
             continue
-        parts.append(unit[start: match.start()])
+        parts.append(before)
         start = match.end()
     parts.append(unit[start:])
     return parts
 
 
 def _plain_sentences(text: str) -> List[str]:
-    """Sentences from a summary or reply: list items and lines are their own
-    units, Insight boxes and bold/heading marks are dropped, and a sentence
-    only ends at . ! or ? followed by a capital, digit or quote (not at ";",
-    and not after e.g. / i.e.), so pieces don't start mid-thought."""
+    """Sentences from a summary or reply. Paragraphs and list items are their
+    own units (a single line break is just a wrapped line), Insight boxes and
+    markdown marks are dropped, and a sentence ends at . ! ? before the start
+    of the next one, so pieces don't begin mid-thought."""
     if not text or not text.strip() or text.strip().lower() == "none.":
         return []
-    text = _LIST_ITEM_RE.sub("\n", _MARKUP_RE.sub(" ", text))
+    text = _SECRET_LABEL_BREAK_RE.sub(r"\1\2 ", text)
+    text = _LIST_ITEM_RE.sub("\n\n", _BOLD_RE.sub(r"\1", _MARKUP_RE.sub(" ", text)))
     result: List[str] = []
-    for unit in re.split(r"\n\s*\n|\n(?=\s*[A-Z0-9`])", text):
+    for unit in re.split(r"\n[ \t]*\n", text):
         unit = re.sub(r"\s+", " ", unit).strip(" -")
         for part in _split_sentences(unit):
             part = part.strip(" -")
@@ -1739,21 +1758,22 @@ _PRIVATE_LINK_RE = re.compile(
 )
 
 
-# Reply openers that say nothing on their own ("Done -", "Yes,", "Honest answer up front:").
+# Reply openers that say nothing on their own ("Done -", "Yes,", "Honest answer up
+# front:"). Only when punctuation follows: "No migration is required" keeps its "No".
 _FILLER_LEAD_RE = re.compile(
-    r"^(?:yes|no|done|ok(?:ay)?|sure|both|honest answer(?: up front)?|short answer|in short)\b[\s,.:;!\u2014-]+",
+    r"^(?:yes|done|ok(?:ay)?|sure|honest answer(?: up front)?|short answer|in short)[ \t]*[,.:;!\u2014-]+[ \t]*",
     re.IGNORECASE,
 )
-_CONTINUATION_RE = re.compile(r"^(?:and|or|but|so|which|then|that|with|to|because|not|while|plus)\b")
+_CONTINUATION_RE = re.compile(r"^(?:and|or|but|so|which|then|that|with|to|because|not|while|plus)[\s,]")
 
 
 def _is_fragment(sentence: str) -> bool:
-    """Too short, unfinished (ends on ':', a list number or '...'), half a code
-    span, or the tail of a cut sentence."""
+    """Unfinished (ends on ':', ': 1.' or '...'), a single word, half a code
+    span, or the tail of a cut sentence ('and then ...')."""
     return (
         len(sentence) < 12
-        or len(sentence.split()) < 3
-        or bool(re.search(r"(?::|\b\d[.)]|\.\.\.|\u2026)$", sentence))
+        or len(sentence.split()) < 2
+        or bool(re.search(r"(?::|:\s*\d+[.)]|\.\.\.|\u2026)$", sentence))
         or sentence.count("`") % 2 == 1
         or bool(_CONTINUATION_RE.match(sentence))
     )
