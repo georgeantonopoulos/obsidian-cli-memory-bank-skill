@@ -9,6 +9,11 @@ import argparse
 import json
 import math
 import os
+
+try:  # advisory file locks; not available on Windows, where writes go unlocked
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 import plistlib
 import re
 import shutil
@@ -495,17 +500,19 @@ class ObsidianCLI:
         if self.dry_run:
             return f"[dry-run] append {relative_path.as_posix()}"
         absolute.parent.mkdir(parents=True, exist_ok=True)
-        needs_separator = False
-        if absolute.exists() and absolute.stat().st_size:
-            with absolute.open("rb") as reader:
-                reader.seek(-1, os.SEEK_END)
-                needs_separator = reader.read(1) not in (b"\n", b"\r")
-        with absolute.open("a", encoding="utf-8") as handle:
+        with absolute.open("a+b") as handle, _note_lock(handle):
             # Appended markdown entries must start on their own line even when
-            # a prior writer omitted its trailing newline.
+            # a prior writer omitted its trailing newline. Checked under the
+            # lock, together with the write, so a link rewrite can't interleave.
+            handle.seek(0, os.SEEK_END)
+            needs_separator = False
+            if handle.tell():
+                handle.seek(-1, os.SEEK_END)
+                needs_separator = handle.read(1) not in (b"\n", b"\r")
+            handle.seek(0, os.SEEK_END)
             if needs_separator:
-                handle.write("\n")
-            handle.write(content)
+                handle.write(b"\n")
+            handle.write(content.encode("utf-8"))
         return f"appended:{relative_path.as_posix()}"
 
     def read_file(self, relative_path: Path) -> str:
@@ -2351,7 +2358,8 @@ def _remove_lines_linking_stems(cli: ObsidianCLI, relative_path: Path, stems: se
 
 
 _PATH_LINK_RE = re.compile(r"(?<!!)\[\[([^\]|#\n]+)(#[^\]|\n]*)?(\\?\|[^\]\n]*)?\]\]")
-_CODE_SPAN_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]+`", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+_FENCE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 
 
 def _link_key(target: str) -> str:
@@ -2362,19 +2370,83 @@ def _link_key(target: str) -> str:
     return target.lower()
 
 
-def _write_if_unchanged(path: Path, before: str, after: str) -> bool:
-    """Write ``after`` only if nobody changed the note since it was read, via a
-    temporary file and an atomic rename, so a concurrent append is not lost and
-    no reader sees a half-written note."""
+class _note_lock:
+    """Exclusive advisory lock on an open note (no-op where fcntl is missing).
+
+    obmem's appends and link rewrites both take it, so a hook appending to a
+    note in another session can't land between a rewrite's read and write."""
+
+    def __init__(self, handle) -> None:
+        self.handle = handle
+
+    def __enter__(self) -> "_note_lock":
+        if fcntl is not None:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if fcntl is not None:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+
+
+def _rewrite_note(path: Path, transform) -> int:
+    """Apply ``transform(body) -> (new_body, count)`` to a note in place, holding
+    its lock from read to write, so a locked writer's append is never lost.
+    Returns the count, or 0 if nothing changed or the note can't be read."""
     try:
-        if path.read_text(encoding="utf-8") != before:
-            return False
-        temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temp.write_text(after, encoding="utf-8")
-        os.replace(temp, path)
-        return True
-    except OSError:
-        return False
+        with path.open("r+b") as handle, _note_lock(handle):
+            body = handle.read().decode("utf-8")
+            updated, count = transform(body)
+            if count and updated != body:
+                handle.seek(0)
+                handle.write(updated.encode("utf-8"))
+                handle.truncate()
+                handle.flush()
+                os.fsync(handle.fileno())
+                return count
+    except (OSError, UnicodeDecodeError):
+        pass
+    return 0
+
+
+def _outside_code(body: str, replace) -> str:
+    """Apply ``replace`` to the text outside fenced blocks and inline code.
+
+    A fence closes only on a line with the same character and at least as many
+    of them, so a ```` block that shows a ``` example stays protected."""
+    out: List[str] = []
+    prose: List[str] = []
+    fence = ""
+
+    def flush() -> None:
+        if not prose:
+            return
+        text = "".join(prose)
+        pieces: List[str] = []
+        last = 0
+        for code in _INLINE_CODE_RE.finditer(text):
+            pieces.append(replace(text[last:code.start()]))
+            pieces.append(code.group(0))
+            last = code.end()
+        pieces.append(replace(text[last:]))
+        out.append("".join(pieces))
+        prose.clear()
+
+    for line in body.splitlines(keepends=True):
+        marker = _FENCE_RE.match(line)
+        if fence:
+            out.append(line)
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) \
+                    and not line.strip()[len(marker.group(1)):].strip():
+                fence = ""
+        elif marker:
+            flush()
+            fence = marker.group(1)
+            out.append(line)
+        else:
+            prose.append(line)
+    flush()
+    return "".join(out)
 
 
 def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tuple[int, int]:
@@ -2402,27 +2474,23 @@ def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tu
             continue
         if not any(needle in body.lower() for needle in needles):
             continue
-        count = 0
+        def _transform(text: str) -> Tuple[str, int]:
+            count = 0
 
-        def _repoint(match: "re.Match[str]") -> str:
-            nonlocal count
-            dest = old_to_new.get(_link_key(match.group(1)))
-            if dest is None:
-                return match.group(0)
-            count += 1
-            escape = "\\" if match.group(1).rstrip().endswith("\\") else ""
-            return f"[[{dest}{escape}{match.group(2) or ''}{match.group(3) or ''}]]"
+            def _repoint(match: "re.Match[str]") -> str:
+                nonlocal count
+                dest = old_to_new.get(_link_key(match.group(1)))
+                if dest is None:
+                    return match.group(0)
+                count += 1
+                escape = "\\" if match.group(1).rstrip().endswith("\\") else ""
+                return f"[[{dest}{escape}{match.group(2) or ''}{match.group(3) or ''}]]"
 
-        pieces: List[str] = []
-        last = 0
-        for code in _CODE_SPAN_RE.finditer(body):
-            pieces.append(_PATH_LINK_RE.sub(_repoint, body[last:code.start()]))
-            pieces.append(code.group(0))
-            last = code.end()
-        pieces.append(_PATH_LINK_RE.sub(_repoint, body[last:]))
-        if not count:
-            continue
-        if cli.dry_run or _write_if_unchanged(note, body, "".join(pieces)):
+            updated = _outside_code(text, lambda chunk: _PATH_LINK_RE.sub(_repoint, chunk))
+            return updated, count
+
+        count = _transform(body)[1] if cli.dry_run else _rewrite_note(note, _transform)
+        if count:
             links += count
             notes += 1
     return links, notes

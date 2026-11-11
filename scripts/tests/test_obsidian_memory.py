@@ -1308,6 +1308,44 @@ class RepointMovedLinksTests(unittest.TestCase):
             self.assertIn("![[Project Memory/demo/Runs/x]]", body)
             self.assertIn("`[[Project Memory/demo/Runs/x]]`", body)
 
+    def test_links_inside_a_nested_fence_stay(self) -> None:
+        from scripts.obsidian_memory import _repoint_moved_links
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = vault / "Project Memory" / "demo" / "doc.md"
+            note.parent.mkdir(parents=True)
+            body = ("````markdown\n```\nexample\n```\n[[Project Memory/demo/Runs/x]]\n````\n"
+                    "Real: [[Project Memory/demo/Runs/x]]\n")
+            note.write_text(body)
+            moved = [(Path("Project Memory/demo/Runs/x.md"), Path("Project Memory/demo/Archive/Runs/x.md"))]
+            self.assertEqual(_repoint_moved_links(ObsidianCLI(vault_path=vault, dry_run=False), moved), (1, 1))
+            text = note.read_text()
+            self.assertIn("```\n[[Project Memory/demo/Runs/x]]\n````", text)
+            self.assertIn("Real: [[Project Memory/demo/Archive/Runs/x]]", text)
+
+    def test_append_during_a_rewrite_is_not_lost(self) -> None:
+        import threading
+        from scripts.obsidian_memory import _rewrite_note, fcntl as lock_module
+        if lock_module is None:
+            self.skipTest("no advisory locks on this platform")
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = vault / "n.md"
+            note.write_text("see [[old]]\n")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            holder = note.open("a+b")
+            lock_module.flock(holder.fileno(), lock_module.LOCK_EX)  # an appender is mid-write
+            worker = threading.Thread(target=_rewrite_note,
+                                      args=(note, lambda t: (t.replace("[[old]]", "[[new]]"), 1)))
+            worker.start()
+            holder.write(b"- appended by another session\n")
+            holder.flush()
+            lock_module.flock(holder.fileno(), lock_module.LOCK_UN)
+            holder.close()
+            worker.join(5)
+            cli.append_file(Path("n.md"), "- appended after\n")
+            self.assertEqual(note.read_text(), "see [[new]]\n- appended by another session\n- appended after\n")
+
     def test_dry_run_counts_retired_topics(self) -> None:
         from scripts.obsidian_memory import _archive_stale_topics, build_note_paths
         with tempfile.TemporaryDirectory() as tmp:
