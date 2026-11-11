@@ -9,6 +9,11 @@ import argparse
 import json
 import math
 import os
+
+try:  # advisory file locks; not available on Windows, where writes go unlocked
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 import plistlib
 import re
 import shutil
@@ -495,17 +500,21 @@ class ObsidianCLI:
         if self.dry_run:
             return f"[dry-run] append {relative_path.as_posix()}"
         absolute.parent.mkdir(parents=True, exist_ok=True)
-        needs_separator = False
-        if absolute.exists() and absolute.stat().st_size:
-            with absolute.open("rb") as reader:
-                reader.seek(-1, os.SEEK_END)
-                needs_separator = reader.read(1) not in (b"\n", b"\r")
-        with absolute.open("a", encoding="utf-8") as handle:
+        absolute.touch(exist_ok=True)
+        handle, lock = _open_locked(absolute, "a+b")
+        with handle, _closing(lock):
             # Appended markdown entries must start on their own line even when
-            # a prior writer omitted its trailing newline.
+            # a prior writer omitted its trailing newline. Checked under the
+            # lock, together with the write, so a link rewrite can't interleave.
+            handle.seek(0, os.SEEK_END)
+            needs_separator = False
+            if handle.tell():
+                handle.seek(-1, os.SEEK_END)
+                needs_separator = handle.read(1) not in (b"\n", b"\r")
+            handle.seek(0, os.SEEK_END)
             if needs_separator:
-                handle.write("\n")
-            handle.write(content)
+                handle.write(b"\n")
+            handle.write(content.encode("utf-8"))
         return f"appended:{relative_path.as_posix()}"
 
     def read_file(self, relative_path: Path) -> str:
@@ -2296,7 +2305,10 @@ def _archive_stale_topics(
     paths: NotePaths,
     active_topic_paths: List[Path],
     compaction_path: Path,
+    moved: Optional[List[Tuple[Path, Path]]] = None,
 ) -> int:
+    """Move topics this compaction no longer produces to Archive/Topics; each
+    (source, destination) pair is added to ``moved`` so links can follow."""
     topics_dir = cli.vault_path / paths.topics_dir
     if not topics_dir.exists():
         return 0
@@ -2313,6 +2325,8 @@ def _archive_stale_topics(
             dest = paths.archived_topics_dir / f"{topic_abs.stem}-{suffix}.md"
             dest_abs = cli.vault_path / dest
             suffix += 1
+        if moved is not None:
+            moved.append((source, dest))
         if cli.dry_run:
             archived += 1
             continue
@@ -2343,6 +2357,186 @@ def _remove_lines_linking_stems(cli: ObsidianCLI, relative_path: Path, stems: se
     if removed and not cli.dry_run:
         absolute.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
     return removed
+
+
+_PATH_LINK_RE = re.compile(r"(?<!!)\[\[([^\]|#\n]+)(#[^\]|\n]*)?(\\?\|[^\]\n]*)?\]\]")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+_FENCE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+
+
+class _closing:
+    """Release a lock taken by _open_locked when the block ends."""
+
+    def __init__(self, lock) -> None:
+        self.lock = lock
+
+    def __enter__(self):
+        return self.lock
+
+    def __exit__(self, *exc) -> None:
+        self.lock.__exit__()
+
+
+def _link_key(target: str) -> str:
+    """How Obsidian matches a path link: no .md, no trailing table escape, any case."""
+    target = target.strip().rstrip("\\").strip()
+    if target.lower().endswith(".md"):
+        target = target[:-3]
+    return target.lower()
+
+
+class _note_lock:
+    """Exclusive advisory lock on an open note (no-op where fcntl is missing).
+
+    Taken by ``append_file`` and by link rewrites during compaction. Other
+    obmem writers (Related-link weaving, index line edits) and other programs
+    such as the Obsidian app don't take it, so it narrows lost-update races
+    between obmem sessions rather than ruling them out."""
+
+    def __init__(self, handle) -> None:
+        self.handle = handle
+
+    def __enter__(self) -> "_note_lock":
+        if fcntl is not None:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if fcntl is not None:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+
+
+def _open_locked(path: Path, mode: str):
+    """Open ``path`` and lock it, reopening if a rewrite replaced the file while
+    we waited (the lock we got would be on the old, unlinked copy)."""
+    for _ in range(20):
+        handle = path.open(mode)
+        lock = _note_lock(handle)
+        lock.__enter__()
+        try:
+            if fcntl is None or os.fstat(handle.fileno()).st_ino == os.stat(path).st_ino:
+                return handle, lock
+        except OSError:
+            pass
+        lock.__exit__()
+        handle.close()
+    raise OSError(f"note kept changing while waiting for its lock: {path}")
+
+
+def _rewrite_note(path: Path, transform) -> int:
+    """Apply ``transform(body) -> (new_body, count)`` to a note while holding its
+    lock, and replace it atomically (temp file + rename), so a crash never leaves
+    half a note and a locked appender waiting on it re-opens the new file.
+    Returns the count, or 0 if nothing changed or the note can't be read."""
+    try:
+        handle, lock = _open_locked(path, "rb")
+    except OSError:
+        return 0
+    try:
+        body = handle.read().decode("utf-8")
+        updated, count = transform(body)
+        if not count or updated == body:
+            return 0
+        temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        with temp.open("wb") as out:
+            out.write(updated.encode("utf-8"))
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temp, path)
+        return count
+    except (OSError, UnicodeDecodeError):
+        return 0
+    finally:
+        lock.__exit__()
+        handle.close()
+
+
+def _outside_code(body: str, replace) -> str:
+    """Apply ``replace`` to the text outside fenced blocks and inline code.
+
+    A fence closes only on a line with the same character and at least as many
+    of them, so a ```` block that shows a ``` example stays protected."""
+    out: List[str] = []
+    prose: List[str] = []
+    fence = ""
+
+    def flush() -> None:
+        if not prose:
+            return
+        text = "".join(prose)
+        pieces: List[str] = []
+        last = 0
+        for code in _INLINE_CODE_RE.finditer(text):
+            pieces.append(replace(text[last:code.start()]))
+            pieces.append(code.group(0))
+            last = code.end()
+        pieces.append(replace(text[last:]))
+        out.append("".join(pieces))
+        prose.clear()
+
+    for line in body.splitlines(keepends=True):
+        marker = _FENCE_RE.match(line)
+        if fence:
+            out.append(line)
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) \
+                    and not line.strip()[len(marker.group(1)):].strip():
+                fence = ""
+        elif marker and not (marker.group(1)[0] == "`" and "`" in line.strip()[len(marker.group(1)):]):
+            flush()
+            fence = marker.group(1)
+            out.append(line)
+        else:
+            prose.append(line)
+    flush()
+    return "".join(out)
+
+
+def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tuple[int, int]:
+    """Follow archived runs and retired topics with every path link that named them.
+
+    A link by bare name ([[2026-...-fix-export]]) still resolves after the move;
+    a path link ([[Project Memory/p/Runs/2026-...-fix-export|...]]) does not.
+    Related lists, older compaction notes and other projects' notes hold such
+    links, and only the registers used to be updated, so each compaction left
+    them broken. Embeds and code are left as written; heading and alias are kept.
+    Returns (links re-pointed, notes changed).
+    """
+    if not moved:
+        return 0, 0
+    old_to_new = {
+        _link_key(source.with_suffix("").as_posix()): dest.with_suffix("").as_posix() for source, dest in moved
+    }
+    needles = {Path(old).name for old in old_to_new}
+    root = cli.vault_path / PROJECT_ROOT
+    links = notes = 0
+    for note in root.rglob("*.md") if root.exists() else []:
+        try:
+            body = note.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        lowered = body.lower()
+        if not any(needle in lowered for needle in needles):
+            continue
+        def _transform(text: str) -> Tuple[str, int]:
+            count = 0
+
+            def _repoint(match: "re.Match[str]") -> str:
+                nonlocal count
+                dest = old_to_new.get(_link_key(match.group(1)))
+                if dest is None:
+                    return match.group(0)
+                count += 1
+                escape = "\\" if match.group(1).rstrip().endswith("\\") else ""
+                return f"[[{dest}{escape}{match.group(2) or ''}{match.group(3) or ''}]]"
+
+            updated = _outside_code(text, lambda chunk: _PATH_LINK_RE.sub(_repoint, chunk))
+            return updated, count
+
+        count = _transform(body)[1] if cli.dry_run else _rewrite_note(note, _transform)
+        if count:
+            links += count
+            notes += 1
+    return links, notes
 
 
 def _retarget_run_links(cli: ObsidianCLI, relative_path: Path, moved: List[Tuple[Path, Path]]) -> int:
@@ -3060,11 +3254,13 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
 
     for topic in topics:
         print(_write_note(cli, topic.path, _build_topic_note(project, paths, topic, topics)))
+    moved_topics: List[Tuple[Path, Path]] = []
     stale_topics = _archive_stale_topics(
         cli,
         paths,
         [topic.path for topic in topics],
         compaction_path,
+        moved_topics,
     )
     if stale_topics:
         print(f"Archived stale topic notes: {stale_topics} into {paths.archived_topics_dir.as_posix()}")
@@ -3105,6 +3301,7 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
     for hub in [paths.run_log, paths.moc]:
         pruned += _remove_lines_linking_stems(cli, hub, stems)
     retargeted = sum(_retarget_run_links(cli, hub, moved) for hub in [paths.decisions, paths.questions])
+    repointed, repointed_notes = _repoint_moved_links(cli, moved + moved_topics)
     summary = (
         f"- {_wikilink(compaction_path)}: Compacted {len(batch_runs)} run note(s) "
         f"and distilled {len(runs)} total source run(s) into {len(topics)} topic note(s); "
@@ -3118,6 +3315,7 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
         _append_unique_line(cli, paths.decisions, f"- {_wikilink(compaction_path)}: Prefer {_wikilink(paths.current_memory)} {retrieval_rule}")
     print(f"Pruned hub/index lines pointing at compacted runs: {pruned}")
     print(f"Register links moved to archived runs: {retargeted}")
+    print(f"Other links moved to archived runs and topics: {repointed} in {repointed_notes} note(s)")
 
     active_runs = len(list((vault_path / paths.runs_dir).glob("*.md"))) if (vault_path / paths.runs_dir).exists() else 0
     archived_runs = len(list((vault_path / paths.archived_runs_dir).glob("*.md"))) if (vault_path / paths.archived_runs_dir).exists() else 0

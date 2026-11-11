@@ -1223,6 +1223,186 @@ class RelatedHeadingTests(unittest.TestCase):
         self.assertIn("## Related Topics\n- [[X]]\n", out)
 
 
+class CompactionKeepsLinksTests(unittest.TestCase):
+    def test_compaction_leaves_no_new_broken_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            other = vault / "Project Memory" / "other"
+            for directory in (paths.runs_dir, paths.archived_runs_dir, paths.topics_dir, paths.compactions_dir):
+                (vault / directory).mkdir(parents=True)
+            other.mkdir(parents=True)
+            run = '---\ntype: "run"\nproject: "Demo"\ntags:\n  - "export"\n---\n\n# {t}\n\n## Summary\n{s}\n'
+            (vault / paths.runs_dir / "2026-11-01-1000-fix-export.md").write_text(
+                run.format(t="Fix export", s="Export now writes atomically to the output folder."))
+            (vault / paths.runs_dir / "2026-11-02-1000-cache-reader.md").write_text(
+                run.format(t="Cache reader", s="The cache reader keeps file handles closed after reads."))
+            (vault / paths.topics_dir / "Video Export.md").write_text("# Video Export\n\nOld topic.\n")
+            runs = paths.runs_dir.as_posix()
+            topics = paths.topics_dir.as_posix()
+            (vault / paths.compactions_dir / "2026-10-01-0900-compact-demo.md").write_text(
+                "# Older compaction\n\n## Topics\n"
+                f"- [[{topics}/Video Export|Video Export]]\n\n## Related\n"
+                f"- [[{runs}/2026-11-01-1000-fix-export|2026-11-01-1000-fix-export]] — why\n"
+                f"- [[{runs}/2026-11-02-1000-cache-reader#Summary]]\n")
+            (other / "note.md").write_text(f"See [[{runs}/2026-11-01-1000-fix-export.md]].\n")
+            cli = ObsidianCLI(vault, False)
+            self.assertIn("0 unresolved link target", cli.audit_unresolved(verbose=True))
+            args = build_parser().parse_args(["compact-project", "--project", "Demo"])
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                cmd_compact_project(args)
+            self.assertFalse(any((vault / paths.runs_dir).glob("*.md")), "runs were archived")
+            self.assertFalse((vault / paths.topics_dir / "Video Export.md").exists(), "stale topic retired")
+            self.assertIn("0 unresolved link target", cli.audit_unresolved(verbose=True))
+            self.assertIn("Other links moved to archived runs and topics: 4", out.getvalue())
+
+
+class RepointMovedLinksTests(unittest.TestCase):
+    def test_path_links_follow_runs_into_the_archive(self) -> None:
+        from scripts.obsidian_memory import _repoint_moved_links
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            pm = vault / "Project Memory"
+            (pm / "demo" / "Archive" / "Runs").mkdir(parents=True)
+            (pm / "demo" / "Compactions").mkdir(parents=True)
+            (pm / "other").mkdir(parents=True)
+            src = Path("Project Memory/demo/Runs/2026-11-01-1000-fix-export.md")
+            dest = Path("Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export.md")
+            (vault / dest).write_text("# Fix export\n")
+            old = (pm / "demo" / "Compactions" / "old.md")
+            old.write_text(
+                "## Related\n"
+                "- [[Project Memory/demo/Runs/2026-11-01-1000-fix-export|2026-11-01-1000-fix-export]] — why\n"
+                "- [[Project Memory/demo/Runs/2026-11-01-1000-fix-export#Summary]]\n"
+                "- [[2026-11-01-1000-fix-export]]\n"
+                "- [[Project Memory/demo/Runs/2026-11-01-1000-other|other]]\n")
+            cross = pm / "other" / "note.md"
+            cross.write_text("See [[Project Memory/demo/Runs/2026-11-01-1000-fix-export]].\n")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            self.assertEqual(_repoint_moved_links(cli, [(src, dest)]), (3, 2))
+            body = old.read_text()
+            self.assertIn("[[Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export|2026-11-01-1000-fix-export]] — why", body)
+            self.assertIn("[[Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export#Summary]]", body)
+            self.assertIn("- [[2026-11-01-1000-fix-export]]", body)
+            self.assertIn("[[Project Memory/demo/Runs/2026-11-01-1000-other|other]]", body)
+            self.assertIn("[[Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export]]", cross.read_text())
+            self.assertEqual(_repoint_moved_links(cli, []), (0, 0))
+
+    def test_other_link_forms_embeds_and_code(self) -> None:
+        from scripts.obsidian_memory import _repoint_moved_links
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = vault / "Project Memory" / "demo" / "n.md"
+            note.parent.mkdir(parents=True)
+            note.write_text(
+                "[[Project Memory/demo/Runs/x.md]] [[project memory/demo/runs/X]]\n"
+                "| [[Project Memory/demo/Runs/x\\|alias]] |\n"
+                "![[Project Memory/demo/Runs/x]] `[[Project Memory/demo/Runs/x]]`\n")
+            src, dest = Path("Project Memory/demo/Runs/x.md"), Path("Project Memory/demo/Archive/Runs/x.md")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            self.assertEqual(_repoint_moved_links(cli, [(src, dest)]), (3, 1))
+            body = note.read_text()
+            self.assertEqual(body.count("[[Project Memory/demo/Archive/Runs/x"), 3)
+            self.assertIn("[[Project Memory/demo/Archive/Runs/x\\|alias]]", body)
+            self.assertIn("![[Project Memory/demo/Runs/x]]", body)
+            self.assertIn("`[[Project Memory/demo/Runs/x]]`", body)
+
+    def test_links_inside_a_nested_fence_stay(self) -> None:
+        from scripts.obsidian_memory import _repoint_moved_links
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = vault / "Project Memory" / "demo" / "doc.md"
+            note.parent.mkdir(parents=True)
+            body = ("````markdown\n```\nexample\n```\n[[Project Memory/demo/Runs/x]]\n````\n"
+                    "Real: [[Project Memory/demo/Runs/x]]\n")
+            note.write_text(body)
+            moved = [(Path("Project Memory/demo/Runs/x.md"), Path("Project Memory/demo/Archive/Runs/x.md"))]
+            self.assertEqual(_repoint_moved_links(ObsidianCLI(vault_path=vault, dry_run=False), moved), (1, 1))
+            text = note.read_text()
+            self.assertIn("```\n[[Project Memory/demo/Runs/x]]\n````", text)
+            self.assertIn("Real: [[Project Memory/demo/Archive/Runs/x]]", text)
+
+    def test_append_during_a_rewrite_is_not_lost(self) -> None:
+        import threading
+        from scripts.obsidian_memory import _rewrite_note, fcntl as lock_module
+        if lock_module is None:
+            self.skipTest("no advisory locks on this platform")
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = vault / "n.md"
+            note.write_text("see [[old]]\n")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            holder = note.open("a+b")
+            lock_module.flock(holder.fileno(), lock_module.LOCK_EX)  # an appender is mid-write
+            worker = threading.Thread(target=_rewrite_note,
+                                      args=(note, lambda t: (t.replace("[[old]]", "[[new]]"), 1)))
+            worker.start()
+            holder.write(b"- appended by another session\n")
+            holder.flush()
+            lock_module.flock(holder.fileno(), lock_module.LOCK_UN)
+            holder.close()
+            worker.join(5)
+            cli.append_file(Path("n.md"), "- appended after\n")
+            self.assertEqual(note.read_text(), "see [[new]]\n- appended by another session\n- appended after\n")
+
+    def test_append_waiting_on_a_rewrite_lands_in_the_new_note(self) -> None:
+        import threading
+        import time
+        from scripts.obsidian_memory import _rewrite_note, fcntl as lock_module
+        if lock_module is None:
+            self.skipTest("no advisory locks on this platform")
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = vault / "n.md"
+            note.write_text("see [[old]]\n")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            started = threading.Event()
+
+            def slow(text: str):
+                started.set()
+                time.sleep(0.3)  # the appender queues on the lock meanwhile
+                return text.replace("[[old]]", "[[new]]"), 1
+
+            rewriter = threading.Thread(target=_rewrite_note, args=(note, slow))
+            rewriter.start()
+            started.wait(5)
+            appender = threading.Thread(target=cli.append_file, args=(Path("n.md"), "- appended\n"))
+            appender.start()
+            rewriter.join(5)
+            appender.join(5)
+            self.assertEqual(note.read_text(), "see [[new]]\n- appended\n")
+            self.assertFalse(list(vault.glob(".n.md.*.tmp")))
+
+    def test_dry_run_counts_retired_topics(self) -> None:
+        from scripts.obsidian_memory import _archive_stale_topics, build_note_paths
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("demo")
+            (vault / paths.topics_dir).mkdir(parents=True)
+            (vault / paths.topics_dir / "Old.md").write_text("# Old\n")
+            moved = []
+            _archive_stale_topics(ObsidianCLI(vault_path=vault, dry_run=True), paths, [], Path("c"), moved)
+            self.assertEqual(len(moved), 1)
+            self.assertTrue((vault / paths.topics_dir / "Old.md").exists())
+
+    def test_retired_topics_are_reported_so_links_can_follow(self) -> None:
+        from scripts.obsidian_memory import _archive_stale_topics, build_note_paths
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("demo")
+            (vault / paths.topics_dir).mkdir(parents=True)
+            (vault / paths.topics_dir / "Video Export.md").write_text("# Video Export\n")
+            (vault / paths.topics_dir / "Testing.md").write_text("# Testing\n")
+            moved = []
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            count = _archive_stale_topics(cli, paths, [paths.topics_dir / "Testing.md"],
+                                          Path("Project Memory/demo/Compactions/c"), moved)
+            self.assertEqual(count, 1)
+            self.assertEqual(moved, [(paths.topics_dir / "Video Export.md",
+                                      paths.archived_topics_dir / "Video Export.md")])
+
+
 class RunSessionStampTests(unittest.TestCase):
     def test_session_comes_from_flag_then_environment(self) -> None:
         from scripts.obsidian_memory import _run_extra
