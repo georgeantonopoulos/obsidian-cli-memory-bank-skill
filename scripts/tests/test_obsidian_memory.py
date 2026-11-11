@@ -1223,6 +1223,41 @@ class RelatedHeadingTests(unittest.TestCase):
         self.assertIn("## Related Topics\n- [[X]]\n", out)
 
 
+class CompactionKeepsLinksTests(unittest.TestCase):
+    def test_compaction_leaves_no_new_broken_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            other = vault / "Project Memory" / "other"
+            for directory in (paths.runs_dir, paths.archived_runs_dir, paths.topics_dir, paths.compactions_dir):
+                (vault / directory).mkdir(parents=True)
+            other.mkdir(parents=True)
+            run = '---\ntype: "run"\nproject: "Demo"\ntags:\n  - "export"\n---\n\n# {t}\n\n## Summary\n{s}\n'
+            (vault / paths.runs_dir / "2026-11-01-1000-fix-export.md").write_text(
+                run.format(t="Fix export", s="Export now writes atomically to the output folder."))
+            (vault / paths.runs_dir / "2026-11-02-1000-cache-reader.md").write_text(
+                run.format(t="Cache reader", s="The cache reader keeps file handles closed after reads."))
+            (vault / paths.topics_dir / "Video Export.md").write_text("# Video Export\n\nOld topic.\n")
+            runs = paths.runs_dir.as_posix()
+            topics = paths.topics_dir.as_posix()
+            (vault / paths.compactions_dir / "2026-10-01-0900-compact-demo.md").write_text(
+                "# Older compaction\n\n## Topics\n"
+                f"- [[{topics}/Video Export|Video Export]]\n\n## Related\n"
+                f"- [[{runs}/2026-11-01-1000-fix-export|2026-11-01-1000-fix-export]] — why\n"
+                f"- [[{runs}/2026-11-02-1000-cache-reader#Summary]]\n")
+            (other / "note.md").write_text(f"See [[{runs}/2026-11-01-1000-fix-export.md]].\n")
+            cli = ObsidianCLI(vault, False)
+            self.assertIn("0 unresolved link target", cli.audit_unresolved(verbose=True))
+            args = build_parser().parse_args(["compact-project", "--project", "Demo"])
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                cmd_compact_project(args)
+            self.assertFalse(any((vault / paths.runs_dir).glob("*.md")), "runs were archived")
+            self.assertFalse((vault / paths.topics_dir / "Video Export.md").exists(), "stale topic retired")
+            self.assertIn("0 unresolved link target", cli.audit_unresolved(verbose=True))
+            self.assertIn("Other links moved to archived runs and topics: 4", out.getvalue())
+
+
 class RepointMovedLinksTests(unittest.TestCase):
     def test_path_links_follow_runs_into_the_archive(self) -> None:
         from scripts.obsidian_memory import _repoint_moved_links
