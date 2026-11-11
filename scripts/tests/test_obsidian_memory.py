@@ -1175,6 +1175,21 @@ class RelatedNeighborTests(unittest.TestCase):
             self.assertFalse(_good_neighbor(inline))
 
 
+class TopicSentenceTests(unittest.TestCase):
+    def test_fragments_are_not_kept_as_takeaways(self) -> None:
+        from scripts.obsidian_memory import _distilled_sentences
+        text = ("Honest answer up front: macOS has no per-app bandwidth API. "
+                "`★ Insight ─────` Fixed the export path; it now writes atomically. "
+                "**Could you either:** 1. Tatiana's draft was left...\n"
+                "- Use e.g. Redis for the cache.\n- and then it broke")
+        got = _distilled_sentences(text)
+        self.assertIn("macOS has no per-app bandwidth API.", got)
+        self.assertIn("Fixed the export path; it now writes atomically.", got)
+        self.assertIn("Use e.g. Redis for the cache.", got)
+        for bad in ("Could you either", "Tatiana", "and then it broke", "Insight", "Honest answer"):
+            self.assertFalse(any(bad in sentence for sentence in got), bad)
+
+
 class RunSessionStampTests(unittest.TestCase):
     def test_session_comes_from_flag_then_environment(self) -> None:
         from scripts.obsidian_memory import _run_extra

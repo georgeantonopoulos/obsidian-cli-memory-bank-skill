@@ -1658,12 +1658,42 @@ def _section(body: str, heading: str) -> str:
     return match.group("body").strip()
 
 
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9`\"'(\[*])")
+_SENTENCE_ABBREVIATIONS = {"e.g.", "i.e.", "etc.", "vs.", "approx.", "incl.", "cf.", "no.", "fig.", "mr.", "dr."}
+# Markdown that carries no meaning once a reply is flattened into sentences.
+_MARKUP_RE = re.compile(r"`?★ Insight[^`\n]*`?|`?─{3,}`?|\*\*|^#{1,6}\s+", re.MULTILINE)
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+", re.MULTILINE)
+
+
+def _split_sentences(unit: str) -> List[str]:
+    parts: List[str] = []
+    start = 0
+    for match in _SENTENCE_END_RE.finditer(unit):
+        words = unit[start: match.start()].split()
+        if words and words[-1].lower() in _SENTENCE_ABBREVIATIONS:
+            continue
+        parts.append(unit[start: match.start()])
+        start = match.end()
+    parts.append(unit[start:])
+    return parts
+
+
 def _plain_sentences(text: str) -> List[str]:
-    cleaned = re.sub(r"\s+", " ", text).strip()
-    if not cleaned or cleaned.lower() == "none.":
+    """Sentences from a summary or reply: list items and lines are their own
+    units, Insight boxes and bold/heading marks are dropped, and a sentence
+    only ends at . ! or ? followed by a capital, digit or quote (not at ";",
+    and not after e.g. / i.e.), so pieces don't start mid-thought."""
+    if not text or not text.strip() or text.strip().lower() == "none.":
         return []
-    parts = re.split(r"(?<=[.!?])\s+|;\s+", cleaned)
-    return [part.strip(" -") for part in parts if len(part.strip(" -")) >= 12]
+    text = _LIST_ITEM_RE.sub("\n", _MARKUP_RE.sub(" ", text))
+    result: List[str] = []
+    for unit in re.split(r"\n\s*\n|\n(?=\s*[A-Z0-9`])", text):
+        unit = re.sub(r"\s+", " ", unit).strip(" -")
+        for part in _split_sentences(unit):
+            part = part.strip(" -")
+            if len(part) >= 12:
+                result.append(part)
+    return result
 
 
 _DISTILLED_NOISE_RE = re.compile(
@@ -1709,6 +1739,26 @@ _PRIVATE_LINK_RE = re.compile(
 )
 
 
+# Reply openers that say nothing on their own ("Done -", "Yes,", "Honest answer up front:").
+_FILLER_LEAD_RE = re.compile(
+    r"^(?:yes|no|done|ok(?:ay)?|sure|both|honest answer(?: up front)?|short answer|in short)\b[\s,.:;!\u2014-]+",
+    re.IGNORECASE,
+)
+_CONTINUATION_RE = re.compile(r"^(?:and|or|but|so|which|then|that|with|to|because|not|while|plus)\b")
+
+
+def _is_fragment(sentence: str) -> bool:
+    """Too short, unfinished (ends on ':', a list number or '...'), half a code
+    span, or the tail of a cut sentence."""
+    return (
+        len(sentence) < 12
+        or len(sentence.split()) < 3
+        or bool(re.search(r"(?::|\b\d[.)]|\.\.\.|\u2026)$", sentence))
+        or sentence.count("`") % 2 == 1
+        or bool(_CONTINUATION_RE.match(sentence))
+    )
+
+
 def _distilled_sentences(text: str) -> List[str]:
     """Return active-memory-safe sentences while leaving raw evidence untouched."""
     result: List[str] = []
@@ -1722,8 +1772,10 @@ def _distilled_sentences(text: str) -> List[str]:
         sentence = _PRIVATE_IP_RE.sub("[redacted private address]", sentence)
         sentence = _INTERNAL_HOST_RE.sub("[redacted internal host]", sentence)
         sentence = re.sub(r"\s+", " ", sentence).strip()
-        if len(sentence) >= 12:
-            result.append(sentence)
+        sentence = _FILLER_LEAD_RE.sub("", sentence).strip()
+        if _is_fragment(sentence):
+            continue
+        result.append(sentence)
     return result
 
 
