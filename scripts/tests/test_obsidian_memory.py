@@ -1223,6 +1223,54 @@ class RelatedHeadingTests(unittest.TestCase):
         self.assertIn("## Related Topics\n- [[X]]\n", out)
 
 
+class RepointMovedLinksTests(unittest.TestCase):
+    def test_path_links_follow_runs_into_the_archive(self) -> None:
+        from scripts.obsidian_memory import _repoint_moved_links
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            pm = vault / "Project Memory"
+            (pm / "demo" / "Archive" / "Runs").mkdir(parents=True)
+            (pm / "demo" / "Compactions").mkdir(parents=True)
+            (pm / "other").mkdir(parents=True)
+            src = Path("Project Memory/demo/Runs/2026-11-01-1000-fix-export.md")
+            dest = Path("Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export.md")
+            (vault / dest).write_text("# Fix export\n")
+            old = (pm / "demo" / "Compactions" / "old.md")
+            old.write_text(
+                "## Related\n"
+                "- [[Project Memory/demo/Runs/2026-11-01-1000-fix-export|2026-11-01-1000-fix-export]] — why\n"
+                "- [[Project Memory/demo/Runs/2026-11-01-1000-fix-export#Summary]]\n"
+                "- [[2026-11-01-1000-fix-export]]\n"
+                "- [[Project Memory/demo/Runs/2026-11-01-1000-other|other]]\n")
+            cross = pm / "other" / "note.md"
+            cross.write_text("See [[Project Memory/demo/Runs/2026-11-01-1000-fix-export]].\n")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            self.assertEqual(_repoint_moved_links(cli, [(src, dest)]), (3, 2))
+            body = old.read_text()
+            self.assertIn("[[Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export|2026-11-01-1000-fix-export]] — why", body)
+            self.assertIn("[[Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export#Summary|2026-11-01-1000-fix-export]]", body)
+            self.assertIn("- [[2026-11-01-1000-fix-export]]", body)
+            self.assertIn("[[Project Memory/demo/Runs/2026-11-01-1000-other|other]]", body)
+            self.assertIn("Archive/Runs/2026-11-01-1000-fix-export|", cross.read_text())
+            self.assertEqual(_repoint_moved_links(cli, []), (0, 0))
+
+    def test_retired_topics_are_reported_so_links_can_follow(self) -> None:
+        from scripts.obsidian_memory import _archive_stale_topics, build_note_paths
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("demo")
+            (vault / paths.topics_dir).mkdir(parents=True)
+            (vault / paths.topics_dir / "Video Export.md").write_text("# Video Export\n")
+            (vault / paths.topics_dir / "Testing.md").write_text("# Testing\n")
+            moved = []
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            count = _archive_stale_topics(cli, paths, [paths.topics_dir / "Testing.md"],
+                                          Path("Project Memory/demo/Compactions/c"), moved)
+            self.assertEqual(count, 1)
+            self.assertEqual(moved, [(paths.topics_dir / "Video Export.md",
+                                      paths.archived_topics_dir / "Video Export.md")])
+
+
 class RunSessionStampTests(unittest.TestCase):
     def test_session_comes_from_flag_then_environment(self) -> None:
         from scripts.obsidian_memory import _run_extra

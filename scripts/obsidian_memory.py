@@ -2296,7 +2296,10 @@ def _archive_stale_topics(
     paths: NotePaths,
     active_topic_paths: List[Path],
     compaction_path: Path,
+    moved: Optional[List[Tuple[Path, Path]]] = None,
 ) -> int:
+    """Move topics this compaction no longer produces to Archive/Topics; each
+    (source, destination) pair is added to ``moved`` so links can follow."""
     topics_dir = cli.vault_path / paths.topics_dir
     if not topics_dir.exists():
         return 0
@@ -2323,6 +2326,8 @@ def _archive_stale_topics(
         dest_abs.parent.mkdir(parents=True, exist_ok=True)
         dest_abs.write_text(body, encoding="utf-8")
         topic_abs.unlink()
+        if moved is not None:
+            moved.append((source, dest))
         archived += 1
     return archived
 
@@ -2343,6 +2348,54 @@ def _remove_lines_linking_stems(cli: ObsidianCLI, relative_path: Path, stems: se
     if removed and not cli.dry_run:
         absolute.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
     return removed
+
+
+_PATH_LINK_RE = re.compile(r"\[\[([^\]|#\n]+)(#[^\]|\n]*)?(?:\|([^\]\n]*))?\]\]")
+
+
+def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tuple[int, int]:
+    """Follow archived runs and retired topics with every path link that named them.
+
+    A link by bare name ([[2026-...-fix-export]]) still resolves after the move;
+    a path link ([[Project Memory/p/Runs/2026-...-fix-export|...]]) does not.
+    Related lists, older compaction notes and other projects' notes hold such
+    links, and only the registers used to be updated, so each compaction left
+    them broken. Returns (links re-pointed, notes changed).
+    """
+    if not moved:
+        return 0, 0
+    old_to_new = {
+        source.with_suffix("").as_posix(): dest.with_suffix("").as_posix() for source, dest in moved
+    }
+    needles = {Path(old).parent.as_posix() + "/" for old in old_to_new}
+    root = cli.vault_path / PROJECT_ROOT
+    links = notes = 0
+    for note in root.rglob("*.md") if root.exists() else []:
+        try:
+            body = note.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not any(needle in body for needle in needles):
+            continue
+        count = 0
+
+        def _repoint(match: "re.Match[str]") -> str:
+            nonlocal count
+            target = match.group(1).strip()
+            dest = old_to_new.get(target)
+            if dest is None:
+                return match.group(0)
+            count += 1
+            heading, alias = match.group(2) or "", match.group(3)
+            return f"[[{dest}{heading}|{alias if alias is not None else Path(target).name}]]"
+
+        updated = _PATH_LINK_RE.sub(_repoint, body)
+        if count:
+            links += count
+            notes += 1
+            if not cli.dry_run:
+                note.write_text(updated, encoding="utf-8")
+    return links, notes
 
 
 def _retarget_run_links(cli: ObsidianCLI, relative_path: Path, moved: List[Tuple[Path, Path]]) -> int:
@@ -3060,11 +3113,13 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
 
     for topic in topics:
         print(_write_note(cli, topic.path, _build_topic_note(project, paths, topic, topics)))
+    moved_topics: List[Tuple[Path, Path]] = []
     stale_topics = _archive_stale_topics(
         cli,
         paths,
         [topic.path for topic in topics],
         compaction_path,
+        moved_topics,
     )
     if stale_topics:
         print(f"Archived stale topic notes: {stale_topics} into {paths.archived_topics_dir.as_posix()}")
@@ -3105,6 +3160,7 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
     for hub in [paths.run_log, paths.moc]:
         pruned += _remove_lines_linking_stems(cli, hub, stems)
     retargeted = sum(_retarget_run_links(cli, hub, moved) for hub in [paths.decisions, paths.questions])
+    repointed, repointed_notes = _repoint_moved_links(cli, moved + moved_topics)
     summary = (
         f"- {_wikilink(compaction_path)}: Compacted {len(batch_runs)} run note(s) "
         f"and distilled {len(runs)} total source run(s) into {len(topics)} topic note(s); "
@@ -3118,6 +3174,7 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
         _append_unique_line(cli, paths.decisions, f"- {_wikilink(compaction_path)}: Prefer {_wikilink(paths.current_memory)} {retrieval_rule}")
     print(f"Pruned hub/index lines pointing at compacted runs: {pruned}")
     print(f"Register links moved to archived runs: {retargeted}")
+    print(f"Other links moved to archived runs and topics: {repointed} in {repointed_notes} note(s)")
 
     active_runs = len(list((vault_path / paths.runs_dir).glob("*.md"))) if (vault_path / paths.runs_dir).exists() else 0
     archived_runs = len(list((vault_path / paths.archived_runs_dir).glob("*.md"))) if (vault_path / paths.archived_runs_dir).exists() else 0
