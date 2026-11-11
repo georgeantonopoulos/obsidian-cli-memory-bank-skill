@@ -1346,6 +1346,34 @@ class RepointMovedLinksTests(unittest.TestCase):
             cli.append_file(Path("n.md"), "- appended after\n")
             self.assertEqual(note.read_text(), "see [[new]]\n- appended by another session\n- appended after\n")
 
+    def test_append_waiting_on_a_rewrite_lands_in_the_new_note(self) -> None:
+        import threading
+        import time
+        from scripts.obsidian_memory import _rewrite_note, fcntl as lock_module
+        if lock_module is None:
+            self.skipTest("no advisory locks on this platform")
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = vault / "n.md"
+            note.write_text("see [[old]]\n")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            started = threading.Event()
+
+            def slow(text: str):
+                started.set()
+                time.sleep(0.3)  # the appender queues on the lock meanwhile
+                return text.replace("[[old]]", "[[new]]"), 1
+
+            rewriter = threading.Thread(target=_rewrite_note, args=(note, slow))
+            rewriter.start()
+            started.wait(5)
+            appender = threading.Thread(target=cli.append_file, args=(Path("n.md"), "- appended\n"))
+            appender.start()
+            rewriter.join(5)
+            appender.join(5)
+            self.assertEqual(note.read_text(), "see [[new]]\n- appended\n")
+            self.assertFalse(list(vault.glob(".n.md.*.tmp")))
+
     def test_dry_run_counts_retired_topics(self) -> None:
         from scripts.obsidian_memory import _archive_stale_topics, build_note_paths
         with tempfile.TemporaryDirectory() as tmp:

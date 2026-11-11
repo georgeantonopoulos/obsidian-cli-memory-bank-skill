@@ -500,7 +500,9 @@ class ObsidianCLI:
         if self.dry_run:
             return f"[dry-run] append {relative_path.as_posix()}"
         absolute.parent.mkdir(parents=True, exist_ok=True)
-        with absolute.open("a+b") as handle, _note_lock(handle):
+        absolute.touch(exist_ok=True)
+        handle, lock = _open_locked(absolute, "a+b")
+        with handle, _closing(lock):
             # Appended markdown entries must start on their own line even when
             # a prior writer omitted its trailing newline. Checked under the
             # lock, together with the write, so a link rewrite can't interleave.
@@ -2362,6 +2364,19 @@ _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 _FENCE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 
 
+class _closing:
+    """Release a lock taken by _open_locked when the block ends."""
+
+    def __init__(self, lock) -> None:
+        self.lock = lock
+
+    def __enter__(self):
+        return self.lock
+
+    def __exit__(self, *exc) -> None:
+        self.lock.__exit__()
+
+
 def _link_key(target: str) -> str:
     """How Obsidian matches a path link: no .md, no trailing table escape, any case."""
     target = target.strip().rstrip("\\").strip()
@@ -2373,8 +2388,10 @@ def _link_key(target: str) -> str:
 class _note_lock:
     """Exclusive advisory lock on an open note (no-op where fcntl is missing).
 
-    obmem's appends and link rewrites both take it, so a hook appending to a
-    note in another session can't land between a rewrite's read and write."""
+    Taken by ``append_file`` and by link rewrites during compaction. Other
+    obmem writers (Related-link weaving, index line edits) and other programs
+    such as the Obsidian app don't take it, so it narrows lost-update races
+    between obmem sessions rather than ruling them out."""
 
     def __init__(self, handle) -> None:
         self.handle = handle
@@ -2389,24 +2406,49 @@ class _note_lock:
             fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
 
 
+def _open_locked(path: Path, mode: str):
+    """Open ``path`` and lock it, reopening if a rewrite replaced the file while
+    we waited (the lock we got would be on the old, unlinked copy)."""
+    for _ in range(20):
+        handle = path.open(mode)
+        lock = _note_lock(handle)
+        lock.__enter__()
+        try:
+            if fcntl is None or os.fstat(handle.fileno()).st_ino == os.stat(path).st_ino:
+                return handle, lock
+        except OSError:
+            pass
+        lock.__exit__()
+        handle.close()
+    raise OSError(f"note kept changing while waiting for its lock: {path}")
+
+
 def _rewrite_note(path: Path, transform) -> int:
-    """Apply ``transform(body) -> (new_body, count)`` to a note in place, holding
-    its lock from read to write, so a locked writer's append is never lost.
+    """Apply ``transform(body) -> (new_body, count)`` to a note while holding its
+    lock, and replace it atomically (temp file + rename), so a crash never leaves
+    half a note and a locked appender waiting on it re-opens the new file.
     Returns the count, or 0 if nothing changed or the note can't be read."""
     try:
-        with path.open("r+b") as handle, _note_lock(handle):
-            body = handle.read().decode("utf-8")
-            updated, count = transform(body)
-            if count and updated != body:
-                handle.seek(0)
-                handle.write(updated.encode("utf-8"))
-                handle.truncate()
-                handle.flush()
-                os.fsync(handle.fileno())
-                return count
+        handle, lock = _open_locked(path, "rb")
+    except OSError:
+        return 0
+    try:
+        body = handle.read().decode("utf-8")
+        updated, count = transform(body)
+        if not count or updated == body:
+            return 0
+        temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        with temp.open("wb") as out:
+            out.write(updated.encode("utf-8"))
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temp, path)
+        return count
     except (OSError, UnicodeDecodeError):
-        pass
-    return 0
+        return 0
+    finally:
+        lock.__exit__()
+        handle.close()
 
 
 def _outside_code(body: str, replace) -> str:
@@ -2439,7 +2481,7 @@ def _outside_code(body: str, replace) -> str:
             if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) \
                     and not line.strip()[len(marker.group(1)):].strip():
                 fence = ""
-        elif marker:
+        elif marker and not (marker.group(1)[0] == "`" and "`" in line.strip()[len(marker.group(1)):]):
             flush()
             fence = marker.group(1)
             out.append(line)
@@ -2464,7 +2506,7 @@ def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tu
     old_to_new = {
         _link_key(source.with_suffix("").as_posix()): dest.with_suffix("").as_posix() for source, dest in moved
     }
-    needles = {Path(old).parent.as_posix() + "/" for old in old_to_new}
+    needles = {Path(old).name for old in old_to_new}
     root = cli.vault_path / PROJECT_ROOT
     links = notes = 0
     for note in root.rglob("*.md") if root.exists() else []:
@@ -2472,7 +2514,8 @@ def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tu
             body = note.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        if not any(needle in body.lower() for needle in needles):
+        lowered = body.lower()
+        if not any(needle in lowered for needle in needles):
             continue
         def _transform(text: str) -> Tuple[str, int]:
             count = 0
