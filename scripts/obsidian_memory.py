@@ -1205,6 +1205,7 @@ def resolve_workspace_path(workspace_arg: Optional[str]) -> Path:
 # ---------------------------------------------------------------------------
 
 RELATED_HEADING = "## Related"
+_RELATED_HEADING_LINE_RE = re.compile(r"^## Related[ \t]*$", re.MULTILINE)
 
 
 def _parse_related_arg(raw: Optional[str]) -> List[str]:
@@ -1326,11 +1327,15 @@ def _append_to_related_section(body: str, entry: str) -> str:
     The function is idempotent for the section itself — duplicate entries are
     filtered by the caller via ``_has_link_to``.
     """
-    if RELATED_HEADING in body:
+    # Only a line that is exactly "## Related": a substring test also matched
+    # "## Related Topics" on topic notes (and the words inside a code block),
+    # so links and their reasons piled up in the wrong section.
+    heading = _RELATED_HEADING_LINE_RE.search(body)
+    if heading:
         # Insert the entry at the end of the Related section (before the next
         # heading or EOF). We split once on the heading, locate the section's
         # end, and splice the new line in.
-        head, _, tail = body.partition(RELATED_HEADING)
+        head, tail = body[: heading.start()], body[heading.start() + len(RELATED_HEADING):]
         lines = tail.splitlines()
         # Find the first subsequent heading (## or #) that terminates the section.
         end_index = len(lines)

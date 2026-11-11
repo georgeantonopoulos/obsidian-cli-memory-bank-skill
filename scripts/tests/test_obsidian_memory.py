@@ -1208,6 +1208,21 @@ class TopicSentenceTests(unittest.TestCase):
         self.assertIn("The deploy worked fine today.", got)
 
 
+class RelatedHeadingTests(unittest.TestCase):
+    def test_related_topics_section_is_not_the_related_section(self) -> None:
+        topic = "# Tooling\n\n## Related Topics\n- [[Testing]]\n\n## Source Runs\n- [[run-a]]\n"
+        out = _append_to_related_section(topic, "- [[run-b]] — why")
+        self.assertIn("## Related Topics\n- [[Testing]]\n\n## Source Runs", out)
+        self.assertTrue(out.rstrip().endswith("## Related\n\n- [[run-b]] — why"))
+
+    def test_existing_related_section_after_related_topics_is_used(self) -> None:
+        note = "# T\n\n## Related Topics\n- [[X]]\n\n## Related\n\n- [[a]]\n"
+        out = _append_to_related_section(note, "- [[b]]")
+        self.assertEqual(out.count("## Related\n"), 1)
+        self.assertIn("- [[a]]\n- [[b]]", out)
+        self.assertIn("## Related Topics\n- [[X]]\n", out)
+
+
 class RunSessionStampTests(unittest.TestCase):
     def test_session_comes_from_flag_then_environment(self) -> None:
         from scripts.obsidian_memory import _run_extra
