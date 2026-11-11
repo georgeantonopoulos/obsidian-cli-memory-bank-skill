@@ -2316,6 +2316,8 @@ def _archive_stale_topics(
             dest = paths.archived_topics_dir / f"{topic_abs.stem}-{suffix}.md"
             dest_abs = cli.vault_path / dest
             suffix += 1
+        if moved is not None:
+            moved.append((source, dest))
         if cli.dry_run:
             archived += 1
             continue
@@ -2326,8 +2328,6 @@ def _archive_stale_topics(
         dest_abs.parent.mkdir(parents=True, exist_ok=True)
         dest_abs.write_text(body, encoding="utf-8")
         topic_abs.unlink()
-        if moved is not None:
-            moved.append((source, dest))
         archived += 1
     return archived
 
@@ -2350,7 +2350,31 @@ def _remove_lines_linking_stems(cli: ObsidianCLI, relative_path: Path, stems: se
     return removed
 
 
-_PATH_LINK_RE = re.compile(r"\[\[([^\]|#\n]+)(#[^\]|\n]*)?(?:\|([^\]\n]*))?\]\]")
+_PATH_LINK_RE = re.compile(r"(?<!!)\[\[([^\]|#\n]+)(#[^\]|\n]*)?(\\?\|[^\]\n]*)?\]\]")
+_CODE_SPAN_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]+`", re.DOTALL)
+
+
+def _link_key(target: str) -> str:
+    """How Obsidian matches a path link: no .md, no trailing table escape, any case."""
+    target = target.strip().rstrip("\\").strip()
+    if target.lower().endswith(".md"):
+        target = target[:-3]
+    return target.lower()
+
+
+def _write_if_unchanged(path: Path, before: str, after: str) -> bool:
+    """Write ``after`` only if nobody changed the note since it was read, via a
+    temporary file and an atomic rename, so a concurrent append is not lost and
+    no reader sees a half-written note."""
+    try:
+        if path.read_text(encoding="utf-8") != before:
+            return False
+        temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temp.write_text(after, encoding="utf-8")
+        os.replace(temp, path)
+        return True
+    except OSError:
+        return False
 
 
 def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tuple[int, int]:
@@ -2360,12 +2384,13 @@ def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tu
     a path link ([[Project Memory/p/Runs/2026-...-fix-export|...]]) does not.
     Related lists, older compaction notes and other projects' notes hold such
     links, and only the registers used to be updated, so each compaction left
-    them broken. Returns (links re-pointed, notes changed).
+    them broken. Embeds and code are left as written; heading and alias are kept.
+    Returns (links re-pointed, notes changed).
     """
     if not moved:
         return 0, 0
     old_to_new = {
-        source.with_suffix("").as_posix(): dest.with_suffix("").as_posix() for source, dest in moved
+        _link_key(source.with_suffix("").as_posix()): dest.with_suffix("").as_posix() for source, dest in moved
     }
     needles = {Path(old).parent.as_posix() + "/" for old in old_to_new}
     root = cli.vault_path / PROJECT_ROOT
@@ -2375,26 +2400,31 @@ def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tu
             body = note.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        if not any(needle in body for needle in needles):
+        if not any(needle in body.lower() for needle in needles):
             continue
         count = 0
 
         def _repoint(match: "re.Match[str]") -> str:
             nonlocal count
-            target = match.group(1).strip()
-            dest = old_to_new.get(target)
+            dest = old_to_new.get(_link_key(match.group(1)))
             if dest is None:
                 return match.group(0)
             count += 1
-            heading, alias = match.group(2) or "", match.group(3)
-            return f"[[{dest}{heading}|{alias if alias is not None else Path(target).name}]]"
+            escape = "\\" if match.group(1).rstrip().endswith("\\") else ""
+            return f"[[{dest}{escape}{match.group(2) or ''}{match.group(3) or ''}]]"
 
-        updated = _PATH_LINK_RE.sub(_repoint, body)
-        if count:
+        pieces: List[str] = []
+        last = 0
+        for code in _CODE_SPAN_RE.finditer(body):
+            pieces.append(_PATH_LINK_RE.sub(_repoint, body[last:code.start()]))
+            pieces.append(code.group(0))
+            last = code.end()
+        pieces.append(_PATH_LINK_RE.sub(_repoint, body[last:]))
+        if not count:
+            continue
+        if cli.dry_run or _write_if_unchanged(note, body, "".join(pieces)):
             links += count
             notes += 1
-            if not cli.dry_run:
-                note.write_text(updated, encoding="utf-8")
     return links, notes
 
 

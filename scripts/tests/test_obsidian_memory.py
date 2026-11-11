@@ -1248,11 +1248,42 @@ class RepointMovedLinksTests(unittest.TestCase):
             self.assertEqual(_repoint_moved_links(cli, [(src, dest)]), (3, 2))
             body = old.read_text()
             self.assertIn("[[Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export|2026-11-01-1000-fix-export]] — why", body)
-            self.assertIn("[[Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export#Summary|2026-11-01-1000-fix-export]]", body)
+            self.assertIn("[[Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export#Summary]]", body)
             self.assertIn("- [[2026-11-01-1000-fix-export]]", body)
             self.assertIn("[[Project Memory/demo/Runs/2026-11-01-1000-other|other]]", body)
-            self.assertIn("Archive/Runs/2026-11-01-1000-fix-export|", cross.read_text())
+            self.assertIn("[[Project Memory/demo/Archive/Runs/2026-11-01-1000-fix-export]]", cross.read_text())
             self.assertEqual(_repoint_moved_links(cli, []), (0, 0))
+
+    def test_other_link_forms_embeds_and_code(self) -> None:
+        from scripts.obsidian_memory import _repoint_moved_links
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = vault / "Project Memory" / "demo" / "n.md"
+            note.parent.mkdir(parents=True)
+            note.write_text(
+                "[[Project Memory/demo/Runs/x.md]] [[project memory/demo/runs/X]]\n"
+                "| [[Project Memory/demo/Runs/x\\|alias]] |\n"
+                "![[Project Memory/demo/Runs/x]] `[[Project Memory/demo/Runs/x]]`\n")
+            src, dest = Path("Project Memory/demo/Runs/x.md"), Path("Project Memory/demo/Archive/Runs/x.md")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            self.assertEqual(_repoint_moved_links(cli, [(src, dest)]), (3, 1))
+            body = note.read_text()
+            self.assertEqual(body.count("[[Project Memory/demo/Archive/Runs/x"), 3)
+            self.assertIn("[[Project Memory/demo/Archive/Runs/x\\|alias]]", body)
+            self.assertIn("![[Project Memory/demo/Runs/x]]", body)
+            self.assertIn("`[[Project Memory/demo/Runs/x]]`", body)
+
+    def test_dry_run_counts_retired_topics(self) -> None:
+        from scripts.obsidian_memory import _archive_stale_topics, build_note_paths
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("demo")
+            (vault / paths.topics_dir).mkdir(parents=True)
+            (vault / paths.topics_dir / "Old.md").write_text("# Old\n")
+            moved = []
+            _archive_stale_topics(ObsidianCLI(vault_path=vault, dry_run=True), paths, [], Path("c"), moved)
+            self.assertEqual(len(moved), 1)
+            self.assertTrue((vault / paths.topics_dir / "Old.md").exists())
 
     def test_retired_topics_are_reported_so_links_can_follow(self) -> None:
         from scripts.obsidian_memory import _archive_stale_topics, build_note_paths
