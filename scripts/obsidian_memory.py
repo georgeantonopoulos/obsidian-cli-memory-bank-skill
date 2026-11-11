@@ -1473,7 +1473,9 @@ def _note_brief(path: Path) -> Optional[str]:
     for heading in ("Summary", "Key Takeaways"):
         text = _section(body, heading)
         if text:
-            first = text.splitlines()[0]
+            first = text.split("\n\n", 1)[0]
+            if heading == "Key Takeaways":
+                first = text.splitlines()[0]
             return _brief(first, _RELATED_BRIEF_CHARS) or None
     return None
 
@@ -1550,17 +1552,11 @@ def _good_neighbor(path: Path) -> bool:
     Run Log, MOC and compaction. Mirrored memory files (``memory-sync``) were
     written on purpose and stay linkable. A note whose Related list is already
     full is skipped too, so one popular note can't collect dozens of links.
-    Compaction reports are skipped: each one restates many runs, so title
-    matching picked them for almost every new run (3 of 5 links on a typical
-    note, 33 incoming on one report), and they are reachable from Current
-    Memory and the topics they built.
     """
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
             head = handle.read(4096)
     except OSError:
-        return False
-    if "Compactions" in path.parts:
         return False
     tags = _note_tags(head)
     if "auto-log" in tags and "memory-sync" not in tags:
@@ -1595,6 +1591,9 @@ def auto_discover_neighbors(
     except RuntimeError as exc:
         print(f"auto-relate: search failed, skipping weave ({exc})")
         return []
+    # Compaction reports restate many runs, so title matching picked them for
+    # almost every new run (3 of 5 links on a typical note, 33 incoming on one
+    # report); they stay reachable from Current Memory and their topics.
     hub_stems = {
         paths.home.stem,
         paths.moc.stem,
@@ -1615,6 +1614,8 @@ def auto_discover_neighbors(
         if candidate.stem in hub_stems:
             continue
         if not (cli.vault_path / candidate).exists():
+            continue
+        if "Compactions" in candidate.parts:
             continue
         if not _good_neighbor(cli.vault_path / candidate):
             continue
