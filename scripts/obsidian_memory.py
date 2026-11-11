@@ -1460,20 +1460,47 @@ def unweave_bidirectional(
     return statuses
 
 
+def _note_brief(path: Path) -> Optional[str]:
+    """One-line description of a note for a Related entry pointing at it.
+
+    Run notes use their Summary, topics their first Key Takeaway; anything
+    else gets no description rather than a guess.
+    """
+    try:
+        body = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for heading in ("Summary", "Key Takeaways"):
+        text = _section(body, heading)
+        if text:
+            first = text.splitlines()[0]
+            return _brief(first, _RELATED_BRIEF_CHARS) or None
+    return None
+
+
 def weave_bidirectional(
     cli: ObsidianCLI,
     source_path: Path,
     neighbor_paths: List[Path],
     reason: Optional[str] = None,
+    *,
+    describe_neighbors: bool = False,
 ) -> List[str]:
     """Create A↔B edges between ``source_path`` and each neighbor.
+
+    ``reason`` labels every edge. With ``describe_neighbors``, ``reason`` is
+    the source's own summary: it labels only the neighbor's link back to the
+    source, and each link from the source is labelled with that neighbor's
+    summary instead, so a Related list says what each linked note is about
+    rather than repeating the note it sits in.
 
     Returns a list of human-readable status strings (one per edge attempt,
     two statuses per neighbor: forward + reverse).
     """
     results: List[str] = []
     for neighbor in neighbor_paths:
-        forward = ensure_related_link(cli, source_path, neighbor.with_suffix("").as_posix(), reason)
+        forward_reason = _note_brief(cli.vault_path / neighbor) if describe_neighbors else reason
+        forward = ensure_related_link(cli, source_path, neighbor.with_suffix("").as_posix(), forward_reason)
         results.append(f"→ {forward}")
         reverse = ensure_related_link(cli, neighbor, source_path.with_suffix("").as_posix(), reason)
         results.append(f"← {reverse}")
@@ -1523,11 +1550,17 @@ def _good_neighbor(path: Path) -> bool:
     Run Log, MOC and compaction. Mirrored memory files (``memory-sync``) were
     written on purpose and stay linkable. A note whose Related list is already
     full is skipped too, so one popular note can't collect dozens of links.
+    Compaction reports are skipped: each one restates many runs, so title
+    matching picked them for almost every new run (3 of 5 links on a typical
+    note, 33 incoming on one report), and they are reachable from Current
+    Memory and the topics they built.
     """
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
             head = handle.read(4096)
     except OSError:
+        return False
+    if "Compactions" in path.parts:
         return False
     tags = _note_tags(head)
     if "auto-log" in tags and "memory-sync" not in tags:
@@ -2820,7 +2853,9 @@ def cmd_record_run(args: argparse.Namespace) -> None:
     if neighbor_paths:
         print(f"auto-relate: weaving {len(neighbor_paths)} neighbor(s)")
         reason = _brief(args.summary, _RELATED_BRIEF_CHARS) or None
-        for status in weave_bidirectional(cli, run_note_path, neighbor_paths, reason):
+        for status in weave_bidirectional(
+            cli, run_note_path, neighbor_paths, reason, describe_neighbors=True
+        ):
             print(f"  {status}")
     elif auto_mode:
         print("auto-relate: no neighbors found (run becomes a root node)")
