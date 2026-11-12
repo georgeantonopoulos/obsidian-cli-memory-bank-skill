@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Optional capture ignore list** (`~/.config/obmem/capture-ignore.txt`): a
+  turn whose only edits are to listed files (for example a running notebook)
+  no longer gets an automatic run note, since the file is already the record.
+
 ## 0.2.0
 
 Claude Code hooks only; the `obmem` CLI and vault format are unchanged.
