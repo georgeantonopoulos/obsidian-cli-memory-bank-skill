@@ -194,6 +194,15 @@ re:\(sent from my phone\)
 
 No file means no extra words. Set `OBMEM_QUERY_IGNORE_FILE` to use another path.
 
+**Skipping notes for files that are their own record (optional).** The Stop hook saves a note for every turn that edited files. If a turn only edits a file that is already a running record (a notebook, a scratch log), the note just copies it. List such files in `~/.config/obmem/capture-ignore.txt`, one glob per line:
+
+```text
+# a manager's running notebook
+~/notes/notebook.md
+```
+
+A turn is skipped only when every file it edited matches. Set `OBMEM_CAPTURE_IGNORE_FILE` to use another path.
+
 **Updating.** `pipx upgrade obsidian-cli-memory-bank`, then copy all hook scripts again (`cp claude-code/hooks/*.py ~/.claude/hooks/`); they share `obsidian_hook_common.py`, so old and new copies must not be mixed. Symlinked hooks need nothing. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ### Codex

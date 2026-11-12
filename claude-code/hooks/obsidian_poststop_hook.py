@@ -4,6 +4,7 @@
 The Stop payload carries no prompt, so the prompt, final reply, and edited
 files are read from the session transcript. By default only turns that edited
 files are logged; set OBMEM_STOP_LOG=all to log every turn, or off to disable.
+Turns whose only edits match ~/.config/obmem/capture-ignore.txt are skipped.
 
 Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this file.
 """
@@ -20,6 +21,7 @@ from obsidian_hook_common import (  # noqa: E402
     active_context,
     last_turn,
     mark_turn_logged,
+    only_ignored_edits,
     read_payload,
     record_run,
     truncate,
@@ -46,6 +48,9 @@ def main() -> int:
         "recorded": False, "start_id": "",
     }
     if mode == "edits" and not turn["edited_files"]:
+        return 0
+    # Edits only to files the user listed as their own record: a note would copy them.
+    if only_ignored_edits(turn["edited_files"]):
         return 0
     # Claude already wrote a note for this turn; a second, thinner one is noise.
     if turn.get("recorded"):

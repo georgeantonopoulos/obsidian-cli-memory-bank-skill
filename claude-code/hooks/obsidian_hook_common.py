@@ -7,6 +7,7 @@ from its own directory, so copies and symlinks both work.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -82,6 +83,41 @@ def truncate(text: str, limit: int) -> str:
 # ---------------------------------------------------------------------------
 # Payload, project identity, and opt-out
 # ---------------------------------------------------------------------------
+
+
+def _capture_ignore_file() -> Path:
+    override = os.environ.get("OBMEM_CAPTURE_IGNORE_FILE", "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".config" / "obmem" / "capture-ignore.txt"
+
+
+def capture_ignore_patterns() -> List[str]:
+    """Optional per-user list of files whose edits alone are not worth a note.
+
+    One glob per line, ``#`` for comments, ``~`` expanded; ``*`` also crosses
+    ``/``. Meant for files that are already their own record (a running
+    notebook, a scratch log), where a vault note would only copy them.
+    """
+    try:
+        lines = _capture_ignore_file().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    patterns = []
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith("#"):
+            patterns.append(os.path.expanduser(line))
+    return patterns
+
+
+def only_ignored_edits(edited: List[str]) -> bool:
+    """True when a turn edited files and every one is on the capture-ignore list."""
+    patterns = capture_ignore_patterns()
+    if not edited or not patterns:
+        return False
+    return all(
+        any(fnmatch.fnmatch(os.path.expanduser(path), pattern) for pattern in patterns)
+        for path in edited
+    )
 
 
 def read_payload(raw: str) -> Optional[Dict[str, Any]]:

@@ -666,6 +666,40 @@ class StopHookTests(unittest.TestCase):
             self.assertEqual(self._run_stop(turn).call_count, 0)
 
 
+class CaptureIgnoreTests(StopHookTests.__base__):
+    def _turn(self, *paths):
+        return [
+            {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "note the room report"}},
+            {"type": "assistant", "message": {"content": [
+                *({"type": "tool_use", "name": "Edit", "input": {"file_path": p}} for p in paths),
+                {"type": "text", "text": "Noted."}]}},
+        ]
+
+    def _run(self, entries, ignore_lines):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ignore = Path(tmp.name) / "capture-ignore.txt"
+        ignore.write_text("\n".join(ignore_lines))
+        env = {"OBMEM_STOP_LOG": "", "OBMEM_STOP_STATE": str(Path(tmp.name) / "seen"),
+               "OBMEM_CAPTURE_IGNORE_FILE": str(ignore)}
+        with patch.dict(os.environ, env):
+            return StopHookTests._run_stop(self, entries)
+
+    def test_turn_editing_only_listed_files_is_not_logged(self) -> None:
+        rec = self._run(self._turn("/home/u/.mgr/notebook.md"), ["# own records", "/home/u/.mgr/notebook.md"])
+        self.assertEqual(rec.call_count, 0)
+
+    def test_any_unlisted_edit_still_logs_the_turn(self) -> None:
+        rec = self._run(self._turn("/home/u/.mgr/notebook.md", "/repo/src/a.py"), ["/home/u/.mgr/*.md"])
+        self.assertEqual(rec.call_count, 1)
+
+    def test_no_list_or_tilde_patterns(self) -> None:
+        self.assertEqual(self._run(self._turn("/repo/a.py"), []).call_count, 1)
+        home = os.path.expanduser("~")
+        rec = self._run(self._turn(f"{home}/.mgr/jobs/x.md"), ["~/.mgr/jobs/*"])
+        self.assertEqual(rec.call_count, 0)
+
+
 class MemorySyncHookTests(unittest.TestCase):
     def test_only_claude_auto_memory_paths_sync(self) -> None:
         self.assertTrue(SYNC._is_memory_path("/Users/me/.claude/projects/-Users-me-Dev-X/memory/user-role.md"))
