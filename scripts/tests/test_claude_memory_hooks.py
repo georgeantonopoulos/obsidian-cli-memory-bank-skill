@@ -693,6 +693,12 @@ class CaptureIgnoreTests(StopHookTests.__base__):
         rec = self._run(self._turn("/home/u/.mgr/notebook.md", "/repo/src/a.py"), ["/home/u/.mgr/*.md"])
         self.assertEqual(rec.call_count, 1)
 
+    def test_unreadable_list_does_not_stop_capture(self) -> None:
+        with patch.dict(os.environ, {"OBMEM_CAPTURE_IGNORE_FILE": "/bad\x00path"}):
+            self.assertEqual(STOP.only_ignored_edits.__globals__["capture_ignore_patterns"](), [])
+        rec = self._run(self._turn("/repo/a.py"), ["caf\xe9"])
+        self.assertEqual(rec.call_count, 1)
+
     def test_no_list_or_tilde_patterns(self) -> None:
         self.assertEqual(self._run(self._turn("/repo/a.py"), []).call_count, 1)
         home = os.path.expanduser("~")

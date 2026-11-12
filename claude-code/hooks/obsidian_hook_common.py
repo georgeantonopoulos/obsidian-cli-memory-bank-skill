@@ -98,8 +98,8 @@ def capture_ignore_patterns() -> List[str]:
     notebook, a scratch log), where a vault note would only copy them.
     """
     try:
-        lines = _capture_ignore_file().read_text(encoding="utf-8").splitlines()
-    except OSError:
+        lines = _capture_ignore_file().read_text(encoding="utf-8", errors="replace").splitlines()
+    except (OSError, ValueError):  # a bad list must never stop capture altogether
         return []
     patterns = []
     for line in lines:
