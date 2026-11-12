@@ -1217,6 +1217,31 @@ class RelatedDescriptionTests(unittest.TestCase):
             self.assertIn("|new]] — Added the cache.", topic.read_text())
 
 
+class NewestFirstTests(unittest.TestCase):
+    def test_capped_topic_lists_start_from_the_newest_run(self) -> None:
+        from scripts.obsidian_memory import (
+            RunMemory, TopicMemory, _build_topic_note, _build_current_memory_note, COMPACTION_NOTE_LIMIT,
+        )
+        paths = build_note_paths("Demo")
+        runs = [
+            RunMemory(path=paths.runs_dir / f"r{i:02d}.md", stem=f"r{i:02d}", title=f"Run {i}",
+                      created=f"2026-11-{i + 1:02d}T10:00:00", tags=["git"], prompt="p",
+                      summary=f"Change number {i} landed on main.", actions=f"Ran suite {i}.",
+                      decisions=f"Keep rule {i} for good.", questions="", keywords=["git"])
+            for i in range(COMPACTION_NOTE_LIMIT + 6)
+        ]
+        newest = runs[-1]
+        topic = TopicMemory(key="git", title="GIT", path=paths.topics_dir / "GIT.md",
+                            runs=list(runs), keywords=["git"], related=[])
+        note = _build_topic_note("Demo", paths, topic, [topic])
+        takeaways = note.split("## Key Takeaways\n", 1)[1].split("\n\n", 1)[0]
+        self.assertTrue(takeaways.startswith(f"- {newest.summary}"), takeaways[:80])
+        self.assertNotIn(runs[0].summary, takeaways)  # oldest falls past the cap
+        current = _build_current_memory_note("Demo", paths, paths.compactions_dir / "c.md", [topic], runs)
+        self.assertIn(f"— {newest.summary}", current)
+        self.assertIn(f"- {newest.decisions}", current)
+
+
 class TopicSentenceTests(unittest.TestCase):
     def test_fragments_are_not_kept_as_takeaways(self) -> None:
         from scripts.obsidian_memory import _distilled_sentences
