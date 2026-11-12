@@ -694,10 +694,15 @@ class CaptureIgnoreTests(StopHookTests.__base__):
         self.assertEqual(rec.call_count, 1)
 
     def test_unreadable_list_does_not_stop_capture(self) -> None:
-        with patch.dict(os.environ, {"OBMEM_CAPTURE_IGNORE_FILE": "/bad\x00path"}):
-            self.assertEqual(STOP.only_ignored_edits.__globals__["capture_ignore_patterns"](), [])
-        rec = self._run(self._turn("/repo/a.py"), ["caf\xe9"])
-        self.assertEqual(rec.call_count, 1)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        bad = Path(tmp.name) / "capture-ignore.txt"
+        bad.write_bytes(b"/repo/caf\xe9.md\n/home/u/notebook.md\n")  # Latin-1, not UTF-8
+        with patch.dict(os.environ, {"OBMEM_CAPTURE_IGNORE_FILE": str(bad)}):
+            self.assertIn("/home/u/notebook.md", COMMON.capture_ignore_patterns())
+        with patch.dict(os.environ, {"OBMEM_CAPTURE_IGNORE_FILE": tmp.name}):  # a directory
+            self.assertEqual(COMMON.capture_ignore_patterns(), [])
+        self.assertEqual(self._run(self._turn("/repo/a.py"), []).call_count, 1)
 
     def test_no_list_or_tilde_patterns(self) -> None:
         self.assertEqual(self._run(self._turn("/repo/a.py"), []).call_count, 1)
