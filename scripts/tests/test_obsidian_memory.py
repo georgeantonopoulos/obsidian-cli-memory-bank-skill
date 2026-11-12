@@ -1175,6 +1175,48 @@ class RelatedNeighborTests(unittest.TestCase):
             self.assertFalse(_good_neighbor(inline))
 
 
+class RelatedDescriptionTests(unittest.TestCase):
+    def test_compaction_reports_are_not_linked_automatically(self) -> None:
+        from unittest import mock
+        from scripts.obsidian_memory import auto_discover_neighbors
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "Compactions"  # a vault folder with that name must not matter
+            paths = build_note_paths("P")
+            report = paths.project_dir / "Compactions" / "2026-11-11-compact-p.md"
+            run = paths.runs_dir / "2026-11-11-fix.md"
+            for rel in (report, run):
+                (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+                (vault / rel).write_text("# Note\n\n## Summary\nFix.\n")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            out = f"{report.as_posix()}\n{run.as_posix()}\n"
+            with mock.patch.object(cli, "run", return_value=out):
+                self.assertEqual(auto_discover_neighbors(cli, paths, "fix", 5), [run])
+
+    def test_each_side_of_an_edge_describes_the_note_it_points_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            runs = vault / build_note_paths("TestProj").runs_dir
+            runs.mkdir(parents=True)
+            new = runs / "new.md"
+            old = runs / "old.md"
+            topic = runs / "topic.md"
+            new.write_text("# New\n\n## Summary\nAdded the cache.\n")
+            old.write_text("# Old\n\n## Summary\nFixed export\nlag. More detail.\n")
+            topic.write_text("# Topic\n\n## Key Takeaways\n- Exports use measured counts.\n- Other.\n")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            weave_bidirectional(
+                cli, new.relative_to(vault),
+                [old.relative_to(vault), topic.relative_to(vault)],
+                "Added the cache.", describe_neighbors=True,
+            )
+            body_new = new.read_text()
+            self.assertIn("|old]] — Fixed export lag.\n", body_new)
+            self.assertIn("|topic]] — Exports use measured counts.\n", body_new)
+            self.assertNotIn("— Added the cache.", body_new)
+            self.assertIn("|new]] — Added the cache.", old.read_text())
+            self.assertIn("|new]] — Added the cache.", topic.read_text())
+
+
 class TopicSentenceTests(unittest.TestCase):
     def test_fragments_are_not_kept_as_takeaways(self) -> None:
         from scripts.obsidian_memory import _distilled_sentences
