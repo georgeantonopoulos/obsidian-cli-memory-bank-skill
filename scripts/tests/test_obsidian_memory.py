@@ -1237,6 +1237,11 @@ class NewestFirstTests(unittest.TestCase):
         takeaways = note.split("## Key Takeaways\n", 1)[1].split("\n\n", 1)[0]
         self.assertTrue(takeaways.startswith(f"- {newest.summary}"), takeaways[:80])
         self.assertNotIn(runs[0].summary, takeaways)  # oldest falls past the cap
+        from unittest import mock
+        with mock.patch("scripts.obsidian_memory.COMPACTION_SOURCE_LIMIT", 3):
+            sources = _build_topic_note("Demo", paths, topic, [topic]).split("## Source Runs", 1)[1]
+        self.assertIn(newest.stem, sources)
+        self.assertNotIn(runs[0].stem + "|", sources)
         current = _build_current_memory_note("Demo", paths, paths.compactions_dir / "c.md", [topic], runs)
         self.assertIn(f"— {newest.summary}", current)
         self.assertIn(f"- {newest.decisions}", current)

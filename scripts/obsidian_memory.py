@@ -2121,7 +2121,9 @@ def _build_topic_note(project: str, paths: NotePaths, topic: TopicMemory, topics
     decisions = _unique_sentences((run.decisions for run in newest if run.decisions.lower() != "none."), 10)
     actions = _unique_sentences((run.actions for run in newest), 10)
     gotchas = _gotcha_sentences(newest, 10)
-    source_runs = topic.runs[:COMPACTION_SOURCE_LIMIT]
+    # The newest runs, listed oldest first: the takeaways and gotcha sources
+    # above come from the newest runs, so those must be the ones listed.
+    source_runs = list(reversed(newest[:COMPACTION_SOURCE_LIMIT]))
 
     lines = [
         build_frontmatter(
@@ -2217,7 +2219,7 @@ def _build_compaction_note(
     runs: List[RunMemory],
     batch_runs: Optional[List[RunMemory]] = None,
 ) -> str:
-    gotchas = _gotcha_sentences(runs, COMPACTION_NOTE_LIMIT)
+    gotchas = _gotcha_sentences(_newest_first(runs), COMPACTION_NOTE_LIMIT)
     batch_count = len(batch_runs) if batch_runs is not None else len(runs)
     lines = [
         build_frontmatter(
