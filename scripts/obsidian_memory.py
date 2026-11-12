@@ -2103,13 +2103,27 @@ def _write_note(cli: ObsidianCLI, relative_path: Path, content: str) -> str:
     return f"wrote:{relative_path.as_posix()}"
 
 
+def _newest_first(runs: List[RunMemory]) -> List[RunMemory]:
+    """Runs ordered newest first, for the distilled lists that are capped.
+
+    Takeaways, decisions and gotchas keep only the first few unique sentences.
+    Read oldest first, a topic with many runs kept its first weeks forever
+    ("not committed yet", "108 tests pass") and never showed later work, and
+    those stale lines were what recall pasted into new sessions.
+    """
+    return sorted(runs, key=lambda run: (run.created, run.path.as_posix()), reverse=True)
+
+
 def _build_topic_note(project: str, paths: NotePaths, topic: TopicMemory, topics: List[TopicMemory]) -> str:
     by_key = _topic_by_key(topics)
-    summaries = _unique_sentences((run.summary for run in topic.runs), COMPACTION_NOTE_LIMIT)
-    decisions = _unique_sentences((run.decisions for run in topic.runs if run.decisions.lower() != "none."), 10)
-    actions = _unique_sentences((run.actions for run in topic.runs), 10)
-    gotchas = _gotcha_sentences(topic.runs, 10)
-    source_runs = topic.runs[:COMPACTION_SOURCE_LIMIT]
+    newest = _newest_first(topic.runs)
+    summaries = _unique_sentences((run.summary for run in newest), COMPACTION_NOTE_LIMIT)
+    decisions = _unique_sentences((run.decisions for run in newest if run.decisions.lower() != "none."), 10)
+    actions = _unique_sentences((run.actions for run in newest), 10)
+    gotchas = _gotcha_sentences(newest, 10)
+    # The newest runs, listed oldest first: the takeaways and gotcha sources
+    # above come from the newest runs, so those must be the ones listed.
+    source_runs = list(reversed(newest[:COMPACTION_SOURCE_LIMIT]))
 
     lines = [
         build_frontmatter(
@@ -2156,8 +2170,9 @@ def _build_current_memory_note(
     topics: List[TopicMemory],
     runs: List[RunMemory],
 ) -> str:
-    gotchas = _gotcha_sentences(runs, COMPACTION_NOTE_LIMIT)
-    decisions = _unique_sentences((run.decisions for run in runs if run.decisions.lower() != "none."), COMPACTION_NOTE_LIMIT)
+    newest = _newest_first(runs)
+    gotchas = _gotcha_sentences(newest, COMPACTION_NOTE_LIMIT)
+    decisions = _unique_sentences((run.decisions for run in newest if run.decisions.lower() != "none."), COMPACTION_NOTE_LIMIT)
     top_topics = topics[:20]
     lines = [
         build_frontmatter(
@@ -2176,8 +2191,11 @@ def _build_current_memory_note(
         "## High-Signal Memory",
     ]
     for topic in top_topics:
-        preview = _unique_sentences((run.summary for run in topic.runs), 1)
-        suffix = f" — {preview[0]}" if preview else ""
+        # A reply's opener ("a few things.", "No, this isn't the skill.") is a
+        # poor one-line preview; take the newest sentence that says something.
+        candidates = _unique_sentences((run.summary for run in _newest_first(topic.runs)), 8)
+        preview = next((c for c in candidates if len(c.split()) >= 6), candidates[0] if candidates else "")
+        suffix = f" — {preview}" if preview else ""
         lines.append(f"- {_wikilink(topic.path)} ({len(topic.runs)} source run(s)){suffix}")
     if not top_topics:
         lines.append("- No topics compacted yet.")
@@ -2201,7 +2219,7 @@ def _build_compaction_note(
     runs: List[RunMemory],
     batch_runs: Optional[List[RunMemory]] = None,
 ) -> str:
-    gotchas = _gotcha_sentences(runs, COMPACTION_NOTE_LIMIT)
+    gotchas = _gotcha_sentences(_newest_first(runs), COMPACTION_NOTE_LIMIT)
     batch_count = len(batch_runs) if batch_runs is not None else len(runs)
     lines = [
         build_frontmatter(
