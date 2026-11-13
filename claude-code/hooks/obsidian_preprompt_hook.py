@@ -360,8 +360,66 @@ def _vault_path(workspace: str) -> Path | None:
     return path if path and path.is_dir() else None
 
 
-def _clean_excerpt(text: str, limit: int = _EXCERPT_CHARS) -> str:
-    """Drop frontmatter, vault navigation links and the Related list."""
+def _query_terms(query: str) -> list[re.Pattern]:
+    """One pattern per search keyword, matching at a word start ("room" finds "rooms")."""
+    terms = {t for t in query.lower().split() if len(t) >= 2}
+    return [re.compile(r"(?<![a-z0-9])" + re.escape(t), re.IGNORECASE) for t in sorted(terms)]
+
+
+def _matching_window(text: str, limit: int, query: str) -> str:
+    """The title plus a window around the line that holds most search keywords.
+
+    Long notes (decision registers, topics) put the line a search matched far
+    below the first ``limit`` characters; the opening alone hides it. Returns ""
+    when no line matches, so the caller keeps the opening.
+    """
+    patterns = _query_terms(query)
+    if not patterns:
+        return ""
+    lines = text.splitlines()
+    has_title = lines[0].startswith("# ")
+    # The title is shown anyway; it must not win the match (titles hold the
+    # search words more often than not) and cancel the window.
+    first = 1 if has_title else 0
+    best, best_score = -1, 0
+    for index in range(first, len(lines)):
+        score = sum(1 for pattern in patterns if pattern.search(lines[index]))
+        if score > best_score:
+            best, best_score = index, score
+    if best < 0:
+        return ""
+    # The opening already shows the whole line: nothing to move.
+    if len("\n".join(lines[:best + 1])) <= limit - 3:
+        return ""
+    # The first line names the note in the notice the person sees, so it always
+    # leads; a pasted prompt as title is cut short.
+    title = lines[0] if len(lines[0]) <= 120 else lines[0][:117].rstrip() + "..."
+    head = title + "\n...\n"
+    room = max(0, limit - len(head) - 4)
+    match_line = lines[best]
+    if len(match_line) > room:
+        # One huge line (a table row, pasted JSON): centre on the first keyword.
+        at = min(m.start() for p in patterns if (m := p.search(match_line)))
+        cut = max(0, at - room // 4)
+        return head + match_line[cut:cut + room].rstrip() + "\n..."
+    # Start a few lines above the match for context, but never so far that the
+    # match itself is cut off.
+    start = best
+    budget = min(300, limit // 4)
+    while start > 1 and len("\n".join(lines[start - 1:best + 1])) <= min(room, budget + len(match_line)):
+        start -= 1
+    body = "\n".join(lines[start:])
+    if len(body) > room:
+        body = body[:room].rstrip() + "\n..."
+    return head + body
+
+
+def _clean_excerpt(text: str, limit: int = _EXCERPT_CHARS, query: str = "") -> str:
+    """Drop frontmatter, vault navigation links and the Related list.
+
+    A note longer than ``limit`` shows the lines that match ``query`` (with its
+    title) instead of only its opening, when any line matches.
+    """
     text = text.strip()
     if text.startswith("---"):
         end = text.find("\n---", 3)
@@ -375,7 +433,8 @@ def _clean_excerpt(text: str, limit: int = _EXCERPT_CHARS) -> str:
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
     if len(text) <= limit:
         return text
-    return text[: limit - 3].rstrip() + "..."
+    window = _matching_window(text, limit, query) if query else ""
+    return window or text[: limit - 3].rstrip() + "..."
 
 
 def _visible_notice(selected_hits: str, excerpts: str) -> str:
@@ -392,20 +451,22 @@ def _visible_notice(selected_hits: str, excerpts: str) -> str:
     return f"Memory: read {len(titles)} of {found} matching notes: " + "; ".join(titles)
 
 
-def _note_excerpts(selected_hits: str, workspace: str) -> str:
+def _note_excerpts(selected_hits: str, workspace: str, query: str = "") -> str:
     paths = [m.group(1) for line in selected_hits.splitlines()
              if (m := _SEARCH_HIT_RE.match(line))][:_EXCERPT_NOTES]
     blocks: list[str] = []
     for path in paths:
         try:
+            # The whole note, so the lines matching the search can be found
+            # anywhere in it; what is pasted in stays within _EXCERPT_CHARS.
             result = subprocess.run(
-                ["obmem", "read-note", "--path", path,
-                 "--max-chars", str(_EXCERPT_CHARS + 1000), "--workspace", workspace],
+                ["obmem", "read-note", "--path", path, "--full", "--workspace", workspace],
                 text=True, capture_output=True, check=False, timeout=10,
             )
         except (OSError, subprocess.SubprocessError):
             continue
-        excerpt = _clean_excerpt(redact_secrets(result.stdout)) if result.returncode == 0 else ""
+        excerpt = (_clean_excerpt(redact_secrets(result.stdout), query=query)
+                   if result.returncode == 0 else "")
         if excerpt:
             blocks.append(f"--- {path} ---\n{excerpt}")
     if not blocks:
@@ -538,7 +599,7 @@ def main() -> int:
     # with its own domain knowledge (e.g. searching for "Nuke" or "oklch").
     header = f"[obsidian-memory] Searched Obsidian vault (project: {project}) with keywords: {query}"
     if selected_hits:
-        excerpts = _note_excerpts(selected_hits, workspace)
+        excerpts = _note_excerpts(selected_hits, workspace, query)
         context = (f"{header}\n{selected_hits}" + (f"\n\n{excerpts}" if excerpts else "")
                    + f"\n\n{capture_directive(project)}")
         # JSON output lets Claude Code show a one-line notice while the notes go to the agent.
