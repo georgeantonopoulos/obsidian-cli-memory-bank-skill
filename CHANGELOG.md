@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Excerpts show the lines that match.** The prompt hook pastes in the top
+  notes; for a note longer than the excerpt (a decision register, a topic), it
+  now shows the note's title and the lines around the one that holds most of
+  the search keywords, instead of only the opening. Excerpt size is unchanged.
+
 - **Optional capture ignore list** (`~/.config/obmem/capture-ignore.txt`): a
   turn whose only edits are to listed files (for example a running notebook)
   no longer gets an automatic run note, since the file is already the record.

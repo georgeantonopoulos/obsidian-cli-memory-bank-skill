@@ -308,6 +308,30 @@ Progress uses measured counts.
             self.assertNotIn(gone, excerpt)
         self.assertEqual(len(HOOK._clean_excerpt("x" * 5000, 100)), 100)
 
+    def test_long_note_excerpt_shows_the_matching_line(self) -> None:
+        # A decision register: the decision a search matched sits far below the opening.
+        filler = "".join(f"- Older decision {i} about something unrelated.\n" for i in range(80))
+        note = ("# Decisions\n\n## Decision Register\n" + filler
+                + "- Keep the read cache half float; data layers stay half.\n"
+                + "".join(f"- Later decision {i}.\n" for i in range(5))
+                + "\n## Related\n- [[Cache notes]] about half float cache\n")
+        old = HOOK._clean_excerpt(note, 500)
+        self.assertNotIn("half float", old)
+        new = HOOK._clean_excerpt(note, 500, query="cache half float")
+        self.assertIn("Keep the read cache half float", new)
+        self.assertTrue(new.startswith("# Decisions\n..."))
+        self.assertLessEqual(len(new), 500)
+        # The Related list is still dropped, even though it matches too.
+        self.assertNotIn("Cache notes", new)
+
+    def test_excerpt_keeps_opening_when_match_is_already_there_or_absent(self) -> None:
+        note = "# Fix export\n- Progress uses measured counts.\n" + "- filler line\n" * 100
+        opening = HOOK._clean_excerpt(note, 300)
+        self.assertEqual(HOOK._clean_excerpt(note, 300, query="measured counts"), opening)
+        self.assertEqual(HOOK._clean_excerpt(note, 300, query="nowhere zebra"), opening)
+        short = "# Short\nThe whole note fits."
+        self.assertEqual(HOOK._clean_excerpt(short, 300, query="fits"), short)
+
     def test_top_notes_are_injected_as_excerpts(self) -> None:
         search = """Found 3 hits; showing 3. Ranked by Jev.
   Project Memory/demo/Topics/Export.md (score 9; Jev 0.9; best)
