@@ -332,6 +332,29 @@ Progress uses measured counts.
         short = "# Short\nThe whole note fits."
         self.assertEqual(HOOK._clean_excerpt(short, 300, query="fits"), short)
 
+    def test_excerpt_window_edge_cases(self) -> None:
+        filler = "- filler line\n" * 100
+        # A title holding the search words must not win the match.
+        note = "# Decision register: billing\n" + filler + "- Billing register moves to the new ledger.\n"
+        excerpt = HOOK._clean_excerpt(note, 400, query="billing register")
+        self.assertIn("moves to the new ledger", excerpt)
+        self.assertTrue(excerpt.startswith("# Decision register: billing\n..."))
+        # No H1: the first line still leads, so the notice names the note.
+        bare = "Plain first line\n" + filler + "- The ledger decision.\n"
+        excerpt = HOOK._clean_excerpt(bare, 400, query="ledger decision")
+        self.assertTrue(excerpt.startswith("Plain first line\n..."))
+        self.assertIn("The ledger decision.", excerpt)
+        # A pasted prompt as title is cut; the excerpt stays within the limit.
+        long_title = "# " + "word " * 600 + "\n" + filler + "- The ledger decision.\n"
+        excerpt = HOOK._clean_excerpt(long_title, 400, query="ledger decision")
+        self.assertLessEqual(len(excerpt), 400)
+        self.assertIn("The ledger decision.", excerpt)
+        # One huge line: the window centres on the keyword.
+        huge = "# Data\n" + filler + "x" * 3000 + " ledger decision " + "y" * 3000 + "\n"
+        excerpt = HOOK._clean_excerpt(huge, 400, query="ledger decision")
+        self.assertLessEqual(len(excerpt), 400)
+        self.assertIn("ledger decision", excerpt)
+
     def test_top_notes_are_injected_as_excerpts(self) -> None:
         search = """Found 3 hits; showing 3. Ranked by Jev.
   Project Memory/demo/Topics/Export.md (score 9; Jev 0.9; best)

@@ -377,9 +377,13 @@ def _matching_window(text: str, limit: int, query: str) -> str:
     if not patterns:
         return ""
     lines = text.splitlines()
+    has_title = lines[0].startswith("# ")
+    # The title is shown anyway; it must not win the match (titles hold the
+    # search words more often than not) and cancel the window.
+    first = 1 if has_title else 0
     best, best_score = -1, 0
-    for index, line in enumerate(lines):
-        score = sum(1 for pattern in patterns if pattern.search(line))
+    for index in range(first, len(lines)):
+        score = sum(1 for pattern in patterns if pattern.search(lines[index]))
         if score > best_score:
             best, best_score = index, score
     if best < 0:
@@ -387,15 +391,23 @@ def _matching_window(text: str, limit: int, query: str) -> str:
     # The opening already shows the whole line: nothing to move.
     if len("\n".join(lines[:best + 1])) <= limit - 3:
         return ""
-    title = lines[0] if lines[0].startswith("# ") else ""
+    # The first line names the note in the notice the person sees, so it always
+    # leads; a pasted prompt as title is cut short.
+    title = lines[0] if len(lines[0]) <= 120 else lines[0][:117].rstrip() + "..."
+    head = title + "\n...\n"
+    room = max(0, limit - len(head) - 4)
+    match_line = lines[best]
+    if len(match_line) > room:
+        # One huge line (a table row, pasted JSON): centre on the first keyword.
+        at = min(m.start() for p in patterns if (m := p.search(match_line)))
+        cut = max(0, at - room // 4)
+        return head + match_line[cut:cut + room].rstrip() + "\n..."
     # Start a few lines above the match for context, but never so far that the
     # match itself is cut off.
     start = best
     budget = min(300, limit // 4)
-    while start > (1 if title else 0) and len("\n".join(lines[start - 1:best])) <= budget:
+    while start > 1 and len("\n".join(lines[start - 1:best + 1])) <= min(room, budget + len(match_line)):
         start -= 1
-    head = (title + "\n...\n") if title else "...\n"
-    room = limit - len(head) - 4
     body = "\n".join(lines[start:])
     if len(body) > room:
         body = body[:room].rstrip() + "\n..."
