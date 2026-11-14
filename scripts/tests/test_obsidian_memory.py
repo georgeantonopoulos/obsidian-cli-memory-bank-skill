@@ -98,6 +98,10 @@ class ObsidianMemoryTests(unittest.TestCase):
     def test_audit_reads_escaped_table_pipe(self) -> None:
         self.assertEqual(_extract_wikilinks("| [[Note\\|alias]] |"), ["Note"])
 
+    def test_audit_ignores_cut_off_link_across_lines(self) -> None:
+        body = "Cut [[name-cut...\n\n## Archived\n- [[Topics/UI|UI]]\n"
+        self.assertEqual(_extract_wikilinks(body, preserve_paths=True), ["Topics/UI"])
+
     def test_compaction_collision_preserves_both_sources_and_links(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)

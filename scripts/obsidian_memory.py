@@ -1118,7 +1118,9 @@ def _extract_wikilinks(body: str, *, preserve_paths: bool = False) -> List[str]:
     body = re.sub(r"`[^`\n]*`", "", body)
     links: List[str] = []
     seen = set()
-    for raw in re.findall(r"\[\[([^\]]+)\]\]", body):
+    # A link never spans lines: a cut-off `[[name...` must not run on to the
+    # next note link's `]]` and be reported as a link to `name...`.
+    for raw in re.findall(r"\[\[([^\]\n]+)\]\]", body):
         # A table cell escapes the alias pipe as `\|`; the backslash is not
         # part of the target.
         target = raw.split("|", maxsplit=1)[0].split("#", maxsplit=1)[0].rstrip("\\").strip()
