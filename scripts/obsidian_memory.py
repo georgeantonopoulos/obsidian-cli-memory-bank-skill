@@ -567,26 +567,18 @@ class ObsidianCLI:
         return "\n".join(lines)
 
     def audit_unresolved(self, *, verbose: bool, scope: Optional[Path] = None) -> str:
-        existing_notes = list(self.vault_path.rglob("*.md"))
-        existing_stems = {note.stem for note in existing_notes}
-        existing_paths = {note.resolve() for note in existing_notes}
+        index = _NoteIndex(self.vault_path.resolve())
         counts: Dict[str, int] = {}
         sources: Dict[str, List[str]] = {}
         for note in self._audit_notes(scope):
             body = note.read_text(encoding="utf-8")
+            relative = note.resolve().relative_to(self.vault_path.resolve())
+            base = Path(relative.parent.as_posix().casefold())
             for target in _extract_wikilinks(body, preserve_paths=True):
-                if "/" in target:
-                    resolved = any(candidate.resolve() in existing_paths for candidate in (
-                        self.vault_path / f"{target}.md", note.parent / f"{target}.md"
-                    ))
-                else:
-                    resolved = target in existing_stems
-                if resolved:
+                if index.resolves(target, base):
                     continue
                 counts[target] = counts.get(target, 0) + 1
-                sources.setdefault(target, []).append(
-                    note.relative_to(self.vault_path.resolve()).as_posix()
-                )
+                sources.setdefault(target, []).append(relative.as_posix())
 
         if not counts:
             return "0 unresolved link target(s)."
@@ -1140,32 +1132,57 @@ _TEXT_CODE_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]*`", re.DOTALL)
 
 
 class _NoteIndex:
-    """Which wiki link targets open a note in the vault, read once on demand.
+    """Which wiki link targets open a file in the vault, read once on demand.
 
-    Resolves a target the way `audit unresolved` does: a path target must be a
-    vault-relative note, a bare name must match some note's file name.
+    Follows Obsidian's rules, so record-run and `audit unresolved` agree with
+    what the app shows: names match case-insensitively; a bare name matches any
+    note's name, or any attachment's full file name (`diagram.png`); a target
+    with a folder matches a vault-relative path, the end of one
+    (`Topics/General`), or a path relative to the linking note's folder.
+    Hidden folders such as `.obsidian` are not part of the vault's notes.
     """
 
     def __init__(self, vault_path: Path) -> None:
         self.vault_path = vault_path
-        self._stems: Optional[set] = None
+        self._names: Optional[set] = None
         self._paths: Optional[set] = None
+        self._suffixes: Optional[set] = None
 
     def _load(self) -> None:
-        self._stems, self._paths = set(), set()
-        if self.vault_path.exists():
-            for note in self.vault_path.rglob("*.md"):
-                self._stems.add(note.stem)
-                self._paths.add(note.relative_to(self.vault_path).with_suffix("").as_posix())
+        self._names, self._paths, self._suffixes = set(), set(), set()
+        root = self.vault_path
+        if not root.exists():
+            return
+        for file in root.rglob("*"):
+            relative = file.relative_to(root)
+            if any(part.startswith(".") for part in relative.parts) or not file.is_file():
+                continue
+            if file.suffix.casefold() == ".md":
+                key = relative.with_suffix("").as_posix().casefold()
+                self._names.add(file.stem.casefold())
+            else:
+                key = relative.as_posix().casefold()
+                self._names.add(file.name.casefold())
+            self._paths.add(key)
+            parts = key.split("/")
+            for start in range(1, len(parts)):
+                self._suffixes.add("/".join(parts[start:]))
 
-    def resolves(self, target: str) -> bool:
-        if self._stems is None:
+    def resolves(self, target: str, base: Optional[Path] = None) -> bool:
+        """`base` is the linking note's folder, relative to the vault."""
+        if self._names is None:
             self._load()
-        if target.casefold().endswith(".md"):
-            target = target[:-3]
-        if "/" in target:
-            return target.lstrip("/") in self._paths
-        return target in self._stems
+        key = target.strip().casefold()
+        if key.endswith(".md"):
+            key = key[:-3]
+        if "/" not in key:
+            return key in self._names
+        if key.lstrip("/") in self._paths or key in self._suffixes:
+            return True
+        if base is not None:
+            joined = os.path.normpath((base / key).as_posix()).replace(os.sep, "/")
+            return joined in self._paths
+        return False
 
 
 def _without_dead_links(text: str, index: _NoteIndex) -> str:
@@ -1184,7 +1201,8 @@ def _without_dead_links(text: str, index: _NoteIndex) -> str:
     def replace(match: "re.Match[str]") -> str:
         raw = match.group(1)
         target = raw.split("|", maxsplit=1)[0].split("#", maxsplit=1)[0].rstrip("\\").strip()
-        if not target or index.resolves(target):
+        # A backtick in the link would end the code span early; leave it be.
+        if not target or "`" in raw or index.resolves(target):
             return match.group(0)
         return f"`{match.group(0)}`"
 
@@ -2857,7 +2875,7 @@ def cmd_record_run(args: argparse.Namespace) -> None:
     # Free text is written to the run note and copied into Run Log, MOC, the
     # registers and later topics, so a dead link here would break in each.
     notes = _NoteIndex(vault_path)
-    for field in ("prompt", "summary", "actions", "decisions", "questions"):
+    for field in ("title", "prompt", "summary", "actions", "decisions", "questions"):
         value = getattr(args, field, None)
         if isinstance(value, str):
             setattr(args, field, _without_dead_links(value, notes))

@@ -95,6 +95,36 @@ class ObsidianMemoryTests(unittest.TestCase):
             log = (vault / "Project Memory/demo/Run Log.md").read_text()
             self.assertIn("`[[nodes]]`", log)
 
+    def test_record_run_keeps_links_obsidian_resolves(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            (vault / "Project Memory/demo/Topics").mkdir(parents=True)
+            (vault / "Project Memory/demo/Topics/General.md").write_text("# G\n")
+            (vault / "Project Memory/demo/diagram.png").write_bytes(b"png")
+            (vault / ".obsidian").mkdir()
+            (vault / ".obsidian/hidden.md").write_text("x")
+            args = build_parser().parse_args([
+                "record-run", "--project", "Demo", "--title", "Fix [[package]] tables",
+                "--prompt", "See [[Topics/General]], [[general]] and ![[diagram.png]].",
+                "--summary", "Not [[hidden]]; odd [[a`b]] kept.",
+                "--actions", "None.", "--no-auto-relate",
+            ])
+            store = MagicMock()
+            store.get_audit_every_runs.return_value = 0
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    patch("scripts.obsidian_memory.ConfigStore", return_value=store), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                cmd_record_run(args)
+            run = next((vault / "Project Memory/demo/Runs").glob("*.md")).read_text()
+            self.assertIn("# Fix `[[package]]` tables", run)
+            self.assertIn("See [[Topics/General]], [[general]] and ![[diagram.png]].", run)
+            self.assertIn("Not `[[hidden]]`", run)
+            self.assertIn("odd [[a`b]] kept", run)
+            output = ObsidianCLI(vault, False).audit_unresolved(verbose=False)
+            self.assertNotIn("Topics/General", output)
+            self.assertNotIn("diagram.png", output)
+            self.assertNotIn("[[general]]", output)
+
     def test_audit_reads_escaped_table_pipe(self) -> None:
         self.assertEqual(_extract_wikilinks("| [[Note\\|alias]] |"), ["Note"])
 
