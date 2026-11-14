@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from scripts.obsidian_memory import (
     DEFAULT_AUDIT_EVERY_RUNS,
@@ -27,6 +27,7 @@ from scripts.obsidian_memory import (
     _parse_related_arg,
     _parse_search_output_paths,
     cmd_compact_project,
+    cmd_record_run,
     ConfigStore,
     ObsidianCLI,
     build_parser,
@@ -60,6 +61,42 @@ class ObsidianMemoryTests(unittest.TestCase):
             self.assertIn("1 unresolved link target", output)
             self.assertIn("Project Memory/missing/MOC", output)
             self.assertNotIn("Project Memory/demo/MOC", output)
+
+    def test_record_run_writes_no_dead_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            (vault / "Project Memory/demo").mkdir(parents=True)
+            (vault / "Project Memory/demo/Real Note.md").write_text("# Real\n")
+            args = build_parser().parse_args([
+                "record-run", "--project", "Demo", "--title", "Links",
+                "--prompt", "Add a [[package]] table and a [[missing/Path|path]] link.",
+                "--summary", "Workers render [[nodes]] and answer [[menus]]; see [[Real Note]]"
+                " and [[Project Memory/demo/Real Note|it]]; `[[code]]` stays.",
+                "--actions", "Tabled as [[Real Note\\|alias]].",
+                "--decisions", "Keep ![[missing.png]] out.",
+                "--questions", "Is [[other-vault-note]] needed?",
+                "--no-auto-relate",
+            ])
+            store = MagicMock()
+            store.get_audit_every_runs.return_value = 0
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    patch("scripts.obsidian_memory.ConfigStore", return_value=store), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                cmd_record_run(args)
+            output = ObsidianCLI(vault, False).audit_unresolved(verbose=True)
+            self.assertEqual(output, "0 unresolved link target(s).")
+            run = next((vault / "Project Memory/demo/Runs").glob("*.md")).read_text()
+            self.assertIn("render `[[nodes]]` and answer `[[menus]]`", run)
+            self.assertIn("a `[[package]]` table", run)
+            self.assertIn("see [[Real Note]] and [[Project Memory/demo/Real Note|it]]", run)
+            self.assertIn("`[[code]]` stays", run)
+            self.assertIn("as [[Real Note\\|alias]]", run)
+            self.assertIn("`![[missing.png]]`", run)
+            log = (vault / "Project Memory/demo/Run Log.md").read_text()
+            self.assertIn("`[[nodes]]`", log)
+
+    def test_audit_reads_escaped_table_pipe(self) -> None:
+        self.assertEqual(_extract_wikilinks("| [[Note\\|alias]] |"), ["Note"])
 
     def test_compaction_collision_preserves_both_sources_and_links(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

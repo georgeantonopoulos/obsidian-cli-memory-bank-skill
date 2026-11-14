@@ -1119,7 +1119,9 @@ def _extract_wikilinks(body: str, *, preserve_paths: bool = False) -> List[str]:
     links: List[str] = []
     seen = set()
     for raw in re.findall(r"\[\[([^\]]+)\]\]", body):
-        target = raw.split("|", maxsplit=1)[0].split("#", maxsplit=1)[0].strip()
+        # A table cell escapes the alias pipe as `\|`; the backslash is not
+        # part of the target.
+        target = raw.split("|", maxsplit=1)[0].split("#", maxsplit=1)[0].rstrip("\\").strip()
         if not target:
             continue
         stem = target if preserve_paths else Path(target).name
@@ -1129,6 +1131,69 @@ def _extract_wikilinks(body: str, *, preserve_paths: bool = False) -> List[str]:
             seen.add(stem)
             links.append(stem)
     return links
+
+
+_TEXT_WIKILINK_RE = re.compile(r"!?\[\[([^\[\]\n]+)\]\]")
+_TEXT_CODE_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]*`", re.DOTALL)
+
+
+class _NoteIndex:
+    """Which wiki link targets open a note in the vault, read once on demand.
+
+    Resolves a target the way `audit unresolved` does: a path target must be a
+    vault-relative note, a bare name must match some note's file name.
+    """
+
+    def __init__(self, vault_path: Path) -> None:
+        self.vault_path = vault_path
+        self._stems: Optional[set] = None
+        self._paths: Optional[set] = None
+
+    def _load(self) -> None:
+        self._stems, self._paths = set(), set()
+        if self.vault_path.exists():
+            for note in self.vault_path.rglob("*.md"):
+                self._stems.add(note.stem)
+                self._paths.add(note.relative_to(self.vault_path).with_suffix("").as_posix())
+
+    def resolves(self, target: str) -> bool:
+        if self._stems is None:
+            self._load()
+        if target.casefold().endswith(".md"):
+            target = target[:-3]
+        if "/" in target:
+            return target.lstrip("/") in self._paths
+        return target in self._stems
+
+
+def _without_dead_links(text: str, index: _NoteIndex) -> str:
+    """Put `[[...]]` that would open no note inside backticks.
+
+    Free text handed to record-run (prompts, summaries, copied files) can hold
+    double brackets that are not meant as links, such as TOML `[[package]]`
+    tables, or links to notes in another tool or vault. Written as is, each one
+    is a broken link in Obsidian, and Run Log, MOC and compaction copy it on.
+    In backticks the text reads the same and links nowhere. Links to real notes
+    and anything already in code are left as written.
+    """
+    if not text or "[[" not in text:
+        return text
+
+    def replace(match: "re.Match[str]") -> str:
+        raw = match.group(1)
+        target = raw.split("|", maxsplit=1)[0].split("#", maxsplit=1)[0].rstrip("\\").strip()
+        if not target or index.resolves(target):
+            return match.group(0)
+        return f"`{match.group(0)}`"
+
+    pieces: List[str] = []
+    last = 0
+    for code in _TEXT_CODE_RE.finditer(text):
+        pieces.append(_TEXT_WIKILINK_RE.sub(replace, text[last:code.start()]))
+        pieces.append(code.group(0))
+        last = code.end()
+    pieces.append(_TEXT_WIKILINK_RE.sub(replace, text[last:]))
+    return "".join(pieces)
 
 
 def _linked_note_stems(notes: List[Path]) -> set[str]:
@@ -2787,6 +2852,13 @@ def cmd_record_run(args: argparse.Namespace) -> None:
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
     project = args.project.strip()
     paths = bootstrap_project(cli, project)
+    # Free text is written to the run note and copied into Run Log, MOC, the
+    # registers and later topics, so a dead link here would break in each.
+    notes = _NoteIndex(vault_path)
+    for field in ("prompt", "summary", "actions", "decisions", "questions"):
+        value = getattr(args, field, None)
+        if isinstance(value, str):
+            setattr(args, field, _without_dead_links(value, notes))
 
     run_slug = slugify(args.title) or "run"
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
