@@ -251,6 +251,10 @@ class ObsidianMemoryTests(unittest.TestCase):
         self.assertEqual(sanitize_note_title_component("../../evil"), "evil")
         self.assertEqual(sanitize_note_title_component("A/B\\\\C"), "A B C")
         self.assertEqual(sanitize_note_title_component(""), "Project")
+        # Obsidian hides dot-files; brackets, # and ^ break a link to the note.
+        self.assertEqual(sanitize_note_title_component(".claude"), "claude")
+        self.assertEqual(sanitize_note_title_component("a[b]#c^d"), "a b c d")
+        self.assertEqual(sanitize_note_title_component("..."), "Project")
 
     def test_seed_notes_include_interlinks(self) -> None:
         paths = build_note_paths("Sequency")

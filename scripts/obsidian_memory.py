@@ -192,8 +192,12 @@ def sanitize_note_title_component(value: str, fallback: str = "Project") -> str:
     sanitized = value.strip()
     sanitized = sanitized.replace("/", " ").replace("\\", " ")
     sanitized = sanitized.replace("..", " ")
-    sanitized = re.sub(r"[:*?\"<>|]+", " ", sanitized)
+    # `[ ] # ^ |` end or split a wiki link to the note.
+    sanitized = re.sub(r"[:*?\"<>|\[\]#^]+", " ", sanitized)
     sanitized = re.sub(r"\s+", " ", sanitized).strip()
+    # Obsidian hides files whose name starts with a dot, so links to a
+    # ".claude Home" note would never open.
+    sanitized = sanitized.lstrip(". ").strip()
     return sanitized or fallback
 
 
