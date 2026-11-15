@@ -296,6 +296,7 @@ obmem compact-project --project "Name" # Distill Runs/ into Current Memory, Topi
 obmem compact-project --project "Name" --include-archive # Refresh distilled memory from archive when no new runs exist
 obmem search --project "Name" --query "x"  # Search active distilled memory by keyword
 obmem search --project "Name" --query "x" --include-archive # Include archived evidence in search
+obmem search --all-projects --query "x"   # Search every project's memory
 obmem read-note --path "..."          # Read up to 6,000 source characters
 obmem read-note --path "..." --query "retry queue" # Focus on matching evidence
 obmem read-note --path "..." --offset 6000 # Continue a truncated note

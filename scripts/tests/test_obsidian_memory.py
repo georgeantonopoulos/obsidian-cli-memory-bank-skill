@@ -459,6 +459,34 @@ class ObsidianMemoryTests(unittest.TestCase):
             )
             self.assertIn("Archive/Runs/old.md", archive_output)
 
+    def test_search_across_all_projects_skips_each_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            notes = {
+                "Project Memory/demo/Current Memory.md": "needle demo\n",
+                "Project Memory/other/Topics/Login.md": "needle other\n",
+                "Project Memory/other/Archive/Runs/old.md": "needle archived\n",
+                "Elsewhere/stray.md": "needle outside\n",
+            }
+            for rel, text in notes.items():
+                (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+                (vault / rel).write_text(text, encoding="utf-8")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            output = cli.search_files('needle path:"Project Memory"', limit=10)
+            self.assertIn("demo/Current Memory.md", output)
+            self.assertIn("other/Topics/Login.md", output)
+            self.assertNotIn("Archive/Runs/old.md", output)
+            self.assertNotIn("stray.md", output)
+
+    def test_search_needs_one_scope(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["search", "--all-projects", "--query", "x"])
+        self.assertTrue(args.all_projects)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["search", "--query", "x"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["search", "--project", "Demo", "--all-projects", "--query", "x"])
+
     def _relevance_vault(self, tmp: str) -> Path:
         """A vault shaped like the failure: one huge hub note, one exact match."""
         vault = Path(tmp)

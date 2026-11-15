@@ -380,7 +380,65 @@ Progress uses measured counts.
         self.assertIn("body of Project Memory/demo/Topics/Export.md", out)
         self.assertIn("body of Project Memory/demo/Topics/Render.md", out)
         self.assertNotIn("body of Project Memory/demo/Topics/Other.md", out)
-        self.assertEqual(run.call_count, 3)
+        # One search in this project, one across all projects, two notes read.
+        self.assertEqual(run.call_count, 4)
+        scopes = [c.args[0] for c in run.call_args_list if c.args[0][1] == "search"]
+        self.assertTrue(any("--all-projects" in argv for argv in scopes))
+        self.assertTrue(any("--project" in argv for argv in scopes))
+        self.assertNotIn("another project", out)
+
+    def test_other_project_note_is_added_when_it_ranks_first(self) -> None:
+        own = """Found 2 hits; showing 2. Ranked by keyword.
+  Project Memory/demo/Topics/Export.md (score 9; best)
+  Project Memory/demo/Topics/Render.md (score 8)
+"""
+        everywhere = """Found 3 hits; showing 3. Ranked by keyword.
+  Project Memory/other-app/Topics/Login.md (score 12; best)
+  Project Memory/demo/Topics/Export.md (score 9)
+  Project Memory/demo/Topics/Render.md (score 8)
+"""
+        reads = {}
+
+        def fake_run(argv, **_kwargs):
+            if argv[1] == "search":
+                out = everywhere if "--all-projects" in argv else own
+                return HOOK.subprocess.CompletedProcess(argv, 0, out, "")
+            path = argv[argv.index("--path") + 1]
+            reads[path] = argv
+            return HOOK.subprocess.CompletedProcess(argv, 0, f"# {path}\nbody of {path}\n", "")
+
+        payload = json.dumps({"prompt": "How does the login token refresh?", "cwd": tempfile.gettempdir()})
+        with patch("sys.stdin") as stdin, patch.object(HOOK, "active_context", return_value=("/w", "demo")), \
+                patch.object(HOOK.subprocess, "run", side_effect=fake_run), \
+                patch("sys.stdout", new_callable=__import__("io").StringIO) as stdout:
+            stdin.read.return_value = payload
+            self.assertEqual(HOOK.main(), 0)
+        out = json.loads(stdout.getvalue())["hookSpecificOutput"]["additionalContext"]
+        for name in ("other-app/Topics/Login", "demo/Topics/Export", "demo/Topics/Render"):
+            self.assertIn(f"body of Project Memory/{name}.md", out)
+        self.assertIn("from another project", out)
+        self.assertEqual(set(reads), {
+            "Project Memory/other-app/Topics/Login.md",
+            "Project Memory/demo/Topics/Export.md",
+            "Project Memory/demo/Topics/Render.md",
+        })
+
+    def test_other_project_hit_only_when_it_outranks_this_project(self) -> None:
+        other = "  Project Memory/other-app/Topics/Login.md (score 12)"
+        own = "  Project Memory/demo/Topics/Export.md (score 9)"
+        self.assertEqual(HOOK._other_project_hit(f"{other}\n{own}", "Demo"), other)
+        self.assertEqual(HOOK._other_project_hit(f"{own}\n{other}", "Demo"), "")
+        self.assertEqual(HOOK._other_project_hit("", "Demo"), "")
+        # Indexes, run logs and synced memory copies are never the extra note.
+        skipped = "\n".join([
+            "  Project Memory/other-app/Run Log.md (score 20)",
+            "  Project Memory/other-app/MOC.md (score 19)",
+            "  Project Memory/other-app/Topics/memory-sync-abc.md (score 18)",
+        ])
+        self.assertEqual(HOOK._other_project_hit(f"{skipped}\n{own}\n{other}", "Demo"), "")
+        self.assertEqual(HOOK._other_project_hit(f"{skipped}\n{other}", "Demo"), other)
+        # Project names compare the way obmem names their folders.
+        self.assertEqual(HOOK._other_project_hit("  Project Memory/my-app/Topics/A.md (score 3)", "My App"), "")
 
     def test_jev_min_env_override_is_clamped(self) -> None:
         with patch.dict(os.environ, {"OBMEM_JEV_MIN": "0.5"}):

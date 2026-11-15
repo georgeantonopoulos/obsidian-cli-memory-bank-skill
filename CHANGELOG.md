@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Prompts can recall another project's decision.** The prompt hook also
+  searches every project. When the top note of that search belongs to another
+  project, that one note is added (labelled as from another project, shorter
+  excerpt). Otherwise the output is unchanged. The two searches run side by
+  side; with Jev ranking on, each prompt makes two Jev calls instead of one.
+
+- **`obmem search --all-projects`** searches every project's memory instead of
+  one. `search` now needs either `--project` or `--all-projects`.
+
+- **Faster local search.** Notes that contain none of the keywords are skipped
+  before scoring, and `Archive/` folders are no longer walked when archive is
+  excluded. Results are unchanged.
+
 - **Excerpts show the lines that match.** The prompt hook pastes in the top
   notes; for a note longer than the excerpt (a decision register, a topic), it
   now shows the note's title and the lines around the one that holds most of
