@@ -198,16 +198,19 @@ class ClaudePrePromptHookTests(unittest.TestCase):
             # The current project, short names, folders without runs, word parts and paths don't count.
             self.assertEqual(named("demo ai lampshade no-runs /src/batiq/x.py", vault, "Demo"), [])
             self.assertEqual(named("batiq then lamps then tiny-hq", vault, "demo"), ["batiq", "lamps"])
+            # Asked in batiq-skill, "batiq skill" is the current project, not batiq.
+            self.assertEqual(named("is the batiq skill chapter out?", vault, "batiq-skill"), [])
             self.assertEqual(named("anything", None, "demo"), [])
 
     def test_project_aliases_name_projects_their_folder_does_not_spell(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault = self._vault_with(tmp, "demo", "oklch-nuke")
             aliases = Path(tmp) / "aliases.txt"
-            aliases.write_text("# comment\nNuke = oklch-nuke\nbroken line\nghost = missing\n", encoding="utf-8")
+            aliases.write_text("# comment\nNuke = oklch-nuke\nbroken line\nghost = missing\n!!! = oklch-nuke\n", encoding="utf-8")
             with patch.dict(os.environ, {"OBMEM_PROJECT_ALIASES_FILE": str(aliases)}):
                 self.assertEqual(HOOK._named_projects("lin_srgb in nuke 17?", vault, "demo"), ["oklch-nuke"])
                 self.assertEqual(HOOK._named_projects("a ghost story", vault, "demo"), [])
+                self.assertEqual(HOOK._named_projects("plain words only", vault, "demo"), [])
                 self.assertNotIn("nuke", HOOK._without_name("why does Nuke crash", "oklch-nuke").lower())
 
     def test_merge_hits_ranks_by_jev_across_projects_else_takes_turns(self) -> None:
@@ -222,6 +225,10 @@ class ClaudePrePromptHookTests(unittest.TestCase):
         self.assertEqual([line.strip().split()[1].split("/")[1] for line in merged], ["govee", "demo", "demo"])
         self.assertEqual(HOOK._merge_hits([own]), "\n".join(own.splitlines()[1:]))
         self.assertEqual(HOOK._merge_hits(["", ""]), "")
+        # The current project found nothing: named projects keep mention order.
+        second = "Found 1 hits.\n  Project Memory/lamps/d.md (score 4)"
+        merged = HOOK._merge_hits(["", local_other, second]).splitlines()
+        self.assertIn("govee/c.md", merged[0])
 
     def test_prompt_naming_another_project_searches_it_too(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -263,7 +270,7 @@ class ClaudePrePromptHookTests(unittest.TestCase):
             stdin.read.return_value = payload
             self.assertEqual(HOOK.main(), 0)
         self.assertEqual(stdout.getvalue(), "")
-        argv = run.call_args.args[0]
+        argv = next(c.args[0] for c in run.call_args_list if c.args[0][1] == "search")
         self.assertEqual(argv[argv.index("--min-jev") + 1], "0.50")
 
     def test_search_output_carries_the_end_of_turn_recording_rule(self) -> None:

@@ -210,7 +210,7 @@ def _project_aliases() -> list[tuple[str, str]]:
     for raw in lines:
         line = raw.split("#", 1)[0].strip()
         alias, sep, target = line.partition("=")
-        if sep and alias.strip() and target.strip():
+        if sep and re.search(r"[A-Za-z0-9]", alias) and _slug(target):
             pairs.append((alias.strip(), _slug(target)))
     return pairs
 
@@ -242,14 +242,17 @@ def _named_projects(prompt: str, vault: Path | None, current: str) -> list[str]:
     except OSError:
         return []
     own = _slug(current)
-    names = [(f, f) for f in folders] + [(a, t) for a, t in _project_aliases() if t in folders]
+    by_slug = {_slug(f): f for f in folders}
+    names = [(f, f) for f in folders] + [(a, by_slug[t]) for a, t in _project_aliases() if t in by_slug]
     text = _URL_RE.sub(" ", _FILE_PATH_RE.sub(" ", prompt))
     found: list[tuple[int, int, str]] = []
     for name, folder in names:
-        if folder == own or len(name.replace("-", "")) < _MIN_PROJECT_NAME:
+        if len(re.sub(r"[^A-Za-z0-9]", "", name)) < _MIN_PROJECT_NAME:
             continue
         match = _name_pattern(name).search(text)
         if match:
+            # The current project's own name still claims its words, so
+            # "batiq skill" asked in batiq-skill doesn't also mean batiq.
             found.append((match.start(), match.end(), folder))
     # Earliest mention first; where names overlap the longest wins, so
     # "batiq skill" is the batiq-skill project, not also batiq.
@@ -259,8 +262,9 @@ def _named_projects(prompt: str, vault: Path | None, current: str) -> list[str]:
     for start, end, folder in found:
         if end <= covered_to or folder in picked:
             continue
-        picked.append(folder)
         covered_to = max(covered_to, end)
+        if _slug(folder) != own:
+            picked.append(folder)
     return picked[:_MAX_NAMED_PROJECTS]
 
 
@@ -623,13 +627,14 @@ def _merge_hits(outputs: list[str]) -> str:
     comparable, so the lists take turns, a named project first: naming it says
     the prompt is about it.
     """
-    lists = [[line for line in out.splitlines() if _SEARCH_HIT_RE.match(line)] for out in outputs if out]
-    if len(lists) <= 1:
-        return "\n".join(lists[0]) if lists else ""
+    lists = [[line for line in (out or "").splitlines() if _SEARCH_HIT_RE.match(line)] for out in outputs]
+    if sum(1 for hits in lists if hits) <= 1:
+        return "\n".join(next((hits for hits in lists if hits), []))
     every = [line for hits in lists for line in hits]
-    if every and all(_JEV_SCORE_RE.search(line) for line in every):
+    if all(_JEV_SCORE_RE.search(line) for line in every):
         return "\n".join(sorted(every, key=lambda line: -float(_JEV_SCORE_RE.search(line).group(1))))
-    order = lists[1:] + lists[:1]
+    # Named projects first, in the order the prompt mentions them; the current project last.
+    order = [hits for hits in lists[1:] + lists[:1] if hits]
     merged = [hits[i] for i in range(max(map(len, order))) for hits in order if i < len(hits)]
     return "\n".join(merged)
 
@@ -695,15 +700,18 @@ def main() -> int:
     since = compacted_at(session_id)
     search_env = {**os.environ, "OBMEM_EXCLUDE_SESSION": session_id,
                   "OBMEM_EXCLUDE_SINCE": str(since)} if session_id else None
-    vault = _vault_path(workspace)
     searches = [(project, query)]
-    for named in _named_projects(prompt, vault, project):
-        # Every note in that project carries its name, so the name selects nothing there.
-        named_query = _sanitize_query(_without_name(prompt, named), project=named)
-        if named_query:
-            searches.append((named, named_query))
-    with ThreadPoolExecutor(max_workers=len(searches)) as pool:
-        outputs = list(pool.map(lambda job: _search(job[0], job[1], intent, workspace, search_env), searches))
+    # The current project's search runs while the vault is looked up for named projects.
+    with ThreadPoolExecutor(max_workers=1 + _MAX_NAMED_PROJECTS) as pool:
+        own_search = pool.submit(_search, project, query, intent, workspace, search_env)
+        vault = _vault_path(workspace)
+        for named in _named_projects(prompt, vault, project):
+            # Every note in that project carries its name, so the name selects nothing there.
+            named_query = _sanitize_query(_without_name(prompt, named), project=named)
+            if named_query:
+                searches.append((named, named_query))
+        named_searches = [pool.submit(_search, p, q, intent, workspace, search_env) for p, q in searches[1:]]
+        outputs = [own_search.result()] + [f.result() for f in named_searches]
     if session_id:
         outputs = [_drop_own_session(out, vault, session_id, since) if out else out for out in outputs]
     # Jev judged every candidate irrelevant: stay quiet rather than suggest a search.
