@@ -177,9 +177,10 @@ def _is_machine_prompt(prompt: str) -> bool:
         return True
     for raw in _ignore_lines():
         line = raw.strip()
-        if line.startswith("skip:"):
+        pattern = line[5:].strip() if line.startswith("skip:") else ""
+        if pattern:  # an empty "skip:" line would match every prompt
             try:
-                if re.search(line[5:].strip(), prompt):
+                if re.search(pattern, prompt):
                     return True
             except re.error:
                 pass

@@ -451,9 +451,9 @@ Progress uses measured counts.
         self.assertEqual(len(self._searches_for("Why do the export render settings reset?")), 2)
 
     def test_ignore_file_skip_entries_stop_the_search(self) -> None:
-        with self._ignore([r"skip:^\[Robot\b", "skip:reply (quiet", "Alice"]):
+        with self._ignore([r"skip:^\[Robot\b", "skip:reply (quiet", "skip:", "skip:   ", "Alice"]):
             self.assertEqual(self._searches_for("[Robot: nightly] export render settings changed"), [])
-            # A broken pattern is ignored, and skip lines add no ignored words.
+            # Broken or empty patterns are ignored, and skip lines add no ignored words.
             searches = self._searches_for("Why do the export render settings reset for skip?")
         self.assertEqual(len(searches), 2)
         self.assertIn("skip", searches[0][searches[0].index("--query") + 1])
