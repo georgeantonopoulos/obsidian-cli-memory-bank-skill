@@ -83,6 +83,15 @@ def _jev_min() -> float:
         return _DEFAULT_JEV_MIN
     return min(max(value, 0.0), 1.0)
 _CANDIDATE_LIMIT = 10
+# Messages sent by tools or other sessions rather than typed by the user: no
+# memory search for them (each search can cost a Jev call). Matched at the start
+# of the prompt; the query-ignore file can add more with ``skip:<regex>``.
+_MACHINE_PROMPT_RES = (
+    re.compile(r"<task-notification>", re.IGNORECASE),
+    re.compile(r"<cross-session-message\b", re.IGNORECASE),
+    re.compile(r"Another Claude session sent a message:", re.IGNORECASE),
+    re.compile(r"This session is being continued from a previous conversation", re.IGNORECASE),
+)
 # Auto-copies of the agent's memory files ("Memory sync: x.md"); those load anyway.
 _MEMORY_COPY_RE = re.compile(r"memory-sync-[^/]*\.md$")
 # "What did we work on lately?" is about time, not keywords: list newest sessions instead.
@@ -154,6 +163,29 @@ def _ignore_file() -> Path:
     return Path(override).expanduser() if override else Path.home() / ".config" / "obmem" / "query-ignore.txt"
 
 
+def _ignore_lines() -> list[str]:
+    try:
+        return _ignore_file().read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return []
+
+
+def _is_machine_prompt(prompt: str) -> bool:
+    """A message from a tool or another session, not the user: no search."""
+    start = prompt.lstrip()
+    if any(pattern.match(start) for pattern in _MACHINE_PROMPT_RES):
+        return True
+    for raw in _ignore_lines():
+        line = raw.strip()
+        if line.startswith("skip:"):
+            try:
+                if re.search(line[5:].strip(), prompt):
+                    return True
+            except re.error:
+                pass
+    return False
+
+
 def _query_ignore() -> tuple[frozenset, frozenset, tuple]:
     """Optional per-user list of words the prompt search should skip.
 
@@ -161,18 +193,15 @@ def _query_ignore() -> tuple[frozenset, frozenset, tuple]:
       ``Alice``      a name: skipped when written capitalised, kept as a plain word
       ``standup``    lowercase: always skipped
       ``re:<regex>`` text removed from the prompt before keywords are picked
+      ``skip:<regex>`` no search at all for a prompt that contains a match
     A missing or unreadable file means no extra words.
     """
     names: set[str] = set()
     words: set[str] = set()
     patterns: list = []
-    try:
-        lines = _ignore_file().read_text(encoding="utf-8").splitlines()
-    except (OSError, ValueError):
-        lines = []
-    for raw in lines:
+    for raw in _ignore_lines():
         line = raw.strip()
-        if not line or line.startswith("#"):
+        if not line or line.startswith("#") or line.startswith("skip:"):
             continue
         if line.startswith("re:"):
             try:
@@ -510,8 +539,10 @@ def _created_epoch(value: str) -> float:
 
 
 def _search(project: str | None, query: str, intent: str, workspace: str, env: dict | None) -> str:
-    """One obmem search; ``project`` None searches every project."""
-    scope = ["--all-projects"] if project is None else ["--project", project]
+    """One obmem search; ``project`` None searches every project, ranked locally."""
+    # The search across all projects is ranked locally, so a prompt costs at
+    # most one Jev call; only this project's search is judged by Jev.
+    scope = ["--all-projects", "--ranker", "local"] if project is None else ["--project", project]
     try:
         result = subprocess.run(
             ["obmem", "search", *scope, "--query", query,
@@ -573,7 +604,7 @@ def main() -> int:
         if isinstance(value, str) and value.strip():
             prompt = value.strip()
             break
-    if not prompt:
+    if not prompt or _is_machine_prompt(prompt):
         return 0
 
     # Short acknowledgements ("ok", "tool loaded") don't warrant a memory lookup.

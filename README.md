@@ -97,8 +97,9 @@ obmem compact-project --project "My Project" --max-runs 25 --dry-run
 
 Search is local by default, even when `TYPESAFE_API_KEY` is set. Each user can
 opt in to Jev with their own TypeSafe API key. Jev receives the query, note titles,
-and up to 1,200 source characters from each of at most 30 matching notes, then
-ranks the shortlist before the CLI shows the best three. Archived notes stay
+and up to 1,200 source characters from each of the 10 best local matches (or as
+many as `--limit` asks for, up to 30), then ranks that shortlist before the CLI
+shows the best three. Archived notes stay
 excluded unless you pass `--include-archive`.
 
 ```bash
@@ -190,9 +191,11 @@ Rose
 standup
 # re: patterns: matching text is removed before keywords are picked
 re:\(sent from my phone\)
+# skip: patterns: no search at all for a prompt that matches
+skip:^\[Nightly report\]
 ```
 
-No file means no extra words. Set `OBMEM_QUERY_IGNORE_FILE` to use another path.
+No file means no extra words. Messages that come from tools or other sessions rather than from you (background task notices, messages from another Claude session, the summary that continues a compacted session) are never searched; add `skip:` lines for others your setup sends. Set `OBMEM_QUERY_IGNORE_FILE` to use another path.
 
 **Skipping notes for files that are their own record (optional).** The Stop hook saves a note for every turn that edited files. If a turn only edits a file that is already a running record (a notebook, a scratch log), the note just copies it. List such files in `~/.config/obmem/capture-ignore.txt`, one glob per line:
 

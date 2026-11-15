@@ -77,6 +77,26 @@ class RetrievalBudgetTests(unittest.TestCase):
             self.assertLessEqual(len(excerpt.split('\n[Excerpt:')[0]), 1200)
             self.assertNotIn('old.md', json.dumps(payload))
 
+    def test_jev_judges_at_most_ten_candidates_for_ten_hits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / 'Project Memory/demo'
+            root.mkdir(parents=True)
+            for i in range(20):
+                (root / f'note-{i}.md').write_text('export progress\n')
+            answers = {f'candidate_{i}': {'type': 'noul', 'noul': 0.5} for i in range(10)}
+            response = io.BytesIO(json.dumps({'answers': answers}).encode())
+            with patch.dict('os.environ', {'TYPESAFE_API_KEY': 'test-key'}), patch(
+                'scripts.obsidian_memory.urllib.request.urlopen', return_value=response
+            ) as urlopen:
+                self.command(
+                    vault, 'search', '--project', 'demo', '--query', 'export progress',
+                    '--ranker', 'auto', '--limit', '10',
+                )
+            payload = json.loads(urlopen.call_args.args[0].data)
+            # Ten notes plus the one "which is best" question.
+            self.assertEqual(len(payload['questions']), 11)
+
     def test_jev_judges_the_intent_when_given(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
