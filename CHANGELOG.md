@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Prompts that name another project search it too.** A search covers the
+  current project, so "was the govee backup pushed?" asked from another project
+  found nothing. The prompt hook now also searches up to two other projects the
+  prompt names (by folder name, hyphens written as spaces or not), and
+  interleaves their notes with the current project's (by Jev relevance when Jev
+  ranks). Names a project goes by that its folder doesn't spell can be listed in
+  the optional `~/.config/obmem/project-aliases.txt`.
+
 - **Excerpts show the lines that match.** The prompt hook pastes in the top
   notes; for a note longer than the excerpt (a decision register, a topic), it
   now shows the note's title and the lines around the one that holds most of
