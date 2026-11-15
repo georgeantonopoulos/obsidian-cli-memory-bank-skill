@@ -2,13 +2,18 @@
 
 ## Unreleased
 
-- **Prompts that name another project search it too.** A search covers the
-  current project, so "was the govee backup pushed?" asked from another project
-  found nothing. The prompt hook now also searches up to two other projects the
-  prompt names (by folder name, hyphens written as spaces or not), and
-  interleaves their notes with the current project's (by Jev relevance when Jev
-  ranks). Names a project goes by that its folder doesn't spell can be listed in
-  the optional `~/.config/obmem/project-aliases.txt`.
+- **Prompts can recall another project's decision.** The prompt hook also
+  searches every project. When the best match across all projects belongs to
+  another project and ranks above everything in the current one, that one note
+  is added (labelled as from another project, shorter excerpt). Otherwise the
+  output is unchanged. The two searches run side by side.
+
+- **`obmem search --all-projects`** searches every project's memory instead of
+  one. `search` now needs either `--project` or `--all-projects`.
+
+- **Faster local search.** Notes that contain none of the keywords are skipped
+  before scoring, and `Archive/` folders are no longer walked when archive is
+  excluded. Results are unchanged.
 
 - **Excerpts show the lines that match.** The prompt hook pastes in the top
   notes; for a note longer than the excerpt (a decision register, a topic), it

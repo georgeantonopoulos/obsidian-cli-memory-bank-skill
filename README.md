@@ -194,16 +194,6 @@ re:\(sent from my phone\)
 
 No file means no extra words. Set `OBMEM_QUERY_IGNORE_FILE` to use another path.
 
-**Other projects named in a prompt.** The prompt search covers the current project, plus up to two other projects the prompt names by their folder name ("tiny hq" finds `tiny-hq`). For names a project goes by that its folder doesn't spell, add `~/.config/obmem/project-aliases.txt`, one `alias = folder` per line:
-
-```text
-# a product name and a nickname
-obmem = obsidian-cli-memory-bank
-nuke = oklch-nuke
-```
-
-No file means folder names only. Set `OBMEM_PROJECT_ALIASES_FILE` to use another path.
-
 **Skipping notes for files that are their own record (optional).** The Stop hook saves a note for every turn that edited files. If a turn only edits a file that is already a running record (a notebook, a scratch log), the note just copies it. List such files in `~/.config/obmem/capture-ignore.txt`, one glob per line:
 
 ```text
@@ -306,6 +296,7 @@ obmem compact-project --project "Name" # Distill Runs/ into Current Memory, Topi
 obmem compact-project --project "Name" --include-archive # Refresh distilled memory from archive when no new runs exist
 obmem search --project "Name" --query "x"  # Search active distilled memory by keyword
 obmem search --project "Name" --query "x" --include-archive # Include archived evidence in search
+obmem search --all-projects --query "x"   # Search every project's memory
 obmem read-note --path "..."          # Read up to 6,000 source characters
 obmem read-note --path "..." --query "retry queue" # Focus on matching evidence
 obmem read-note --path "..." --offset 6000 # Continue a truncated note

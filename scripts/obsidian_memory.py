@@ -25,7 +25,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -543,26 +543,30 @@ class ObsidianCLI:
         # First pass: per-note term frequencies and lengths. BM25 needs corpus
         # statistics, so nothing can be scored until every note has been seen.
         documents: List[Tuple[str, List[int], int]] = []
-        for note in root.rglob("*.md"):
+        lowered_terms = [term.lower() for term in terms if term]
+        for note in _markdown_files(root, self.vault_path, skip_archive=not include_archive):
             relative = note.relative_to(self.vault_path).as_posix()
-            if not include_archive and "/Archive/" in relative:
-                continue
             try:
                 text = note.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 continue
+            haystack = f"{note.stem}\n{text}"
+            # Most notes hold none of the terms; a plain substring check skips
+            # them before the slower whole-word counting.
+            lowered = haystack.lower()
+            if terms and not any(term in lowered for term in lowered_terms):
+                continue
             if exclude_session and _written_by(text, exclude_session, exclude_since):
                 continue
-            haystack = f"{note.stem}\n{text}"
             # The title is worth more than a passing mention in the body, so it
             # is counted twice rather than given a separate scoring branch.
             title = note.stem
             frequencies = [
-                len(pattern.findall(haystack)) + len(pattern.findall(title))
-                for pattern in patterns
+                len(pattern.findall(haystack)) + len(pattern.findall(title)) if term in lowered else 0
+                for pattern, term in zip(patterns, lowered_terms)
             ]
-            length = max(len(_WORD_RE.findall(haystack)), 1)
             if not terms or any(frequencies):
+                length = max(len(_WORD_RE.findall(haystack)), 1)
                 documents.append((relative, frequencies, length))
 
         hits = _rank_documents(documents, len(patterns))
@@ -1010,6 +1014,20 @@ _BM25_B = 0.75
 # Current Memory or a Topic note, never enough to float an irrelevant one to
 # the top.
 _PRIORITY_BOOST_DIVISOR = 400.0
+
+
+def _markdown_files(root: Path, vault: Path, *, skip_archive: bool) -> Iterator[Path]:
+    """Every .md file under ``root``; skipped Archive folders are not walked.
+
+    As before, only an Archive inside some folder counts, not one at the vault root.
+    """
+    for folder, subfolders, files in os.walk(root):
+        if skip_archive and Path(folder) != vault:
+            subfolders[:] = [name for name in subfolders if name != "Archive"]
+        subfolders.sort()
+        for name in sorted(files):
+            if name.endswith(".md"):
+                yield Path(folder) / name
 
 
 def _compile_term_patterns(terms: Iterable[str]) -> List["re.Pattern[str]"]:
@@ -3151,9 +3169,14 @@ def _written_by(text: str, session: str, since: float) -> bool:
 def cmd_search(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
-    project_slug = slugify(args.project)
+    if getattr(args, "all_projects", False):
+        scope = PROJECT_ROOT
+    elif args.project and slugify(args.project):
+        scope = f"{PROJECT_ROOT}/{slugify(args.project)}"
+    else:
+        raise SystemExit("obmem search: give --project or --all-projects")
     or_query = _build_or_query(args.query)
-    scoped_query = f"{or_query} path:\"{PROJECT_ROOT}/{project_slug}\""
+    scoped_query = f"{or_query} path:\"{scope}\""
     limit = getattr(args, "limit", 3)
     ranker = getattr(args, "ranker", None) or ConfigStore().get_search_ranker()
     api_key = os.environ.get("TYPESAFE_API_KEY", "")
@@ -3714,7 +3737,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser_unlink.set_defaults(func=cmd_unlink_notes)
 
     parser_search = subparsers.add_parser("search", help="Search project memory")
-    parser_search.add_argument("--project", required=True, help="Project display name")
+    search_scope = parser_search.add_mutually_exclusive_group(required=True)
+    search_scope.add_argument("--project", help="Project display name")
+    search_scope.add_argument("--all-projects", action="store_true",
+                              help="Search every project's memory instead of one")
     parser_search.add_argument("--query", required=True, help="Search query")
     parser_search.add_argument(
         "--intent",

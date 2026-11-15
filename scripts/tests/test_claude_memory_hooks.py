@@ -181,85 +181,6 @@ class ClaudePrePromptHookTests(unittest.TestCase):
             self.assertEqual(context.count("New thing"), 1)
             self.assertEqual(context.count("Middle"), 1)
 
-    def _vault_with(self, tmp: str, *projects: str) -> Path:
-        vault = Path(tmp)
-        for name in projects:
-            (vault / "Project Memory" / name / "Runs").mkdir(parents=True)
-        return vault
-
-    def test_named_projects_finds_other_projects_by_whole_name(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            vault = self._vault_with(tmp, "demo", "tiny-hq", "batiq", "batiq-skill", "ai", "lamps")
-            (vault / "Project Memory" / "no-runs").mkdir()
-            named = HOOK._named_projects
-            self.assertEqual(named("when did Tiny HQ go public?", vault, "demo"), ["tiny-hq"])
-            # The longest overlapping name wins.
-            self.assertEqual(named("is the batiq skill chapter out?", vault, "demo"), ["batiq-skill"])
-            # The current project, short names, folders without runs, word parts and paths don't count.
-            self.assertEqual(named("demo ai lampshade no-runs /src/batiq/x.py", vault, "Demo"), [])
-            self.assertEqual(named("batiq then lamps then tiny-hq", vault, "demo"), ["batiq", "lamps"])
-            # Asked in batiq-skill, "batiq skill" is the current project, not batiq.
-            self.assertEqual(named("is the batiq skill chapter out?", vault, "batiq-skill"), [])
-            self.assertEqual(named("anything", None, "demo"), [])
-
-    def test_project_aliases_name_projects_their_folder_does_not_spell(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            vault = self._vault_with(tmp, "demo", "oklch-nuke")
-            aliases = Path(tmp) / "aliases.txt"
-            aliases.write_text("# comment\nNuke = oklch-nuke\nbroken line\nghost = missing\n!!! = oklch-nuke\n", encoding="utf-8")
-            with patch.dict(os.environ, {"OBMEM_PROJECT_ALIASES_FILE": str(aliases)}):
-                self.assertEqual(HOOK._named_projects("lin_srgb in nuke 17?", vault, "demo"), ["oklch-nuke"])
-                self.assertEqual(HOOK._named_projects("a ghost story", vault, "demo"), [])
-                self.assertEqual(HOOK._named_projects("plain words only", vault, "demo"), [])
-                self.assertNotIn("nuke", HOOK._without_name("why does Nuke crash", "oklch-nuke").lower())
-
-    def test_merge_hits_ranks_by_jev_across_projects_else_takes_turns(self) -> None:
-        own = "Found 2 hits.\n  Project Memory/demo/a.md (score 9; Jev 0.70)\n  Project Memory/demo/b.md (score 8; Jev 0.55)"
-        other = "Found 1 hits.\n  Project Memory/govee/c.md (score 3; Jev 0.90; best)"
-        merged = HOOK._merge_hits([own, other]).splitlines()
-        self.assertIn("govee/c.md", merged[0])
-        self.assertIn("demo/b.md", merged[2])
-        local_own = "Found 2 hits.\n  Project Memory/demo/a.md (score 9)\n  Project Memory/demo/b.md (score 8)"
-        local_other = "Found 1 hits.\n  Project Memory/govee/c.md (score 3)"
-        merged = HOOK._merge_hits([local_own, local_other]).splitlines()
-        self.assertEqual([line.strip().split()[1].split("/")[1] for line in merged], ["govee", "demo", "demo"])
-        self.assertEqual(HOOK._merge_hits([own]), "\n".join(own.splitlines()[1:]))
-        self.assertEqual(HOOK._merge_hits(["", ""]), "")
-        # The current project found nothing: named projects keep mention order.
-        second = "Found 1 hits.\n  Project Memory/lamps/d.md (score 4)"
-        merged = HOOK._merge_hits(["", local_other, second]).splitlines()
-        self.assertIn("govee/c.md", merged[0])
-
-    def test_prompt_naming_another_project_searches_it_too(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            vault = self._vault_with(tmp, "demo", "govee")
-            note = "Project Memory/govee/Decisions.md"
-            (vault / note).write_text("# Decisions\n- master not pushed\n", encoding="utf-8")
-            calls = []
-
-            def fake_run(argv, **_kwargs):
-                calls.append(argv)
-                if argv[1] == "search" and argv[argv.index("--project") + 1] == "govee":
-                    return HOOK.subprocess.CompletedProcess([], 0, f"Found 1 hits.\n  {note} (score 5)", "")
-                if argv[1] == "read-note":
-                    return HOOK.subprocess.CompletedProcess([], 0, (vault / note).read_text(), "")
-                return HOOK.subprocess.CompletedProcess([], 0, "Found 0 hits; showing 0.", "")
-
-            payload = json.dumps({"prompt": "was the govee master branch pushed to origin?", "cwd": tmp})
-            with patch("sys.stdin") as stdin, patch.object(HOOK, "active_context", return_value=("/w", "demo")), \
-                    patch.object(HOOK, "_vault_path", return_value=vault), \
-                    patch.object(HOOK.subprocess, "run", side_effect=fake_run), \
-                    patch("sys.stdout", new_callable=__import__("io").StringIO) as stdout:
-                stdin.read.return_value = payload
-                self.assertEqual(HOOK.main(), 0)
-            searched = [c[c.index("--project") + 1] for c in calls if c[1] == "search"]
-            self.assertEqual(sorted(searched), ["demo", "govee"])
-            govee_query = next(c for c in calls if c[1] == "search" and "govee" in c)[5]
-            self.assertNotIn("govee", govee_query.split())
-            context = json.loads(stdout.getvalue())["hookSpecificOutput"]["additionalContext"]
-            self.assertIn("also project govee, named in the prompt", context)
-            self.assertIn("master not pushed", context)
-
     def test_jev_gate_keeps_the_hook_quiet(self) -> None:
         gated = "Found 9 hits; none cleared the Jev threshold 0.30 (best 0.04)."
         payload = json.dumps({"prompt": "What is a good moussaka recipe with aubergine?", "cwd": tempfile.gettempdir()})
@@ -270,7 +191,7 @@ class ClaudePrePromptHookTests(unittest.TestCase):
             stdin.read.return_value = payload
             self.assertEqual(HOOK.main(), 0)
         self.assertEqual(stdout.getvalue(), "")
-        argv = next(c.args[0] for c in run.call_args_list if c.args[0][1] == "search")
+        argv = run.call_args.args[0]
         self.assertEqual(argv[argv.index("--min-jev") + 1], "0.50")
 
     def test_search_output_carries_the_end_of_turn_recording_rule(self) -> None:
@@ -443,8 +364,6 @@ Progress uses measured counts.
         def fake_run(argv, **_kwargs):
             if argv[1] == "search":
                 return HOOK.subprocess.CompletedProcess(argv, 0, search, "")
-            if argv[1] == "show-vault":
-                return HOOK.subprocess.CompletedProcess(argv, 1, "", "no vault")
             path = argv[argv.index("--path") + 1]
             return HOOK.subprocess.CompletedProcess(argv, 0, f"# {path}\nbody of {path}\n", "")
 
@@ -461,8 +380,65 @@ Progress uses measured counts.
         self.assertIn("body of Project Memory/demo/Topics/Export.md", out)
         self.assertIn("body of Project Memory/demo/Topics/Render.md", out)
         self.assertNotIn("body of Project Memory/demo/Topics/Other.md", out)
-        # One search and two note reads (plus the vault lookup).
-        self.assertEqual(sum(1 for c in run.call_args_list if c.args[0][1] != "show-vault"), 3)
+        # One search in this project, one across all projects, two notes read.
+        self.assertEqual(run.call_count, 4)
+        scopes = [c.args[0] for c in run.call_args_list if c.args[0][1] == "search"]
+        self.assertTrue(any("--all-projects" in argv for argv in scopes))
+        self.assertTrue(any("--project" in argv for argv in scopes))
+        self.assertNotIn("another project", out)
+
+    def test_other_project_note_is_added_when_it_ranks_first(self) -> None:
+        own = """Found 2 hits; showing 2. Ranked by keyword.
+  Project Memory/demo/Topics/Export.md (score 9; best)
+  Project Memory/demo/Topics/Render.md (score 8)
+"""
+        everywhere = """Found 3 hits; showing 3. Ranked by keyword.
+  Project Memory/other-app/Topics/Login.md (score 12; best)
+  Project Memory/demo/Topics/Export.md (score 9)
+  Project Memory/demo/Topics/Render.md (score 8)
+"""
+        reads = {}
+
+        def fake_run(argv, **_kwargs):
+            if argv[1] == "search":
+                out = everywhere if "--all-projects" in argv else own
+                return HOOK.subprocess.CompletedProcess(argv, 0, out, "")
+            path = argv[argv.index("--path") + 1]
+            reads[path] = argv
+            return HOOK.subprocess.CompletedProcess(argv, 0, f"# {path}\nbody of {path}\n", "")
+
+        payload = json.dumps({"prompt": "How does the login token refresh?", "cwd": tempfile.gettempdir()})
+        with patch("sys.stdin") as stdin, patch.object(HOOK, "active_context", return_value=("/w", "demo")), \
+                patch.object(HOOK.subprocess, "run", side_effect=fake_run), \
+                patch("sys.stdout", new_callable=__import__("io").StringIO) as stdout:
+            stdin.read.return_value = payload
+            self.assertEqual(HOOK.main(), 0)
+        out = json.loads(stdout.getvalue())["hookSpecificOutput"]["additionalContext"]
+        for name in ("other-app/Topics/Login", "demo/Topics/Export", "demo/Topics/Render"):
+            self.assertIn(f"body of Project Memory/{name}.md", out)
+        self.assertIn("from another project", out)
+        self.assertEqual(set(reads), {
+            "Project Memory/other-app/Topics/Login.md",
+            "Project Memory/demo/Topics/Export.md",
+            "Project Memory/demo/Topics/Render.md",
+        })
+
+    def test_other_project_hit_only_when_it_outranks_this_project(self) -> None:
+        other = "  Project Memory/other-app/Topics/Login.md (score 12)"
+        own = "  Project Memory/demo/Topics/Export.md (score 9)"
+        self.assertEqual(HOOK._other_project_hit(f"{other}\n{own}", "Demo"), other)
+        self.assertEqual(HOOK._other_project_hit(f"{own}\n{other}", "Demo"), "")
+        self.assertEqual(HOOK._other_project_hit("", "Demo"), "")
+        # Indexes, run logs and synced memory copies are never the extra note.
+        skipped = "\n".join([
+            "  Project Memory/other-app/Run Log.md (score 20)",
+            "  Project Memory/other-app/MOC.md (score 19)",
+            "  Project Memory/other-app/Topics/memory-sync-abc.md (score 18)",
+        ])
+        self.assertEqual(HOOK._other_project_hit(f"{skipped}\n{own}\n{other}", "Demo"), "")
+        self.assertEqual(HOOK._other_project_hit(f"{skipped}\n{other}", "Demo"), other)
+        # Project names compare the way obmem names their folders.
+        self.assertEqual(HOOK._other_project_hit("  Project Memory/my-app/Topics/A.md (score 3)", "My App"), "")
 
     def test_jev_min_env_override_is_clamped(self) -> None:
         with patch.dict(os.environ, {"OBMEM_JEV_MIN": "0.5"}):
