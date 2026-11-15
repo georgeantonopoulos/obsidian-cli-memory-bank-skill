@@ -3,10 +3,10 @@
 ## Unreleased
 
 - **Prompts can recall another project's decision.** The prompt hook also
-  searches every project. When the best match across all projects belongs to
-  another project and ranks above everything in the current one, that one note
-  is added (labelled as from another project, shorter excerpt). Otherwise the
-  output is unchanged. The two searches run side by side.
+  searches every project. When the top note of that search belongs to another
+  project, that one note is added (labelled as from another project, shorter
+  excerpt). Otherwise the output is unchanged. The two searches run side by
+  side; with Jev ranking on, each prompt makes two Jev calls instead of one.
 
 - **`obmem search --all-projects`** searches every project's memory instead of
   one. `search` now needs either `--project` or `--all-projects`.
