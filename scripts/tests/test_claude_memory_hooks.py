@@ -423,6 +423,41 @@ Progress uses measured counts.
             "Project Memory/demo/Topics/Render.md",
         })
 
+    def _searches_for(self, prompt):
+        """The obmem search commands the hook runs for ``prompt``."""
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(argv)
+            return HOOK.subprocess.CompletedProcess(argv, 0, "", "")
+
+        payload = json.dumps({"prompt": prompt, "cwd": tempfile.gettempdir()})
+        with patch("sys.stdin") as stdin, patch.object(HOOK, "active_context", return_value=("/w", "demo")), \
+                patch.object(HOOK.subprocess, "run", side_effect=fake_run), \
+                patch("sys.stdout", new_callable=__import__("io").StringIO):
+            stdin.read.return_value = payload
+            self.assertEqual(HOOK.main(), 0)
+        return [argv for argv in calls if argv[1] == "search"]
+
+    def test_messages_from_tools_and_sessions_are_not_searched(self) -> None:
+        for prompt in (
+            "<task-notification>\n<task-id>b1</task-id>\nBackground export render finished with errors",
+            '<cross-session-message from="uds:/tmp/x.sock">Check the export render settings</cross-session-message>',
+            "Another Claude session sent a message:\nCheck the export render settings",
+            "This session is being continued from a previous conversation. Export render settings work",
+        ):
+            with self.subTest(prompt=prompt[:30]):
+                self.assertEqual(self._searches_for(prompt), [])
+        self.assertEqual(len(self._searches_for("Why do the export render settings reset?")), 2)
+
+    def test_ignore_file_skip_entries_stop_the_search(self) -> None:
+        with self._ignore([r"skip:^\[Robot\b", "skip:reply (quiet", "skip:", "skip:   ", "Alice"]):
+            self.assertEqual(self._searches_for("[Robot: nightly] export render settings changed"), [])
+            # Broken or empty patterns are ignored, and skip lines add no ignored words.
+            searches = self._searches_for("Why do the export render settings reset for skip?")
+        self.assertEqual(len(searches), 2)
+        self.assertIn("skip", searches[0][searches[0].index("--query") + 1])
+
     def test_other_project_hit_only_when_it_outranks_this_project(self) -> None:
         other = "  Project Memory/other-app/Topics/Login.md (score 12)"
         own = "  Project Memory/demo/Topics/Export.md (score 9)"

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Fewer Jev calls.** The prompt hook no longer searches memory for messages
+  that come from tools or other sessions instead of the user (background task
+  notices, messages from another Claude session, the summary that continues a
+  compacted session); `skip:<regex>` lines in the query-ignore file add more.
+  Jev now judges the 10 best local matches of each search instead of up to
+  30, so a prompt's two searches send 20 notes instead of 60.
+
 - **Prompts can recall another project's decision.** The prompt hook also
   searches every project. When the top note of that search belongs to another
   project, that one note is added (labelled as from another project, shorter

@@ -3187,7 +3187,9 @@ def cmd_search(args: argparse.Namespace) -> None:
         if ranker == "jev":
             raise RuntimeError("Jev ranking supports --limit up to 30")
         use_jev = False
-    candidate_limit = min(30, max(limit * 4, 12)) if use_jev else limit
+    # Jev judges each candidate (one question per note): the 10 best local
+    # matches, or as many hits as were asked for, up to 30.
+    candidate_limit = min(30, max(limit, 10)) if use_jev else limit
     local_args = [f"query={scoped_query}", f"limit={limit}"]
     command_args = [f"query={scoped_query}", f"limit={candidate_limit}"]
     if getattr(args, "include_archive", False):
