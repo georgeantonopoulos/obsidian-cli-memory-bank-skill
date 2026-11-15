@@ -458,13 +458,6 @@ Progress uses measured counts.
         self.assertEqual(len(searches), 2)
         self.assertIn("skip", searches[0][searches[0].index("--query") + 1])
 
-    def test_only_this_projects_search_can_use_jev(self) -> None:
-        searches = self._searches_for("Why do the export render settings reset?")
-        everywhere = next(argv for argv in searches if "--all-projects" in argv)
-        own = next(argv for argv in searches if "--project" in argv)
-        self.assertEqual(everywhere[everywhere.index("--ranker") + 1], "local")
-        self.assertNotIn("--ranker", own)
-
     def test_other_project_hit_only_when_it_outranks_this_project(self) -> None:
         other = "  Project Memory/other-app/Topics/Login.md (score 12)"
         own = "  Project Memory/demo/Topics/Export.md (score 9)"

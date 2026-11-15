@@ -6,15 +6,14 @@
   that come from tools or other sessions instead of the user (background task
   notices, messages from another Claude session, the summary that continues a
   compacted session); `skip:<regex>` lines in the query-ignore file add more.
-  The search across all projects is ranked locally, so a prompt makes at most
-  one Jev call, and Jev now judges the 10 best local matches instead of up to
-  30.
+  Jev now judges the 10 best local matches of each search instead of up to
+  30, so a prompt's two searches send 20 notes instead of 60.
 
 - **Prompts can recall another project's decision.** The prompt hook also
   searches every project. When the top note of that search belongs to another
   project, that one note is added (labelled as from another project, shorter
   excerpt). Otherwise the output is unchanged. The two searches run side by
-  side.
+  side; with Jev ranking on, each prompt makes two Jev calls instead of one.
 
 - **`obmem search --all-projects`** searches every project's memory instead of
   one. `search` now needs either `--project` or `--all-projects`.

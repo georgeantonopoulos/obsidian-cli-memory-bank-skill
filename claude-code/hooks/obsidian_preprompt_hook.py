@@ -540,10 +540,8 @@ def _created_epoch(value: str) -> float:
 
 
 def _search(project: str | None, query: str, intent: str, workspace: str, env: dict | None) -> str:
-    """One obmem search; ``project`` None searches every project, ranked locally."""
-    # The search across all projects is ranked locally, so a prompt costs at
-    # most one Jev call; only this project's search is judged by Jev.
-    scope = ["--all-projects", "--ranker", "local"] if project is None else ["--project", project]
+    """One obmem search; ``project`` None searches every project."""
+    scope = ["--all-projects"] if project is None else ["--project", project]
     try:
         result = subprocess.run(
             ["obmem", "search", *scope, "--query", query,
