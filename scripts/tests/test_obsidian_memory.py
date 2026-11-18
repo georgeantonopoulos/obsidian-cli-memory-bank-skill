@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from scripts import obsidian_memory
+
 from scripts.obsidian_memory import (
     DEFAULT_AUDIT_EVERY_RUNS,
     PROJECTS_INDEX_PATH,
@@ -515,6 +517,37 @@ class ObsidianMemoryTests(unittest.TestCase):
             # "available"/"maintain"/"chain" all contain "ai" as a substring.
             self.assertNotIn("Topics/Audio.md", output)
             self.assertIn("Runs/ollama-planner.md", output)
+
+    def test_search_matches_other_forms_of_a_word(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = vault / "Project Memory" / "demo"
+            (project / "Runs").mkdir(parents=True, exist_ok=True)
+            (project / "Runs" / "open-source.md").write_text(
+                "The office goes open source under MIT.\n", encoding="utf-8")
+            (project / "Runs" / "beta.md").write_text(
+                "Mark the job done once the tester list shows Day 1+.\n", encoding="utf-8")
+            (project / "Runs" / "unrelated.md").write_text(
+                "Resources and the resourceful planner.\n", encoding="utf-8")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            output = cli.search_files('sourcing path:"Project Memory/demo"')
+            self.assertIn("Runs/open-source.md", output)
+            # A root only matches at the start of a word, never inside one.
+            self.assertNotIn("Runs/unrelated.md", output)
+            self.assertIn("Runs/beta.md", cli.search_files('testers path:"Project Memory/demo"'))
+
+    def test_word_forms_leave_short_words_and_acronyms_exact(self) -> None:
+        self.assertEqual(obsidian_memory._word_root("sourcing"), "sourc")
+        self.assertEqual(obsidian_memory._word_root("sources"), "sourc")
+        self.assertEqual(obsidian_memory._word_root("stopped"), "stop")
+        self.assertEqual(obsidian_memory._word_root("classes"), "class")
+        self.assertEqual(obsidian_memory._word_root("status"), "status")
+        self.assertEqual(obsidian_memory._word_root("news"), "news")
+        for exact in ("AI", "PR", "MIT", "C++", "v1.5", "env"):
+            self.assertEqual(obsidian_memory._word_forms_regex(exact), "", exact)
+        pattern = obsidian_memory._compile_term_patterns(["decided"])[0]
+        self.assertEqual(pattern.findall("decide decides decided deciding decidua"),
+                         ["decide", "decides", "decided", "deciding"])
 
     def test_search_ranks_a_focused_note_above_a_large_incidental_one(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -543,7 +543,11 @@ class ObsidianCLI:
         # First pass: per-note term frequencies and lengths. BM25 needs corpus
         # statistics, so nothing can be scored until every note has been seen.
         documents: List[Tuple[str, List[int], int]] = []
+        # The cheap substring screen uses each term's root so "sourcing"
+        # still lets a note that only says "source" through to the word match.
         lowered_terms = [term.lower() for term in terms if term]
+        screen_terms = [_word_root(term) if _word_forms_regex(term) else term
+                        for term in lowered_terms]
         for note in _markdown_files(root, self.vault_path, skip_archive=not include_archive):
             relative = note.relative_to(self.vault_path).as_posix()
             try:
@@ -554,7 +558,7 @@ class ObsidianCLI:
             # Most notes hold none of the terms; a plain substring check skips
             # them before the slower whole-word counting.
             lowered = haystack.lower()
-            if terms and not any(term in lowered for term in lowered_terms):
+            if terms and not any(term in lowered for term in screen_terms):
                 continue
             if exclude_session and _written_by(text, exclude_session, exclude_since):
                 continue
@@ -563,7 +567,7 @@ class ObsidianCLI:
             title = note.stem
             frequencies = [
                 len(pattern.findall(haystack)) + len(pattern.findall(title)) if term in lowered else 0
-                for pattern, term in zip(patterns, lowered_terms)
+                for pattern, term in zip(patterns, screen_terms)
             ]
             if not terms or any(frequencies):
                 length = max(len(_WORD_RE.findall(haystack)), 1)
@@ -1030,6 +1034,59 @@ def _markdown_files(root: Path, vault: Path, *, skip_archive: bool) -> Iterator[
                 yield Path(folder) / name
 
 
+_WORD_FORM_SUFFIXES = r"(?:e|es|s|ed|d|ing|er|ers|y|ies|ied|ying)?"
+
+
+def _word_root(term: str) -> str:
+    """Strip one plural or tense ending so word forms share a root.
+
+    ``sourcing``, ``sources`` and ``source`` all become ``sourc``; ``testers``
+    becomes ``tester``; ``queries`` becomes ``quer``. A root is never shorter
+    than four letters, so ``uses``, ``news`` and ``rule`` stay whole, and
+    endings like ``-ss``, ``-us`` and ``-is`` (process, status, analysis) are
+    not plurals.
+    """
+    word = term.lower()
+    candidates: List[str] = []
+    for ending in ("ies", "ied", "ing", "ed"):
+        if word.endswith(ending):
+            candidates.append(word[: -len(ending)])
+            break
+    # "-es" is its own ending only after s, x, z, ch and sh (classes, fixes);
+    # elsewhere the e belongs to the word (sources, rules).
+    if word.endswith(("sses", "xes", "zes", "ches", "shes")):
+        candidates.append(word[:-2])
+    if word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        candidates.append(word[:-1])
+    if not candidates:
+        candidates.append(word)
+    # "copies" -> "cop" is allowed: the y/ies/ied endings keep it specific.
+    minimum = 3 if word.endswith(("ies", "ied")) else 4
+    root = next((c for c in candidates if len(c) >= minimum), word)
+    # A final e or consonant-y belongs to the root's forms (source/sourcing).
+    if (root.endswith("e") or (root.endswith("y") and root[-2:-1] not in "aeiou")) and len(root) >= 5:
+        root = root[:-1]
+    # "stopped" -> "stop": a doubled final consonant comes from the ending.
+    if root != word and len(root) >= 4 and root[-1] == root[-2] and root[-1] not in "aeiouls":
+        root = root[:-1]
+    return root
+
+
+def _word_forms_regex(term: str) -> str:
+    """Regex body matching common English forms of a plain word, or "".
+
+    Only lowercase-able alphabetic terms of four or more letters get forms;
+    short words, acronyms in caps (``PR``, ``MIT``), numbers and identifiers
+    with symbols still match exactly.
+    """
+    if len(term) < 4 or not term.isalpha() or not term.isascii() or term.isupper():
+        return ""
+    root = _word_root(term)
+    # A doubled consonant may return before the ending (stop -> stopped).
+    double = f"(?:{re.escape(root[-1])})?" if root[-1] not in "aeiouy" else ""
+    return f"{re.escape(root)}{double}{_WORD_FORM_SUFFIXES}"
+
+
 def _compile_term_patterns(terms: Iterable[str]) -> List["re.Pattern[str]"]:
     """Match whole words, not substrings.
 
@@ -1042,6 +1099,10 @@ def _compile_term_patterns(terms: Iterable[str]) -> List["re.Pattern[str]"]:
     patterns: List["re.Pattern[str]"] = []
     for term in terms:
         if not term:
+            continue
+        forms = _word_forms_regex(term)
+        if forms:
+            patterns.append(re.compile(rf"\b{forms}\b", re.IGNORECASE))
             continue
         escaped = re.escape(term)
         prefix = r"\b" if term[0].isalnum() or term[0] == "_" else ""

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Search matches other forms of a word.** `sourcing` now finds notes that
+  say `source`, `testers` finds `tester`, `decided` finds `decide`. Plain words
+  of four or more letters share a root (one plural or tense ending removed);
+  short words, all-caps acronyms (`AI`, `PR`, `MIT`), numbers and identifiers
+  still match exactly, and a root only matches at the start of a word. On the
+  local recall set (local ranker, same vault, back to back): plain search finds
+  the decision for 37 of 45 questions instead of 33; the prompt hook shows it
+  for 38 instead of 35, and 7 of 15 vaguely worded questions instead of 5.
+
 - **Fewer Jev calls.** The prompt hook no longer searches memory for messages
   that come from tools or other sessions instead of the user (background task
   notices, messages from another Claude session, the summary that continues a
