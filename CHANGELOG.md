@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Compaction notes keep the real summary.** The PreCompact hook used to save
+  a "Pre-compaction snapshot: <project>" note holding only the last five
+  prompts, cut short; 136 of the 1,261 run notes in the live vault were these,
+  all with the same title. The SessionStart hook now saves, after compaction,
+  the summary Claude Code itself wrote: the request, errors and fixes, findings,
+  pending work and current work (about 3,000 characters; the user's own
+  messages and the concept and file lists are left out). The note is titled
+  "Compaction: <what the session was doing>". Only a summary written after the
+  latest compaction is used; if none is on disk within 3 seconds, the recent
+  prompts are saved as before. PreCompact now only marks the session.
+
 - **Fewer Jev calls.** The prompt hook no longer searches memory for messages
   that come from tools or other sessions instead of the user (background task
   notices, messages from another Claude session, the summary that continues a

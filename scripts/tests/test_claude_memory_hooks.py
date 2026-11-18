@@ -28,6 +28,7 @@ COMMON = _load("obsidian_hook_common")
 STOP = _load("obsidian_poststop_hook")
 SYNC = _load("obsidian_memory_sync_hook")
 START = _load("obsidian_sessionstart_hook")
+PRE = _load("obsidian_precompact_hook")
 
 FAKE_KEY = "apikey_" + "0123456789abcdef" * 2 + "_" + "fedcba9876543210" * 4
 
@@ -54,6 +55,88 @@ class ClaudeSessionStartHookTests(unittest.TestCase):
         output = self._run(1)
         self.assertIn("WARNING", output)
         self.assertIn('skill "obsidian-cli-memory-bank"', output)
+
+    SUMMARY = (
+        "This session is being continued from a previous conversation that ran out of context. "
+        "The summary below covers the earlier portion of the conversation.\n\n"
+        "<system-reminder>tools</system-reminder>\nSummary:\n"
+        "1. **Primary Request and Intent:**\n   - **Earlier, all done:**\n   - Fix the export hook so progress is right.\n"
+        "2. Key Technical Concepts:\n   - jargon\n"
+        "4. Errors and fixes:\n   - Frame count was off by one; now measured.\n"
+        "6. All user messages:\n   - private words\n"
+        "8. Current Work:\n   I was re-running the export tests after the fix. Then more.\n\n"
+        "If you need specific details from before compaction, read the transcript."
+    )
+
+    def _transcript(self, entries):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        for entry in entries:
+            handle.write(json.dumps(entry) + "\n")
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
+
+    def _compact(self, entries):
+        payload = {"cwd": "/tmp/demo", "source": "compact", "session_id": "s1",
+                   "transcript_path": self._transcript(entries)}
+        doctor = unittest.mock.Mock(returncode=0, stdout="", stderr="")
+        ok = __import__("subprocess").CompletedProcess([], 0, "", "")
+        with patch.object(START, "read_payload", return_value=payload), \
+             patch.object(START, "active_context", return_value=("/tmp/demo", "demo")), \
+             patch.object(START.subprocess, "run", return_value=doctor), \
+             patch.object(START, "record_run", return_value=ok) as record_run, \
+             patch.object(START, "_SUMMARY_WAIT_S", 0), \
+             patch("sys.stdin"), patch("sys.stdout", new_callable=__import__("io").StringIO):
+            self.assertEqual(START.main(), 0)
+        return record_run
+
+    def test_compaction_saves_the_summary_digest(self) -> None:
+        record_run = self._compact([
+            {"type": "user", "isCompactSummary": True, "message": {"content": "old summary"}},
+            {"type": "system", "subtype": "compact_boundary"},
+            {"type": "user", "isCompactSummary": True, "message": {"content": self.SUMMARY}},
+        ])
+        kwargs = record_run.call_args.kwargs
+        self.assertEqual(kwargs["title"], "Compaction: I was re-running the export tests after the fix.")
+        self.assertIn("Fix the export hook", kwargs["summary"])
+        self.assertIn("Errors and fixes: - Frame count was off by one", kwargs["summary"])
+        self.assertIn("Current work:", kwargs["summary"])
+        for left_out in ("private words", "jargon", "system-reminder", "If you need specific"):
+            self.assertNotIn(left_out, kwargs["summary"])
+        self.assertEqual(kwargs["session"], "s1")
+
+    def test_summary_from_an_earlier_compaction_is_not_saved_again(self) -> None:
+        record_run = self._compact([
+            {"type": "user", "isCompactSummary": True, "message": {"content": self.SUMMARY}},
+            {"type": "system", "subtype": "compact_boundary"},
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "check the export"}},
+        ])
+        # No new summary on disk: the thin list of recent prompts is the fallback.
+        self.assertEqual(record_run.call_args.kwargs["title"], "Compaction summary: demo")
+        self.assertIn("check the export", record_run.call_args.kwargs["summary"])
+
+    def test_plain_session_start_saves_nothing(self) -> None:
+        doctor = unittest.mock.Mock(returncode=0, stdout="", stderr="")
+        with patch.object(START, "read_payload", return_value={"cwd": "/tmp/demo", "source": "startup"}), \
+             patch.object(START, "active_context", return_value=("/tmp/demo", "demo")), \
+             patch.object(START.subprocess, "run", return_value=doctor), \
+             patch.object(START, "record_run") as record_run, \
+             patch("sys.stdin"), patch("sys.stdout", new_callable=__import__("io").StringIO):
+            START.main()
+        record_run.assert_not_called()
+
+    def test_precompact_only_marks_the_session(self) -> None:
+        with patch.object(PRE, "read_payload", return_value={"session_id": "s1"}), \
+             patch.object(PRE, "mark_compacted") as mark, patch("sys.stdin"), \
+             patch.object(COMMON.subprocess, "run") as run:
+            self.assertEqual(PRE.main(), 0)
+        mark.assert_called_once_with("s1")
+        run.assert_not_called()
+
+    def test_summary_without_sections_is_kept_whole_but_short(self) -> None:
+        topic, digest = COMMON.digest_compact_summary("Summary: just prose about the work. " * 200)
+        self.assertEqual(topic, "")
+        self.assertLessEqual(len(digest), 3000)
 
 
 class ClaudePrePromptHookTests(unittest.TestCase):

@@ -110,10 +110,10 @@ If you already have hooks configured for these events, append the new hook group
 
 ### What the hooks do
 
-- **SessionStart** (session-start): Validates vault connectivity at session start. Surfaces warnings early if Obsidian is unreachable or the vault is misconfigured.
+- **SessionStart** (session-start): Validates vault connectivity at session start. Surfaces warnings early if Obsidian is unreachable or the vault is misconfigured. After a compaction it also saves the summary Claude Code wrote (request, fixes, findings, pending and current work, about 3,000 characters) as one run note titled after the work in progress; if that summary is not on disk within 3 seconds, it saves the recent prompts instead.
 - **UserPromptSubmit** (pre-prompt): Searches Obsidian for notes relevant to your prompt before Claude answers. Surfaces prior context automatically. It also searches every project and adds one note from another project when that search's top note belongs to another project. With Jev ranking on, that is a second Jev call. Messages from tools or other sessions (background task notices, another session's message, a continued-session summary) are not searched.
 - **Stop** (post-stop): Logs a run note with the prompt (read from the transcript), the final reply, and the files changed. By default only turns that edited files are logged; set `OBMEM_STOP_LOG=all` to log every turn or `OBMEM_STOP_LOG=off` to disable. A turn starts on a typed prompt and also on a message from another session, a background task notice or an idle notice that arrives while the session is idle, so the note pairs each reply with what it answered and lists only that turn's edits. A turn whose `obmem record-run` succeeded is not logged again, and each turn is logged at most once (per-session state in `~/.cache/obmem/stop-hook-seen/`, override with `OBMEM_STOP_STATE`).
-- **PreCompact** (pre-compaction): Saves the recent prompts to Obsidian before context compression. Prevents knowledge loss when conversations hit context limits.
+- **PreCompact** (pre-compaction): Marks the session as compacted, so the prompt hook may bring back the session's own earlier notes. It writes no note: the payload has no summary, and the SessionStart hook saves the real one once compaction is done.
 - **PostToolUse** (post-write/edit): Mirrors Claude Code auto-memory writes (`~/.claude/projects/*/memory/*.md`) to the vault.
 
 All hooks silently no-op when no vault is mapped for the current workspace.
