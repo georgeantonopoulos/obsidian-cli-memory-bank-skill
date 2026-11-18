@@ -1049,9 +1049,11 @@ def _word_root(term: str) -> str:
     word = term.lower()
     candidates: List[str] = []
     for ending in ("ies", "ied", "ing", "ed"):
-        if word.endswith(ending):
+        # "proceed" and "need" end in -eed, which is not a past tense.
+        if word.endswith(ending) and not word.endswith("eed"):
             candidates.append(word[: -len(ending)])
             break
+    tense_root = candidates[0] if candidates else ""
     # "-es" is its own ending only after s, x, z, ch and sh (classes, fixes);
     # elsewhere the e belongs to the word (sources, rules).
     if word.endswith(("sses", "xes", "zes", "ches", "shes")):
@@ -1060,11 +1062,15 @@ def _word_root(term: str) -> str:
         candidates.append(word[:-1])
     if not candidates:
         candidates.append(word)
-    # "copies" -> "cop" is allowed: the y/ies/ied endings keep it specific.
-    minimum = 3 if word.endswith(("ies", "ied")) else 4
-    root = next((c for c in candidates if len(c) >= minimum), word)
+    # A tense ending may leave three letters ("saved" -> "sav", "coding" ->
+    # "cod"): the word was long enough to be specific. A bare plural may not,
+    # or "news" would match "new".
+    root = next((c for c in candidates
+                 if len(c) >= (3 if c == tense_root else 4)), word)
     # A final e or consonant-y belongs to the root's forms (source/sourcing).
-    if (root.endswith("e") or (root.endswith("y") and root[-2:-1] not in "aeiou")) and len(root) >= 5:
+    # Not after a stripped tense ending: "proceed" -> "proce" keeps its e.
+    if (root != tense_root and len(root) >= 5
+            and (root.endswith("e") or (root.endswith("y") and root[-2:-1] not in "aeiou"))):
         root = root[:-1]
     # "stopped" -> "stop": a doubled final consonant comes from the ending.
     if root != word and len(root) >= 4 and root[-1] == root[-2] and root[-1] not in "aeiouls":

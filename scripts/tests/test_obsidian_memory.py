@@ -545,6 +545,17 @@ class ObsidianMemoryTests(unittest.TestCase):
         self.assertEqual(obsidian_memory._word_root("news"), "news")
         for exact in ("AI", "PR", "MIT", "C++", "v1.5", "env"):
             self.assertEqual(obsidian_memory._word_forms_regex(exact), "", exact)
+        cases = {
+            "proceed": "proceed proceeds proceeding",
+            "saved": "save saves saved saving",
+            "coding": "code coded coding",
+            "added": "add adds added adding",
+        }
+        for term, text in cases.items():
+            pattern = obsidian_memory._compile_term_patterns([term])[0]
+            self.assertEqual(pattern.findall(text), text.split(), term)
+        pattern = obsidian_memory._compile_term_patterns(["news"])[0]
+        self.assertEqual(pattern.findall("new news"), ["news"])
         pattern = obsidian_memory._compile_term_patterns(["decided"])[0]
         self.assertEqual(pattern.findall("decide decides decided deciding decidua"),
                          ["decide", "decides", "decided", "deciding"])
