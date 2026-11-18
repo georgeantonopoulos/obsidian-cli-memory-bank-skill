@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Auto-saved notes are named after what was done.** When a turn was started
+  by a message from another session or a subagent, a background task notice,
+  the summary that continues a compacted session, or a labelled office prompt
+  ("[Office: ...]"), the Stop hook now titles the note with the first sentence
+  of the reply instead of the wrapper's opening words ("This session is being
+  continued...", "Message from X: [Subagent hand-back]..."). 211 of the 328
+  auto-saved notes in the live vault were started that way. Typed prompts keep
+  their own title, and a reply too short to say anything ("(quiet)") keeps the
+  old one. `<system-reminder>` blocks are dropped from the saved prompt.
+
 - **Fewer Jev calls.** The prompt hook no longer searches memory for messages
   that come from tools or other sessions instead of the user (background task
   notices, messages from another Claude session, the summary that continues a
