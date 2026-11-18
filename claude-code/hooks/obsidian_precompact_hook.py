@@ -16,14 +16,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
-from obsidian_hook_common import mark_compacted, read_payload  # noqa: E402
+from obsidian_hook_common import claim_summary, compact_summary, mark_compacted, read_payload  # noqa: E402
 
 
 def main() -> int:
     payload = read_payload(sys.stdin.read())
     if payload is None:
         return 0
-    mark_compacted(str(payload.get("session_id") or ""))
+    session_id = str(payload.get("session_id") or "")
+    mark_compacted(session_id)
+    # The summary on disk now is the previous compaction's: claim it so the
+    # SessionStart hook waits for the new one instead of saving this again.
+    path = payload.get("transcript_path")
+    if isinstance(path, str):
+        claim_summary(session_id, compact_summary(path))
     return 0
 
 

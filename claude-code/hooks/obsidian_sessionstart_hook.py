@@ -16,6 +16,7 @@ Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import time
@@ -26,7 +27,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
     capture_directive,
+    claim_summary,
     compact_summary,
+    compacted_at,
     digest_compact_summary,
     read_payload,
     recent_prompts,
@@ -34,8 +37,10 @@ from obsidian_hook_common import (  # noqa: E402
     truncate,
 )
 
-# The summary entry is written around the time this hook starts: look a few times.
-_SUMMARY_WAIT_S = 3.0
+# The summary entry is written around the time this hook starts. The note is
+# saved by a detached child process, so the wait never delays the session.
+_SUMMARY_WAIT_S = 20.0
+_BACKGROUND_FLAG = "--save-compaction"
 
 # Mandatory: the skill's recall and capture rules must be in context from the first turn.
 LOAD_SKILL_DIRECTIVE = (
@@ -49,13 +54,27 @@ def save_compaction_note(payload: dict, workspace: str, project: str) -> None:
     path = payload.get("transcript_path")
     if not isinstance(path, str):
         return
-    text = compact_summary(path)
+    session = str(payload.get("session_id") or "")
+    # Wait for a summary no hook has claimed yet: an older one belongs to a
+    # compaction that already has its note, or is being saved by another hook.
     deadline = time.monotonic() + _SUMMARY_WAIT_S
-    while not text and time.monotonic() < deadline:
-        time.sleep(0.25)
+    while True:
         text = compact_summary(path)
+        if text and claim_summary(session, text):
+            break
+        if time.monotonic() >= deadline:
+            text = ""
+            break
+        time.sleep(0.25)
+    # One note per compaction, whether from the summary or the fallback below.
+    marker = compacted_at(session)
+    if marker and not claim_summary(session, f"note-{marker}"):
+        return
     topic, digest = digest_compact_summary(text) if text else ("", "")
     if not digest:
+        # No new summary (or no PreCompact marker to tell compactions apart): keep the latest requests.
+        if not marker:
+            return
         prompts = recent_prompts(path, limit=5)
         if not prompts:
             return
@@ -67,10 +86,27 @@ def save_compaction_note(payload: dict, workspace: str, project: str) -> None:
         summary=digest,
         actions="Saved by the SessionStart hook after context compaction.",
         tags="claude,auto-log,compaction",
-        session=str(payload.get("session_id") or ""),
+        session=session,
     )
     if result.returncode != 0:
         print(f"[obsidian-memory] compaction note failed (non-blocking): {result.stderr[:200]}", file=sys.stderr)
+
+
+def start_background_save(payload: dict, workspace: str, project: str) -> None:
+    """Save the compaction note in a detached process so the session starts at once."""
+    child = subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), _BACKGROUND_FLAG],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    child.stdin.write(json.dumps({"payload": payload, "workspace": workspace, "project": project}).encode("utf-8"))
+    child.stdin.close()
+
+
+def background_main() -> int:
+    job = json.loads(sys.stdin.read())
+    save_compaction_note(job["payload"], job["workspace"], job["project"])
+    return 0
 
 
 def main() -> int:
@@ -106,11 +142,16 @@ def main() -> int:
     print(capture_directive(project))
     if payload.get("source") == "compact" and returncode == 0:
         try:
-            save_compaction_note(payload, workspace, project)
+            start_background_save(payload, workspace, project)
         except Exception:  # never let the note break the session start
             pass
     return 0
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == [_BACKGROUND_FLAG]:
+        try:
+            sys.exit(background_main())
+        except Exception:
+            sys.exit(0)
     sys.exit(main())

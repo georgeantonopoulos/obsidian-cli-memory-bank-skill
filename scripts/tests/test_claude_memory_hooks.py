@@ -76,9 +76,17 @@ class ClaudeSessionStartHookTests(unittest.TestCase):
         self.addCleanup(os.unlink, handle.name)
         return handle.name
 
-    def _compact(self, entries):
+    def setUp(self) -> None:
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        env = patch.dict(os.environ, {"OBMEM_STOP_STATE": state.name})
+        env.start()
+        self.addCleanup(env.stop)
+        COMMON.mark_compacted("s1")  # what PreCompact leaves behind
+
+    def _compact(self, entries, path=None):
         payload = {"cwd": "/tmp/demo", "source": "compact", "session_id": "s1",
-                   "transcript_path": self._transcript(entries)}
+                   "transcript_path": path or self._transcript(entries)}
         doctor = unittest.mock.Mock(returncode=0, stdout="", stderr="")
         ok = __import__("subprocess").CompletedProcess([], 0, "", "")
         with patch.object(START, "read_payload", return_value=payload), \
@@ -86,6 +94,7 @@ class ClaudeSessionStartHookTests(unittest.TestCase):
              patch.object(START.subprocess, "run", return_value=doctor), \
              patch.object(START, "record_run", return_value=ok) as record_run, \
              patch.object(START, "_SUMMARY_WAIT_S", 0), \
+             patch.object(START, "start_background_save", START.save_compaction_note), \
              patch("sys.stdin"), patch("sys.stdout", new_callable=__import__("io").StringIO):
             self.assertEqual(START.main(), 0)
         return record_run
@@ -114,6 +123,55 @@ class ClaudeSessionStartHookTests(unittest.TestCase):
         # No new summary on disk: the thin list of recent prompts is the fallback.
         self.assertEqual(record_run.call_args.kwargs["title"], "Compaction summary: demo")
         self.assertIn("check the export", record_run.call_args.kwargs["summary"])
+
+    def test_previous_summary_is_not_saved_while_the_new_one_is_not_written(self) -> None:
+        # PreCompact runs while the last summary on disk is the previous compaction's;
+        # SessionStart may start before the new boundary and summary are written.
+        path = self._transcript([
+            {"type": "system", "subtype": "compact_boundary"},
+            {"type": "user", "isCompactSummary": True, "message": {"content": self.SUMMARY}},
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "check the export"}},
+        ])
+        with patch.object(PRE, "read_payload", return_value={"session_id": "s1", "transcript_path": path}), \
+             patch("sys.stdin"):
+            PRE.main()
+        record_run = self._compact(None, path=path)
+        self.assertEqual(record_run.call_args.kwargs["title"], "Compaction summary: demo")
+        self.assertNotIn("Frame count", record_run.call_args.kwargs["summary"])
+
+    def test_two_compact_starts_save_one_note(self) -> None:
+        path = self._transcript([
+            {"type": "system", "subtype": "compact_boundary"},
+            {"type": "user", "isCompactSummary": True, "message": {"content": self.SUMMARY}},
+        ])
+        first, second = self._compact(None, path=path), self._compact(None, path=path)
+        self.assertEqual(first.call_count + second.call_count, 1)
+
+    def test_compaction_note_is_saved_by_a_detached_process(self) -> None:
+        payload = {"cwd": "/tmp/demo", "source": "compact", "session_id": "s1", "transcript_path": "/x.jsonl"}
+        doctor = unittest.mock.Mock(returncode=0, stdout="", stderr="")
+        with patch.object(START, "read_payload", return_value=payload), \
+             patch.object(START, "active_context", return_value=("/tmp/demo", "demo")), \
+             patch.object(START.subprocess, "run", return_value=doctor), \
+             patch.object(START.subprocess, "Popen") as popen, \
+             patch.object(START, "record_run") as record_run, \
+             patch("sys.stdin"), patch("sys.stdout", new_callable=__import__("io").StringIO):
+            START.main()
+        record_run.assert_not_called()
+        self.assertEqual(popen.call_args.args[0][-1], "--save-compaction")
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        sent = json.loads(popen.return_value.stdin.write.call_args.args[0])
+        self.assertEqual(sent["project"], "demo")
+
+    def test_numbered_items_inside_a_section_are_not_headers(self) -> None:
+        text = ("Summary:\n1. Primary Request and Intent: Fix the export hook properly.\n"
+                "   1. Errors in the build: first item\n   2. Current Work: nested item\n"
+                "4. **Errors and fixes:**\n   - none\n8. Current Work:\n   Re-running the export tests now.\n")
+        topic, digest = COMMON.digest_compact_summary(text)
+        self.assertEqual(topic, "Re-running the export tests now.")
+        self.assertIn("Primary request and intent: Fix the export hook properly.", digest)
+        self.assertIn("1. Errors in the build: first item", digest)
+        self.assertIn("Errors and fixes: - none", digest)
 
     def test_plain_session_start_saves_nothing(self) -> None:
         doctor = unittest.mock.Mock(returncode=0, stdout="", stderr="")

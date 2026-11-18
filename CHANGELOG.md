@@ -9,9 +9,13 @@
   the summary Claude Code itself wrote: the request, errors and fixes, findings,
   pending work and current work (about 3,000 characters; the user's own
   messages and the concept and file lists are left out). The note is titled
-  "Compaction: <what the session was doing>". Only a summary written after the
-  latest compaction is used; if none is on disk within 3 seconds, the recent
-  prompts are saved as before. PreCompact now only marks the session.
+  "Compaction: <what the session was doing>". The note is saved by a detached
+  background process, so session start does not wait for it (0.2 s in a real
+  run). Each compaction gets one note: PreCompact marks the session and claims
+  the summary already on disk, so an earlier compaction's summary is never
+  saved again, and a second start after the same compaction saves nothing. If
+  no new summary appears within 20 seconds, the recent prompts are saved as
+  before.
 
 - **Fewer Jev calls.** The prompt hook no longer searches memory for messages
   that come from tools or other sessions instead of the user (background task
