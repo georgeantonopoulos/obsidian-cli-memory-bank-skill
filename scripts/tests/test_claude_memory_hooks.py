@@ -849,6 +849,14 @@ class StopHookTests(unittest.TestCase):
         self.assertEqual(COMMON.reply_title(""), "")
         self.assertFalse(COMMON.is_wrapper_prompt("fix the [Office: x] label parsing"))
         self.assertFalse(COMMON.is_wrapper_prompt("Message from the CEO needs a reply draft"))
+        self.assertFalse(COMMON.is_wrapper_prompt("[Bug: login fails on Safari] please fix"))
+        self.assertTrue(COMMON.is_wrapper_prompt("[Scheduled: Whiteboard tidy] The office..."))
+        self.assertEqual(COMMON.reply_title("```python\nprint('a long line of code here')\n```\nThe parser now keeps decimals."),
+                         "The parser now keeps decimals.")
+        self.assertEqual(COMMON.reply_title("| File | Change |\n|---|---|\nThe table above lists every change."),
+                         "The table above lists every change.")
+        self.assertEqual(COMMON.reply_title("--no-verify skips the hook entirely now."), "no-verify skips the hook entirely now.")
+        self.assertEqual(COMMON.reply_title("*Done* and pushed to the branch."), "Done and pushed to the branch.")
 
 
 class CaptureIgnoreTests(StopHookTests.__base__):

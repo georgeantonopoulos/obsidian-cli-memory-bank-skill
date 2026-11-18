@@ -89,10 +89,11 @@ _WRAPPER_PROMPT_RES = (
     re.compile(r"Background task:"),
     re.compile(r"This session is being continued from a previous conversation", re.IGNORECASE),
     re.compile(re.escape("[Cross-session idle notice]")),
-    re.compile(r"\[[A-Z][A-Za-z]*: [^\]]{1,60}\]"),
+    # Only the office's own labels: "[Bug: ...]" typed by the user is a real prompt.
+    re.compile(r"\[(?:Office|Scheduled)\b[^\]]{0,60}\]"),
 )
 _REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
-_MARKDOWN_RE = re.compile(r"\*\*|__|`|^\s*(?:[-*+]|\d+[.)]|#+)\s+", re.MULTILINE)
+_MARKDOWN_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|#+|>)\s+|\*+|__|`", re.MULTILINE)
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 _MIN_REPLY_TITLE = 15
 
@@ -112,8 +113,16 @@ def reply_title(reply: str) -> str:
     Replies lead with the outcome, so their first sentence names what the turn
     did. A very short opener ("Done.") takes the next sentence along.
     """
+    in_code = False
     for line in strip_reminders(reply).splitlines():
-        text = " ".join(_MARKDOWN_RE.sub("", line).split()).rstrip(":")
+        bare = line.strip()
+        if bare.startswith(("```", "~~~")):
+            in_code = not in_code
+            continue
+        if in_code or bare.startswith("|"):  # code and table rows are not sentences
+            continue
+        # A leading "-" would read as an option to record-run's --title and lose the note.
+        text = " ".join(_MARKDOWN_RE.sub("", line).split()).rstrip(":").lstrip("-").strip()
         if not text:
             continue
         sentences = _SENTENCE_END_RE.split(text)
