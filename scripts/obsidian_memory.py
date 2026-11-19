@@ -348,6 +348,7 @@ class NotePaths:
     compactions_dir: Path
     archived_runs_dir: Path
     archived_topics_dir: Path
+    archived_compactions_dir: Path
     runs_dir: Path
 
 
@@ -372,6 +373,7 @@ def build_note_paths(project_name: str) -> NotePaths:
     compactions_dir = project_dir / "Compactions"
     archived_runs_dir = project_dir / "Archive" / "Runs"
     archived_topics_dir = project_dir / "Archive" / "Topics"
+    archived_compactions_dir = project_dir / "Archive" / "Compactions"
     runs_dir = project_dir / "Runs"
     return NotePaths(
         project_slug=project_slug,
@@ -390,6 +392,7 @@ def build_note_paths(project_name: str) -> NotePaths:
         compactions_dir=compactions_dir,
         archived_runs_dir=archived_runs_dir,
         archived_topics_dir=archived_topics_dir,
+        archived_compactions_dir=archived_compactions_dir,
         runs_dir=runs_dir,
     )
 
@@ -2613,6 +2616,47 @@ def _outside_code(body: str, replace) -> str:
     return "".join(out)
 
 
+def _archive_old_compactions(
+    cli: ObsidianCLI,
+    paths: NotePaths,
+    compaction_path: Path,
+    moved: Optional[List[Tuple[Path, Path]]] = None,
+) -> int:
+    """Move every compaction report but the newest to Archive/Compactions.
+
+    Each report copies the topic takeaways of its day, so older ones repeat
+    what Current Memory and the topics now hold and crowd search results.
+    They stay in the archive as evidence; each (source, destination) pair is
+    added to ``moved`` so links can follow.
+    """
+    reports_dir = cli.vault_path / paths.compactions_dir
+    if not reports_dir.exists():
+        return 0
+    archived = 0
+    for report_abs in sorted(reports_dir.glob("*.md")):
+        source = report_abs.relative_to(cli.vault_path)
+        if source == compaction_path:
+            continue
+        dest = paths.archived_compactions_dir / report_abs.name
+        suffix = 2
+        while (cli.vault_path / dest).exists():
+            dest = paths.archived_compactions_dir / f"{report_abs.stem}-{suffix}.md"
+            suffix += 1
+        if moved is not None:
+            moved.append((source, dest))
+        archived += 1
+        if cli.dry_run:
+            continue
+        body = report_abs.read_text(encoding="utf-8")
+        body = body.rstrip() + "\n\n## Archived Compaction\n"
+        body += f"- Superseded by {_wikilink(compaction_path)}.\n"
+        dest_abs = cli.vault_path / dest
+        dest_abs.parent.mkdir(parents=True, exist_ok=True)
+        dest_abs.write_text(body, encoding="utf-8")
+        report_abs.unlink()
+    return archived
+
+
 def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tuple[int, int]:
     """Follow archived runs and retired topics with every path link that named them.
 
@@ -2775,9 +2819,12 @@ def _plan_archive_destinations(
 
 
 def _unique_compaction_path(vault_path: Path, desired: Path) -> Path:
+    """A report name not used live or in Archive/Compactions, so bare-name
+    links never point at two reports."""
+    archived = desired.parent.parent / "Archive" / "Compactions"
     candidate = desired
     suffix = 2
-    while (vault_path / candidate).exists():
+    while (vault_path / candidate).exists() or (vault_path / archived / candidate.name).exists():
         candidate = desired.with_name(f"{desired.stem}-{suffix}{desired.suffix}")
         suffix += 1
     return candidate
@@ -3356,6 +3403,25 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
     historical_runs = _collect_archived_runs(vault_path, paths)
     if not batch_runs and not (getattr(args, "include_archive", False) and historical_runs):
         print(f"No new run notes found in {paths.runs_dir.as_posix()}.")
+        # Still retire reports an older obmem left behind next to the newest one.
+        # "-compact-p-2" was written after "-compact-p" in the same minute.
+        reports = sorted(
+            (vault_path / paths.compactions_dir).glob("*.md"),
+            key=lambda report: (report.stem[:15], int(m.group(1)) if (m := re.search(r"-(\d+)$", report.stem[16:])) else 1),
+        ) if (vault_path / paths.compactions_dir).exists() else []
+        if len(reports) > 1:
+            moved_reports: List[Tuple[Path, Path]] = []
+            # Current Memory names the report it was built from; keep that one.
+            newest = reports[-1].relative_to(vault_path)
+            current_abs = vault_path / paths.current_memory
+            named = re.search(r"^Latest compaction: \[\[([^\]|#]+)", current_abs.read_text(encoding="utf-8"), re.M) \
+                if current_abs.exists() else None
+            if named and (vault_path / f"{named.group(1)}.md") in reports:
+                newest = Path(f"{named.group(1)}.md")
+            count = _archive_old_compactions(cli, paths, newest, moved_reports)
+            repointed, notes = _repoint_moved_links(cli, moved_reports)
+            print(f"Archived older compaction reports: {count} into {paths.archived_compactions_dir.as_posix()}; "
+                  f"links moved: {repointed} in {notes} note(s)")
         return
     runs = _merge_run_history(historical_runs, batch_runs)
 
@@ -3402,6 +3468,9 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
     )
     if stale_topics:
         print(f"Archived stale topic notes: {stale_topics} into {paths.archived_topics_dir.as_posix()}")
+    old_reports = _archive_old_compactions(cli, paths, compaction_path, moved_topics)
+    if old_reports:
+        print(f"Archived older compaction reports: {old_reports} into {paths.archived_compactions_dir.as_posix()}")
 
     # Intentional neural-network edges: distilled memory is densely linked,
     # archived source notes are sparse evidence.
@@ -3453,7 +3522,7 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
         _append_unique_line(cli, paths.decisions, f"- {_wikilink(compaction_path)}: Prefer {_wikilink(paths.current_memory)} {retrieval_rule}")
     print(f"Pruned hub/index lines pointing at compacted runs: {pruned}")
     print(f"Register links moved to archived runs: {retargeted}")
-    print(f"Other links moved to archived runs and topics: {repointed} in {repointed_notes} note(s)")
+    print(f"Other links moved to archived runs, topics and reports: {repointed} in {repointed_notes} note(s)")
 
     active_runs = len(list((vault_path / paths.runs_dir).glob("*.md"))) if (vault_path / paths.runs_dir).exists() else 0
     archived_runs = len(list((vault_path / paths.archived_runs_dir).glob("*.md"))) if (vault_path / paths.archived_runs_dir).exists() else 0

@@ -1313,7 +1313,8 @@ class CompactionTests(unittest.TestCase):
                 self.assertTrue((vault / paths.topics_dir / "Export.md").exists())
                 self.assertTrue((vault / paths.topics_dir / "Permissions.md").exists())
                 self.assertEqual(len(list((vault / paths.archived_runs_dir).glob("*.md"))), 2)
-                self.assertEqual(len(list((vault / paths.compactions_dir).glob("*.md"))), 2)
+                self.assertEqual(len(list((vault / paths.compactions_dir).glob("*.md"))), 1)
+                self.assertEqual(len(list((vault / paths.archived_compactions_dir).glob("*.md"))), 1)
         finally:
             if original_state_env is None:
                 os.environ.pop("OBMEM_STATE_FILE", None)
@@ -1560,7 +1561,85 @@ class CompactionKeepsLinksTests(unittest.TestCase):
             self.assertFalse(any((vault / paths.runs_dir).glob("*.md")), "runs were archived")
             self.assertFalse((vault / paths.topics_dir / "Video Export.md").exists(), "stale topic retired")
             self.assertIn("0 unresolved link target", cli.audit_unresolved(verbose=True))
-            self.assertIn("Other links moved to archived runs and topics: 4", out.getvalue())
+            self.assertIn("Other links moved to archived runs, topics and reports: 4", out.getvalue())
+
+
+    def test_older_compaction_reports_move_to_the_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            (vault / paths.runs_dir).mkdir(parents=True)
+            run = '---\ntype: "run"\nproject: "Demo"\ntags:\n  - "export"\n---\n\n# {t}\n\n## Summary\n{s}\n'
+            cli = ObsidianCLI(vault, False)
+            args = build_parser().parse_args(["compact-project", "--project", "Demo"])
+            first = None
+            for day, (title, summary) in enumerate([
+                ("Fix export", "Export now writes atomically to the output folder."),
+                ("Cache reader", "The cache reader keeps file handles closed after reads."),
+            ], start=1):
+                (vault / paths.runs_dir / f"2026-11-0{day}-1000-run-{day}.md").write_text(
+                    run.format(t=title, s=summary))
+                with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    cmd_compact_project(args)
+                if first is None:
+                    first = next((vault / paths.compactions_dir).glob("*.md")).stem
+            self.assertIn("Archived older compaction reports: 1", out.getvalue())
+            live = [p.stem for p in (vault / paths.compactions_dir).glob("*.md")]
+            self.assertEqual(len(live), 1)
+            self.assertNotEqual(live[0], first)
+            archived = vault / paths.archived_compactions_dir / f"{first}.md"
+            self.assertTrue(archived.exists())
+            self.assertIn(f"Superseded by [[{paths.compactions_dir.as_posix()}/{live[0]}|", archived.read_text())
+            run_log = (vault / paths.run_log).read_text()
+            self.assertIn(f"[[{paths.archived_compactions_dir.as_posix()}/{first}|", run_log)
+            self.assertIn("0 unresolved link target", cli.audit_unresolved(verbose=True))
+
+
+    def test_reports_left_by_older_obmem_are_retired_without_new_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            reports = vault / paths.compactions_dir
+            reports.mkdir(parents=True)
+            names = ["2026-05-01-0900-compact-demo", "2026-05-01-0900-compact-demo-2", "2026-06-01-0900-compact-demo"]
+            for name in names:
+                (reports / f"{name}.md").write_text(f"# {name}\n")
+            keep = names[1]
+            (vault / paths.current_memory).write_text(
+                f"# Current Memory\n\nLatest compaction: [[{paths.compactions_dir.as_posix()}/{keep}|{keep}]]\n")
+            (vault / paths.run_log).write_text(
+                "".join(f"- [[{paths.compactions_dir.as_posix()}/{n}|{n}]]: Compacted.\n" for n in names))
+            cli = ObsidianCLI(vault, False)
+            args = build_parser().parse_args(["compact-project", "--project", "Demo"])
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                cmd_compact_project(args)
+            self.assertIn("Archived older compaction reports: 2", out.getvalue())
+            self.assertEqual([p.stem for p in reports.glob("*.md")], [keep])
+            self.assertIn("0 unresolved link target", cli.audit_unresolved(verbose=True))
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                cmd_compact_project(args)
+            self.assertNotIn("Archived older", out.getvalue())
+
+
+    def test_without_current_memory_the_latest_same_minute_report_stays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            reports = vault / paths.compactions_dir
+            reports.mkdir(parents=True)
+            for name in ["2026-05-01-0900-compact-demo", "2026-05-01-0900-compact-demo-2"]:
+                (reports / f"{name}.md").write_text(f"# {name}\n")
+            args = build_parser().parse_args(["compact-project", "--project", "Demo"])
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                cmd_compact_project(args)
+            self.assertEqual([p.stem for p in reports.glob("*.md")], ["2026-05-01-0900-compact-demo-2"])
+            from scripts.obsidian_memory import _unique_compaction_path
+            self.assertEqual(_unique_compaction_path(vault, paths.compactions_dir / "2026-05-01-0900-compact-demo.md").name,
+                             "2026-05-01-0900-compact-demo-3.md")
 
 
 class RepointMovedLinksTests(unittest.TestCase):
