@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -13,6 +14,8 @@ from unittest.mock import MagicMock, patch
 from scripts import obsidian_memory
 
 from scripts.obsidian_memory import (
+    is_template_hub,
+    prune_template_hubs,
     DEFAULT_AUDIT_EVERY_RUNS,
     PROJECTS_INDEX_PATH,
     _append_to_related_section,
@@ -263,28 +266,111 @@ class ObsidianMemoryTests(unittest.TestCase):
         notes = build_seed_notes("Sequency", paths)
         home = notes[paths.home]
         moc = notes[paths.moc]
-        architecture = notes[paths.architecture]
-        roadmap = notes[paths.roadmap]
         self.assertIn("[[Project Memory/sequency/MOC|MOC]]", home)
         self.assertIn("[[Project Memory/sequency/Sequency Home|Sequency Home]]", moc)
-        self.assertIn("[[Project Memory/sequency/Architecture|Architecture]]", home)
-        self.assertIn("[[Project Memory/sequency/Roadmap|Roadmap]]", home)
         self.assertIn("[[Project Memory/sequency/Current Memory|Current Memory]]", home)
-        self.assertIn("[[Project Memory/sequency/Architecture|Architecture]]", moc)
         self.assertIn("[[Project Memory/sequency/Current Memory|Current Memory]]", moc)
-        self.assertIn("[[Project Memory/sequency/MOC|MOC]]", architecture)
-        self.assertIn("[[Project Memory/sequency/Debugging Notes|Debugging Notes]]", architecture)
-        self.assertIn("[[Project Memory/sequency/Release Notes|Release Notes]]", roadmap)
+        self.assertIn("[[Project Memory/sequency/Decisions|Decisions]]", moc)
+        # Every link in a seed note points at another seed note: a new project has no broken links.
+        stems = {path.stem for path in notes}
+        for body in notes.values():
+            for target in re.findall(r"\[\[([^\]|]+)", body):
+                self.assertIn(Path(target).name, stems, target)
 
-    def test_seed_notes_create_topic_note_files(self) -> None:
+    def test_seed_notes_skip_hubs_nothing_writes_to(self) -> None:
         paths = build_note_paths("Sequency")
         notes = build_seed_notes("Sequency", paths)
-        self.assertIn(paths.architecture, notes)
-        self.assertIn(paths.roadmap, notes)
-        self.assertIn(paths.debugging_notes, notes)
-        self.assertIn(paths.release_notes, notes)
+        for unused in (paths.architecture, paths.roadmap, paths.debugging_notes, paths.release_notes):
+            self.assertNotIn(unused, notes)
         self.assertIn(paths.current_memory, notes)
-        self.assertEqual(len(notes), 10)
+        self.assertEqual(len(notes), 6)
+
+    def _hub_project(self, vault: Path) -> Path:
+        project = vault / "Project Memory" / "demo"
+        project.mkdir(parents=True)
+        link = lambda name: f"- [[Project Memory/demo/{name}|{name}]]"
+        (project / "demo Home.md").write_text(
+            "---\ntype: x\n---\n\n# demo Home\n\n## Knowledge Map\n"
+            + "\n".join(link(n) for n in ("MOC", "Architecture", "Roadmap", "Debugging Notes")) + "\n", encoding="utf-8")
+        (project / "MOC.md").write_text("# MOC\n\n## Core Topics\n" + link("Architecture") + "\nSee [[Project Memory/demo/Roadmap|Roadmap]] for plans.\n", encoding="utf-8")
+        template = ("---\ntype: roadmap\n---\n\n# Roadmap\n\nParent note: [[Project Memory/demo/demo Home|demo Home]]\n"
+                    "MOC: [[Project Memory/demo/MOC|MOC]]\n\n## Current Priorities\n"
+                    "- Track near-term milestones and larger follow-up work.\n\n## Linked Context\n" + link("Architecture") + "\n")
+        (project / "Roadmap.md").write_text(template, encoding="utf-8")
+        (project / "Architecture.md").write_text(template.replace("Roadmap", "Architecture"), encoding="utf-8")
+        (project / "Debugging Notes.md").write_text(template + "\n- Export crash came from a stale cache.\n", encoding="utf-8")
+        return project
+
+    def test_prune_hubs_dry_run_changes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            before = {p.name: p.read_text(encoding="utf-8") for p in project.iterdir()}
+            removed, kept = prune_template_hubs(vault, [project], apply=False)
+            self.assertEqual([p.name for p in removed], ["Architecture.md"])
+            self.assertEqual(sorted(p.name for p in kept), ["Debugging Notes.md", "Roadmap.md"])
+            self.assertEqual(before, {p.name: p.read_text(encoding="utf-8") for p in project.iterdir()})
+
+    def test_prune_hubs_removes_templates_and_their_link_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            prune_template_hubs(vault, [project], apply=True)
+            self.assertFalse((project / "Architecture.md").exists())
+            # MOC names the Roadmap in a sentence, so it stays and that link still works.
+            self.assertTrue((project / "Roadmap.md").exists())
+            home = (project / "demo Home.md").read_text(encoding="utf-8")
+            self.assertNotIn("Architecture", home)
+            self.assertIn("[[Project Memory/demo/Debugging Notes|Debugging Notes]]", home)
+            self.assertIn("[[Project Memory/demo/MOC|MOC]]", home)
+            moc = (project / "MOC.md").read_text(encoding="utf-8")
+            self.assertNotIn("- [[Project Memory/demo/Architecture", moc)
+            self.assertIn("See [[Project Memory/demo/Roadmap|Roadmap]] for plans.", moc)
+            self.assertIn("[[Project Memory/demo/Roadmap|Roadmap]]", home)
+            kept = (project / "Debugging Notes.md").read_text(encoding="utf-8")
+            self.assertIn("stale cache", kept)
+            self.assertNotIn("Architecture", kept)
+
+    def test_template_hub_with_related_links_is_kept(self) -> None:
+        text = "# Architecture\n\n## Related\n\n- [[Project Memory/demo/Runs/x|x]] — Read the source files.\n"
+        self.assertFalse(is_template_hub(text))
+
+    def test_prune_hubs_keeps_hub_linked_from_another_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            other = vault / "Project Memory" / "other"
+            other.mkdir()
+            (other / "MOC.md").write_text("- [[Project Memory/demo/Architecture|Architecture]]\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual(removed, [])
+            self.assertTrue((project / "Architecture.md").exists())
+
+    def test_prune_hubs_keeps_link_line_with_extra_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            moc = project / "MOC.md"
+            moc.write_text(moc.read_text(encoding="utf-8") + "- [[architecture]] - ship in Q3\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual(removed, [])
+            self.assertIn("- [[architecture]] - ship in Q3", moc.read_text(encoding="utf-8"))
+
+    def test_template_hub_with_curated_link_list_is_kept(self) -> None:
+        self.assertTrue(is_template_hub("# Roadmap\n\n## Linked Context\n- [[Project Memory/demo/MOC|MOC]]\n"))
+        self.assertFalse(is_template_hub("# Roadmap\n\n## Linked Context\n- [[Project Memory/demo/Export Pipeline]]\n"))
+        self.assertFalse(is_template_hub("# Roadmap\n\n## Notes\n"))
+
+    def test_prune_hubs_skips_unreadable_and_linked_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            (project / "Binary.md").write_bytes(b"\xff\xfe [[odd]]\n- [[Architecture]]\n")
+            (project / "Release Notes.md").symlink_to(project / "Architecture.md")
+            (project / "Folder.md").mkdir()
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual([p.name for p in removed], ["Architecture.md"])
+            self.assertEqual((project / "Binary.md").read_bytes(), b"\xff\xfe [[odd]]\n")
 
     def test_contains_cli_error(self) -> None:
         self.assertTrue(_contains_cli_error("Error: failed to open file"))

@@ -25,7 +25,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -734,10 +734,6 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
             f"- [[{paths.decisions.stem}]]",
             f"- [[{paths.questions.stem}]]",
             f"- [[{paths.run_log.stem}]]",
-            f"- [[{paths.architecture.stem}]]",
-            f"- [[{paths.roadmap.stem}]]",
-            f"- [[{paths.debugging_notes.stem}]]",
-            f"- [[{paths.release_notes.stem}]]",
             "",
             "## Retrieval Cues",
             "- Add stable keywords for high-value searches.",
@@ -758,10 +754,6 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
             "",
             "## Core Topics",
             f"- [[{paths.current_memory.stem}]]",
-            "- [[Architecture]]",
-            "- [[Roadmap]]",
-            "- [[Debugging Notes]]",
-            "- [[Release Notes]]",
             "",
             "## Working Sets",
             f"- [[{paths.decisions.stem}]]",
@@ -824,98 +816,6 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
         ]
     )
 
-    architecture = "\n".join(
-        [
-            build_frontmatter(
-                note_type="architecture",
-                project=project_name,
-                tags=["architecture", paths.project_slug],
-            ),
-            "",
-            f"# {paths.architecture.stem}",
-            "",
-            f"Parent note: [[{project_home_title}]]",
-            f"MOC: [[{paths.moc.stem}]]",
-            "",
-            "## Current Shape",
-            "- Capture the key systems, boundaries, and integration points.",
-            "",
-            "## Linked Context",
-            f"- [[{paths.roadmap.stem}]]",
-            f"- [[{paths.debugging_notes.stem}]]",
-            f"- [[{paths.release_notes.stem}]]",
-        ]
-    )
-
-    roadmap = "\n".join(
-        [
-            build_frontmatter(
-                note_type="roadmap",
-                project=project_name,
-                tags=["roadmap", paths.project_slug],
-            ),
-            "",
-            f"# {paths.roadmap.stem}",
-            "",
-            f"Parent note: [[{project_home_title}]]",
-            f"MOC: [[{paths.moc.stem}]]",
-            "",
-            "## Current Priorities",
-            "- Track near-term milestones and larger follow-up work.",
-            "",
-            "## Linked Context",
-            f"- [[{paths.architecture.stem}]]",
-            f"- [[{paths.questions.stem}]]",
-            f"- [[{paths.release_notes.stem}]]",
-        ]
-    )
-
-    debugging_notes = "\n".join(
-        [
-            build_frontmatter(
-                note_type="debugging-notes",
-                project=project_name,
-                tags=["debugging", paths.project_slug],
-            ),
-            "",
-            f"# {paths.debugging_notes.stem}",
-            "",
-            f"Parent note: [[{project_home_title}]]",
-            f"MOC: [[{paths.moc.stem}]]",
-            "",
-            "## Current Investigations",
-            "- Capture active failures, root-cause notes, and reproduction details.",
-            "",
-            "## Linked Context",
-            f"- [[{paths.architecture.stem}]]",
-            f"- [[{paths.questions.stem}]]",
-            f"- [[{paths.run_log.stem}]]",
-        ]
-    )
-
-    release_notes = "\n".join(
-        [
-            build_frontmatter(
-                note_type="release-notes",
-                project=project_name,
-                tags=["release-notes", paths.project_slug],
-            ),
-            "",
-            f"# {paths.release_notes.stem}",
-            "",
-            f"Parent note: [[{project_home_title}]]",
-            f"MOC: [[{paths.moc.stem}]]",
-            "",
-            "## Shipped Changes",
-            "- Summarize notable releases, migrations, and rollout concerns.",
-            "",
-            "## Linked Context",
-            f"- [[{paths.roadmap.stem}]]",
-            f"- [[{paths.architecture.stem}]]",
-            f"- [[{paths.run_log.stem}]]",
-        ]
-    )
-
     current_memory = "\n".join(
         [
             build_frontmatter(
@@ -946,10 +846,6 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
         paths.run_log: run_log,
         paths.decisions: decisions,
         paths.questions: questions,
-        paths.architecture: architecture,
-        paths.roadmap: roadmap,
-        paths.debugging_notes: debugging_notes,
-        paths.release_notes: release_notes,
         paths.current_memory: current_memory,
     }
     # Seed notes are written into a shared vault: qualify every project-local
@@ -3596,6 +3492,147 @@ def run_audit_checks(cli: ObsidianCLI, paths: NotePaths) -> None:
         print("")
 
 
+# Architecture, Roadmap, Debugging Notes and Release Notes were seeded in every
+# project but nothing writes to them; most still hold only the template.
+_TEMPLATE_HUB_NAMES = ("Architecture", "Roadmap", "Debugging Notes", "Release Notes")
+_TEMPLATE_HUB_PLACEHOLDERS = {
+    "- Capture the key systems, boundaries, and integration points.",
+    "- Track near-term milestones and larger follow-up work.",
+    "- Capture active failures, root-cause notes, and reproduction details.",
+    "- Summarize notable releases, migrations, and rollout concerns.",
+}
+_TEMPLATE_HUB_HEADINGS = {
+    "## Current Shape", "## Current Priorities", "## Current Investigations",
+    "## Shipped Changes", "## Linked Context",
+}
+# Only links to the notes the seed itself wrote: a curated link list is content.
+_SEED_LINK_NAMES = {name.casefold() for name in (
+    *_TEMPLATE_HUB_NAMES, "MOC", "Run Log", "Decisions", "Open Questions", "Current Memory")}
+_WIKILINK_RE = re.compile(r"!?\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|[^\]]*)?\]\]")
+
+
+def _link_target(raw: str) -> str:
+    target = raw.strip().casefold()
+    return target[:-3] if target.endswith(".md") else target
+
+
+def is_template_hub(text: str) -> bool:
+    """True when a hub note holds nothing but the lines its seed template wrote."""
+    _, body = _frontmatter_body(text)
+    for line in body.splitlines():
+        line = line.strip()
+        if not line or line in _TEMPLATE_HUB_PLACEHOLDERS or line in _TEMPLATE_HUB_HEADINGS:
+            continue
+        if line.startswith("# ") and line[2:].strip() in _TEMPLATE_HUB_NAMES:
+            continue
+        if line.startswith(("Parent note: [[", "MOC: [[")) and line.endswith("]]") and line.count("[[") == 1:
+            continue
+        links = _WIKILINK_RE.fullmatch(line[2:]) if line.startswith("- ") else None
+        if links and Path(_link_target(links.group(1))).name in _SEED_LINK_NAMES:
+            continue
+        return False
+    return True
+
+
+def _hub_link_line_re(stems: Sequence[str]) -> "re.Pattern[str]":
+    """A list line holding nothing but a link to one of these hubs."""
+    names = "|".join(re.escape(stem) for stem in stems)
+    return re.compile(
+        rf"^- \[\[(?:[^\]|]*/)?(?:{names})(?:\.md)?(?:\|[^\]]*)?\]\][ \t]*(?:\n|\Z)",
+        re.MULTILINE | re.IGNORECASE)
+
+
+def _read_note(path: Path) -> Optional[str]:
+    """Text of a real note file, or None for symlinks and unreadable files."""
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return None
+
+
+def prune_template_hubs(vault_path: Path, project_dirs: Sequence[Path], apply: bool) -> Tuple[List[Path], List[Path]]:
+    """(template hubs, hubs kept) across the given projects.
+
+    A hub is removed only when it holds nothing but its seed template and no
+    note anywhere in the vault links to it, other than bare link lines in its
+    own project. With apply, those link lines go too, so no link is left broken.
+    """
+    bare_line = _hub_link_line_re(_TEMPLATE_HUB_NAMES)
+    # Every link target in the vault, except bare hub link lines inside the same project.
+    mentions: Dict[str, List[Path]] = {}
+    for note in vault_path.rglob("*.md"):
+        if any(part.startswith(".") for part in note.relative_to(vault_path).parts):
+            continue
+        text = _read_note(note)
+        if text is None:
+            continue
+        project_root = vault_path / PROJECT_ROOT
+        same_project = None
+        if note.is_relative_to(project_root) and len(note.relative_to(project_root).parts) > 1:
+            same_project = project_root / note.relative_to(project_root).parts[0]
+        for line in text.splitlines(keepends=True):
+            is_bare = bool(bare_line.fullmatch(line) or bare_line.fullmatch(line + "\n"))
+            for match in _WIKILINK_RE.finditer(line):
+                mentions.setdefault(_link_target(match.group(1)), []).append(
+                    note if not is_bare else (same_project or note))
+    removed: List[Path] = []
+    kept: List[Path] = []
+    for project_dir in project_dirs:
+        gone: List[str] = []
+        for name in _TEMPLATE_HUB_NAMES:
+            hub = project_dir / f"{name}.md"
+            text = _read_note(hub)
+            if text is None:
+                continue
+            rel = hub.relative_to(vault_path)
+            sources = mentions.get(name.casefold(), []) + mentions.get(_link_target(rel.with_suffix("").as_posix()), [])
+            # A bare line in this project is recorded as the project dir itself: those get stripped.
+            linked = any(src != hub and src != project_dir for src in sources)
+            if not linked and is_template_hub(text):
+                removed.append(rel)
+                gone.append(name)
+            else:
+                kept.append(rel)
+        if not apply or not gone:
+            continue
+        link_line = _hub_link_line_re(gone)
+        for note in project_dir.rglob("*.md"):
+            text = _read_note(note)
+            if text is None or note.name in {f"{name}.md" for name in gone}:
+                continue
+            updated = link_line.sub("", text)
+            if updated != text:
+                note.write_text(updated, encoding="utf-8", errors="surrogateescape")
+        for name in gone:
+            (project_dir / f"{name}.md").unlink()
+    return removed, kept
+
+
+def cmd_prune_hubs(args: argparse.Namespace) -> None:
+    vault_path = resolve_vault_or_exit(args.workspace)
+    root = vault_path / PROJECT_ROOT
+    if args.project:
+        project_dirs = [vault_path / build_note_paths(args.project.strip()).project_dir]
+        if not project_dirs[0].is_dir():
+            raise SystemExit(f"Project memory not found: {project_dirs[0].relative_to(vault_path).as_posix()}")
+    else:
+        project_dirs = sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    removed, kept = prune_template_hubs(vault_path, project_dirs, apply=args.apply)
+    verb = "Removed" if args.apply else "Would remove"
+    print(f"{verb} {len(removed)} template-only hub note(s) in {len(project_dirs)} project(s).")
+    for path in removed[: args.limit]:
+        print(f"- {path.as_posix()}")
+    if len(removed) > args.limit:
+        print(f"- ... and {len(removed) - args.limit} more")
+    print(f"Kept {len(kept)} hub note(s) with written content or a link to them in a sentence:")
+    for path in kept:
+        print(f"- {path.as_posix()}")
+    if not args.apply and removed:
+        print("Nothing changed. Re-run with --apply to delete them and drop the links that point at them.")
+
+
 def cmd_init_project(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
@@ -3880,6 +3917,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser_audit.add_argument("--workspace", help="Workspace path override")
     parser_audit.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser_audit.set_defaults(func=cmd_audit)
+
+    parser_prune_hubs = subparsers.add_parser(
+        "prune-hubs",
+        help="List (or with --apply delete) Architecture/Roadmap/Debugging/Release hubs that hold only their template",
+    )
+    parser_prune_hubs.add_argument("--project", help="One project (default: every project)")
+    parser_prune_hubs.add_argument("--workspace", help="Workspace path override")
+    parser_prune_hubs.add_argument("--apply", action="store_true", help="Delete them; without it nothing changes")
+    parser_prune_hubs.add_argument("--limit", type=int, default=20, help="Paths to list")
+    parser_prune_hubs.set_defaults(func=cmd_prune_hubs)
 
     parser_doctor = subparsers.add_parser("doctor", help="Validate CLI/vault readiness")
     parser_doctor.add_argument("--workspace", help="Workspace path override")
