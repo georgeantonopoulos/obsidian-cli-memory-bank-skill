@@ -1494,6 +1494,24 @@ class CompactionKeepsLinksTests(unittest.TestCase):
             self.assertNotIn("Archived older", out.getvalue())
 
 
+    def test_without_current_memory_the_latest_same_minute_report_stays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            reports = vault / paths.compactions_dir
+            reports.mkdir(parents=True)
+            for name in ["2026-05-01-0900-compact-demo", "2026-05-01-0900-compact-demo-2"]:
+                (reports / f"{name}.md").write_text(f"# {name}\n")
+            args = build_parser().parse_args(["compact-project", "--project", "Demo"])
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                cmd_compact_project(args)
+            self.assertEqual([p.stem for p in reports.glob("*.md")], ["2026-05-01-0900-compact-demo-2"])
+            from scripts.obsidian_memory import _unique_compaction_path
+            self.assertEqual(_unique_compaction_path(vault, paths.compactions_dir / "2026-05-01-0900-compact-demo.md").name,
+                             "2026-05-01-0900-compact-demo-3.md")
+
+
 class RepointMovedLinksTests(unittest.TestCase):
     def test_path_links_follow_runs_into_the_archive(self) -> None:
         from scripts.obsidian_memory import _repoint_moved_links

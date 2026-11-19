@@ -2856,9 +2856,12 @@ def _plan_archive_destinations(
 
 
 def _unique_compaction_path(vault_path: Path, desired: Path) -> Path:
+    """A report name not used live or in Archive/Compactions, so bare-name
+    links never point at two reports."""
+    archived = desired.parent.parent / "Archive" / "Compactions"
     candidate = desired
     suffix = 2
-    while (vault_path / candidate).exists():
+    while (vault_path / candidate).exists() or (vault_path / archived / candidate.name).exists():
         candidate = desired.with_name(f"{desired.stem}-{suffix}{desired.suffix}")
         suffix += 1
     return candidate
@@ -3438,8 +3441,11 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
     if not batch_runs and not (getattr(args, "include_archive", False) and historical_runs):
         print(f"No new run notes found in {paths.runs_dir.as_posix()}.")
         # Still retire reports an older obmem left behind next to the newest one.
-        reports = sorted((vault_path / paths.compactions_dir).glob("*.md")) \
-            if (vault_path / paths.compactions_dir).exists() else []
+        # "-compact-p-2" was written after "-compact-p" in the same minute.
+        reports = sorted(
+            (vault_path / paths.compactions_dir).glob("*.md"),
+            key=lambda report: (report.stem[:15], int(m.group(1)) if (m := re.search(r"-(\d+)$", report.stem[16:])) else 1),
+        ) if (vault_path / paths.compactions_dir).exists() else []
         if len(reports) > 1:
             moved_reports: List[Tuple[Path, Path]] = []
             # Current Memory names the report it was built from; keep that one.
