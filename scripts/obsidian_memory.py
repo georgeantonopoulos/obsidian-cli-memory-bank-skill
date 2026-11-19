@@ -3434,61 +3434,112 @@ _TEMPLATE_HUB_PLACEHOLDERS = {
     "- Capture active failures, root-cause notes, and reproduction details.",
     "- Summarize notable releases, migrations, and rollout concerns.",
 }
-_TEMPLATE_LINE_RE = re.compile(r"^(?:#+ .*|Parent note: \[\[[^\]]+\]\]|MOC: \[\[[^\]]+\]\]|- \[\[[^\]]+\]\])$")
+_TEMPLATE_HUB_HEADINGS = {
+    "## Current Shape", "## Current Priorities", "## Current Investigations",
+    "## Shipped Changes", "## Linked Context",
+}
+# Only links to the notes the seed itself wrote: a curated link list is content.
+_SEED_LINK_NAMES = {name.casefold() for name in (
+    *_TEMPLATE_HUB_NAMES, "MOC", "Run Log", "Decisions", "Open Questions", "Current Memory")}
+_WIKILINK_RE = re.compile(r"!?\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|[^\]]*)?\]\]")
+
+
+def _link_target(raw: str) -> str:
+    target = raw.strip().casefold()
+    return target[:-3] if target.endswith(".md") else target
 
 
 def is_template_hub(text: str) -> bool:
-    """True when a hub note holds nothing but its seed template."""
+    """True when a hub note holds nothing but the lines its seed template wrote."""
     _, body = _frontmatter_body(text)
     for line in body.splitlines():
         line = line.strip()
-        if line and line not in _TEMPLATE_HUB_PLACEHOLDERS and not _TEMPLATE_LINE_RE.match(line):
-            return False
+        if not line or line in _TEMPLATE_HUB_PLACEHOLDERS or line in _TEMPLATE_HUB_HEADINGS:
+            continue
+        if line.startswith("# ") and line[2:].strip() in _TEMPLATE_HUB_NAMES:
+            continue
+        if line.startswith(("Parent note: [[", "MOC: [[")) and line.endswith("]]") and line.count("[[") == 1:
+            continue
+        links = _WIKILINK_RE.fullmatch(line[2:]) if line.startswith("- ") else None
+        if links and Path(_link_target(links.group(1))).name in _SEED_LINK_NAMES:
+            continue
+        return False
     return True
 
 
 def _hub_link_line_re(stems: Sequence[str]) -> "re.Pattern[str]":
+    """A list line holding nothing but a link to one of these hubs."""
     names = "|".join(re.escape(stem) for stem in stems)
-    return re.compile(rf"^- \[\[(?:[^\]|]*/)?(?:{names})(?:\|[^\]]*)?\]\][ \t]*\n?", re.MULTILINE)
+    return re.compile(
+        rf"^- \[\[(?:[^\]|]*/)?(?:{names})(?:\.md)?(?:\|[^\]]*)?\]\][ \t]*(?:\n|\Z)",
+        re.MULTILINE | re.IGNORECASE)
+
+
+def _read_note(path: Path) -> Optional[str]:
+    """Text of a real note file, or None for symlinks and unreadable files."""
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return None
 
 
 def prune_template_hubs(vault_path: Path, project_dirs: Sequence[Path], apply: bool) -> Tuple[List[Path], List[Path]]:
-    """(template hubs, hubs kept because someone wrote in them) across the given projects.
+    """(template hubs, hubs kept) across the given projects.
 
-    With apply, the template hubs are deleted and the bare link lines pointing at
-    them are removed from the project's other notes, so no link is left broken.
+    A hub is removed only when it holds nothing but its seed template and no
+    note anywhere in the vault links to it, other than bare link lines in its
+    own project. With apply, those link lines go too, so no link is left broken.
     """
+    bare_line = _hub_link_line_re(_TEMPLATE_HUB_NAMES)
+    # Every link target in the vault, except bare hub link lines inside the same project.
+    mentions: Dict[str, List[Path]] = {}
+    for note in vault_path.rglob("*.md"):
+        if any(part.startswith(".") for part in note.relative_to(vault_path).parts):
+            continue
+        text = _read_note(note)
+        if text is None:
+            continue
+        project_root = vault_path / PROJECT_ROOT
+        same_project = None
+        if note.is_relative_to(project_root) and len(note.relative_to(project_root).parts) > 1:
+            same_project = project_root / note.relative_to(project_root).parts[0]
+        for line in text.splitlines(keepends=True):
+            is_bare = bool(bare_line.fullmatch(line) or bare_line.fullmatch(line + "\n"))
+            for match in _WIKILINK_RE.finditer(line):
+                mentions.setdefault(_link_target(match.group(1)), []).append(
+                    note if not is_bare else (same_project or note))
     removed: List[Path] = []
     kept: List[Path] = []
     for project_dir in project_dirs:
         gone: List[str] = []
-        # A hub named anywhere but a bare link line ("See [[Roadmap]] for plans")
-        # is kept: deleting it would leave that link broken.
-        notes = list(project_dir.rglob("*.md"))
-        texts = [_hub_link_line_re(_TEMPLATE_HUB_NAMES).sub("", n.read_text(encoding="utf-8")) for n in notes]
         for name in _TEMPLATE_HUB_NAMES:
             hub = project_dir / f"{name}.md"
-            if not hub.is_file():
+            text = _read_note(hub)
+            if text is None:
                 continue
-            prose_link = re.compile(rf"\[\[(?:[^\]|]*/)?{re.escape(name)}(?:\.md)?(?:[|#\]])")
-            mentioned = any(prose_link.search(t) for n, t in zip(notes, texts) if n != hub)
-            if not mentioned and is_template_hub(hub.read_text(encoding="utf-8")):
-                removed.append(hub.relative_to(vault_path))
+            rel = hub.relative_to(vault_path)
+            sources = mentions.get(name.casefold(), []) + mentions.get(_link_target(rel.with_suffix("").as_posix()), [])
+            # A bare line in this project is recorded as the project dir itself: those get stripped.
+            linked = any(src != hub and src != project_dir for src in sources)
+            if not linked and is_template_hub(text):
+                removed.append(rel)
                 gone.append(name)
             else:
-                kept.append(hub.relative_to(vault_path))
+                kept.append(rel)
         if not apply or not gone:
             continue
-        for name in gone:
-            (project_dir / f"{name}.md").unlink()
         link_line = _hub_link_line_re(gone)
-        for note in notes:
-            if not note.exists():
+        for note in project_dir.rglob("*.md"):
+            text = _read_note(note)
+            if text is None or note.name in {f"{name}.md" for name in gone}:
                 continue
-            text = note.read_text(encoding="utf-8")
             updated = link_line.sub("", text)
             if updated != text:
-                note.write_text(updated, encoding="utf-8")
+                note.write_text(updated, encoding="utf-8", errors="surrogateescape")
+        for name in gone:
+            (project_dir / f"{name}.md").unlink()
     return removed, kept
 
 

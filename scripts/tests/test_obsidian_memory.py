@@ -333,6 +333,43 @@ class ObsidianMemoryTests(unittest.TestCase):
         text = "# Architecture\n\n## Related\n\n- [[Project Memory/demo/Runs/x|x]] — Read the source files.\n"
         self.assertFalse(is_template_hub(text))
 
+    def test_prune_hubs_keeps_hub_linked_from_another_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            other = vault / "Project Memory" / "other"
+            other.mkdir()
+            (other / "MOC.md").write_text("- [[Project Memory/demo/Architecture|Architecture]]\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual(removed, [])
+            self.assertTrue((project / "Architecture.md").exists())
+
+    def test_prune_hubs_keeps_link_line_with_extra_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            moc = project / "MOC.md"
+            moc.write_text(moc.read_text(encoding="utf-8") + "- [[architecture]] - ship in Q3\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual(removed, [])
+            self.assertIn("- [[architecture]] - ship in Q3", moc.read_text(encoding="utf-8"))
+
+    def test_template_hub_with_curated_link_list_is_kept(self) -> None:
+        self.assertTrue(is_template_hub("# Roadmap\n\n## Linked Context\n- [[Project Memory/demo/MOC|MOC]]\n"))
+        self.assertFalse(is_template_hub("# Roadmap\n\n## Linked Context\n- [[Project Memory/demo/Export Pipeline]]\n"))
+        self.assertFalse(is_template_hub("# Roadmap\n\n## Notes\n"))
+
+    def test_prune_hubs_skips_unreadable_and_linked_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            (project / "Binary.md").write_bytes(b"\xff\xfe [[odd]]\n- [[Architecture]]\n")
+            (project / "Release Notes.md").symlink_to(project / "Architecture.md")
+            (project / "Folder.md").mkdir()
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual([p.name for p in removed], ["Architecture.md"])
+            self.assertEqual((project / "Binary.md").read_bytes(), b"\xff\xfe [[odd]]\n")
+
     def test_contains_cli_error(self) -> None:
         self.assertTrue(_contains_cli_error("Error: failed to open file"))
         self.assertTrue(_contains_cli_error("some info\nERROR cannot continue"))
