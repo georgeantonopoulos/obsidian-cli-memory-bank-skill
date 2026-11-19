@@ -80,6 +80,62 @@ def truncate(text: str, limit: int) -> str:
     return text[: max(0, limit - 3)].rstrip() + "..."
 
 
+# Turns started by something other than a typed prompt: a message from another
+# session or a subagent, a background task notice, the summary that continues a
+# session after its context ran out, or a labelled office/scheduled prompt. Their
+# opening words are the same wrapper every time, so they make useless titles.
+_WRAPPER_PROMPT_RES = (
+    re.compile(r"Message from [^:]{1,80}:"),
+    re.compile(r"Background task:"),
+    re.compile(r"This session is being continued from a previous conversation", re.IGNORECASE),
+    re.compile(re.escape("[Cross-session idle notice]")),
+    # Only the office's own labels: "[Bug: ...]" typed by the user is a real prompt.
+    re.compile(r"\[(?:Office|Scheduled)\b[^\]]{0,60}\]"),
+)
+_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
+_MARKDOWN_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|#+|>)\s+|\*+|__|`", re.MULTILINE)
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+_MIN_REPLY_TITLE = 15
+
+
+def is_wrapper_prompt(prompt: str) -> bool:
+    start = prompt.lstrip()
+    return any(pattern.match(start) for pattern in _WRAPPER_PROMPT_RES)
+
+
+def strip_reminders(text: str) -> str:
+    return _REMINDER_RE.sub(" ", text)
+
+
+def reply_title(reply: str) -> str:
+    """The reply's opening sentence, as a note title ('' if there is none).
+
+    Replies lead with the outcome, so their first sentence names what the turn
+    did. A very short opener ("Done.") takes the next sentence along.
+    """
+    in_code = False
+    for line in strip_reminders(reply).splitlines():
+        bare = line.strip()
+        if bare.startswith(("```", "~~~")):
+            in_code = not in_code
+            continue
+        if in_code or bare.startswith("|"):  # code and table rows are not sentences
+            continue
+        # A leading "-" would read as an option to record-run's --title and lose the note.
+        text = " ".join(_MARKDOWN_RE.sub("", line).split()).rstrip(":").lstrip("-").strip()
+        if not text:
+            continue
+        sentences = _SENTENCE_END_RE.split(text)
+        title = sentences[0]
+        if len(title) < 20 and len(sentences) > 1:
+            title = f"{title} {sentences[1]}"
+        # A heading or "(quiet)" says nothing: try the next line, else the
+        # caller keeps its own title.
+        if len(title) >= _MIN_REPLY_TITLE:
+            return title
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Payload, project identity, and opt-out
 # ---------------------------------------------------------------------------

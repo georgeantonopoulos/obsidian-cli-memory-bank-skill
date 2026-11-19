@@ -805,6 +805,59 @@ class StopHookTests(unittest.TestCase):
         with self._state():
             self.assertEqual(self._run_stop(turn).call_count, 0)
 
+    def _titled(self, start, reply):
+        turn = [start, {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Edit", "input": {"file_path": "/b.py"}},
+            {"type": "text", "text": reply}]}}]
+        with self._state():
+            return self._run_stop(turn).call_args.kwargs
+
+    def test_typed_prompt_still_names_the_note(self) -> None:
+        kwargs = self._titled(self.EDIT_TURN[0], "I fixed the export hook and the tests pass.")
+        self.assertEqual(kwargs["title"], "fix the export hook")
+
+    def test_wrapper_started_turns_take_the_replys_opening_sentence(self) -> None:
+        reply = "**The export hook is fixed** and live.\n\n- Tests: 12 pass."
+        starts = [
+            {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "peer", "name": "Gary", "body": "fix export"},
+             "message": {"content": "Another Claude session sent a message: fix export"}},
+            {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "task-notification"},
+             "message": {"content": "<task-notification><summary>Background command \"cd x\" completed</summary></task-notification>"}},
+            {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content":
+                "This session is being continued from a previous conversation. <system-reminder>tools</system-reminder> Summary: ..."}},
+            {"type": "user", "uuid": "u1", "origin": {"kind": "human"},
+             "message": {"content": "[Office: goal step] George's goal for this room is lean memory."}},
+        ]
+        for start in starts:
+            with self.subTest(start=start["message"]["content"][:30]):
+                kwargs = self._titled(start, reply)
+                self.assertEqual(kwargs["title"], "The export hook is fixed and live.")
+                self.assertNotIn("system-reminder", kwargs["prompt"])
+
+    def test_too_short_reply_keeps_the_wrapper_title(self) -> None:
+        start = {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "peer", "name": "Gary", "body": "status?"},
+                 "message": {"content": "Another Claude session sent a message: status?"}}
+        self.assertEqual(self._titled(start, "(quiet)")["title"], "Message from Gary: status?")
+
+    def test_reply_title_shapes(self) -> None:
+        self.assertEqual(COMMON.reply_title("Done. The cache is cleared for every project."),
+                         "Done. The cache is cleared for every project.")
+        self.assertEqual(COMMON.reply_title("\n## Result:\n- `obmem` now matches forms. More text."),
+                         "obmem now matches forms.")
+        self.assertEqual(COMMON.reply_title("- `obmem` search now matches word forms. More."),
+                         "obmem search now matches word forms.")
+        self.assertEqual(COMMON.reply_title(""), "")
+        self.assertFalse(COMMON.is_wrapper_prompt("fix the [Office: x] label parsing"))
+        self.assertFalse(COMMON.is_wrapper_prompt("Message from the CEO needs a reply draft"))
+        self.assertFalse(COMMON.is_wrapper_prompt("[Bug: login fails on Safari] please fix"))
+        self.assertTrue(COMMON.is_wrapper_prompt("[Scheduled: Whiteboard tidy] The office..."))
+        self.assertEqual(COMMON.reply_title("```python\nprint('a long line of code here')\n```\nThe parser now keeps decimals."),
+                         "The parser now keeps decimals.")
+        self.assertEqual(COMMON.reply_title("| File | Change |\n|---|---|\nThe table above lists every change."),
+                         "The table above lists every change.")
+        self.assertEqual(COMMON.reply_title("--no-verify skips the hook entirely now."), "no-verify skips the hook entirely now.")
+        self.assertEqual(COMMON.reply_title("*Done* and pushed to the branch."), "Done and pushed to the branch.")
+
 
 class CaptureIgnoreTests(StopHookTests.__base__):
     def _turn(self, *paths):
