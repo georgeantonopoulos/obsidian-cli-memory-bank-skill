@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **No more empty hub notes.** New projects no longer get Architecture,
+  Roadmap, Debugging Notes and Release Notes: nothing ever wrote to them, and
+  409 of the 424 in the live vault's 106 projects still held only the
+  template. `obmem prune-hubs` lists the template-only ones and `--apply`
+  deletes them and the bare link lines in Home, MOC and sibling hubs. A hub
+  with writing in it, Related links, or a link to it in a sentence is kept. On
+  a copy of the live vault: 409 files gone, 0 broken links before and after,
+  and a second run finds nothing.
+
 - **Fewer Jev calls.** The prompt hook no longer searches memory for messages
   that come from tools or other sessions instead of the user (background task
   notices, messages from another Claude session, the summary that continues a

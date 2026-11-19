@@ -297,6 +297,8 @@ obmem init-project --project "Name"   # Bootstrap + stub content in one step
 obmem record-run --project "Name" ... # Log a session note
 obmem compact-project --project "Name" # Distill Runs/ into Current Memory, Topics, and Archive/Runs
 obmem compact-project --project "Name" --include-archive # Refresh distilled memory from archive when no new runs exist
+obmem prune-hubs                       # List Architecture/Roadmap/Debugging/Release hubs still holding only their template
+obmem prune-hubs --apply               # Delete those and drop the bare link lines that point at them
 obmem search --project "Name" --query "x"  # Search active distilled memory by keyword
 obmem search --project "Name" --query "x" --include-archive # Include archived evidence in search
 obmem search --all-projects --query "x"   # Search every project's memory
