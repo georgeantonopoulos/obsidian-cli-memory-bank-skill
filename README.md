@@ -148,7 +148,8 @@ The skill works anywhere an agent can run shell commands. For runtimes with life
 | Session start | Health-check vault connectivity | `SessionStart` | — |
 | Before response | Search vault for relevant context | `UserPromptSubmit` | — |
 | After response | Log a structured run note | `Stop` | `agent-turn-complete` |
-| Before compaction | Persist transcript before context compression | `PreCompact` | — |
+| Before compaction | Mark the session as compacted | `PreCompact` | — |
+| After compaction | Save the compaction summary as a run note | `SessionStart` (`compact`) | — |
 | After memory write | Mirror `MEMORY.md` to vault | `PostToolUse` | — |
 
 ### Claude Code
@@ -177,7 +178,7 @@ chmod +x ~/.claude/hooks/obsidian_*.py
 | `obsidian_sessionstart_hook.py` | `SessionStart` | Validates vault health once per session |
 | `obsidian_preprompt_hook.py` | `UserPromptSubmit` | Searches Obsidian before each response |
 | `obsidian_poststop_hook.py` | `Stop` | Logs a run note after each agent stop |
-| `obsidian_precompact_hook.py` | `PreCompact` | Saves transcript summary before context compression |
+| `obsidian_precompact_hook.py` | `PreCompact` | Marks the session as compacted, so earlier own notes can be recalled again |
 | `obsidian_memory_sync_hook.py` | `PostToolUse` | Mirrors `MEMORY.md` writes to vault |
 
 All hooks silently no-op when no vault is mapped for the current workspace.

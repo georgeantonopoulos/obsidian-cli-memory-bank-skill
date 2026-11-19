@@ -285,11 +285,92 @@ def _user_prompt_text(entry: Dict[str, Any]) -> str:
 
 
 def recent_prompts(transcript_path: str, limit: int = 5) -> List[str]:
-    prompts = [p for p in map(_user_prompt_text, _load_transcript(transcript_path)) if p]
+    # A compaction summary is stored as a user entry but is not a request.
+    entries = [e for e in _load_transcript(transcript_path) if not e.get("isCompactSummary")]
+    prompts = [p for p in map(_user_prompt_text, entries) if p]
     return prompts[-limit:]
 
 
+
+# ---------------------------------------------------------------------------
+# The summary Claude Code writes when it compacts a session
+# ---------------------------------------------------------------------------
+
+# "1. Primary Request and Intent:" / "1. **Primary Request and Intent:**" / "4. Errors and fixes: none".
+# Only the section names Claude Code writes, at the start of the line: numbered
+# items inside a section ("   1. Fix the bug:") are not headers.
+_SECTION_NAMES = (r"Primary Request|Key Technical|Files|Errors|Problem Solving|All user messages|"
+                  r"Pending Tasks?|Current Work|Optional Next Step")
+_SECTION_RE = re.compile(
+    rf"^ ?\d+\.[ \t]*\**[ \t]*((?:{_SECTION_NAMES})[^:*\n]{{0,60}}?)[ \t]*\**[ \t]*:[ \t]*\**[ \t]*(.*)$",
+    re.MULTILINE | re.IGNORECASE)
+_COMPACT_LEAD_RE = re.compile(r"^.*?(?:Summary:|summary below covers[^\n]*\n)", re.DOTALL)
+_COMPACT_TAIL_RE = re.compile(
+    r"\n\s*If you need specific details from before compaction.*$|"
+    r"\n\s*Continue the conversation from where it left off.*$", re.DOTALL)
+# The parts worth keeping, in note order, with a character budget each. The
+# user's own messages are left out: the turns that mattered have their own notes.
+_SUMMARY_KEEP = (
+    ("primary request", 700),
+    ("errors and fix", 700),
+    ("problem solving", 700),
+    ("pending task", 400),
+    ("current work", 600),
+)
+
+
+def compact_summary(transcript_path: str) -> str:
+    """Text of the summary written by the latest compaction, or '' if not on disk yet.
+
+    Only a summary after the last compact boundary counts: an older one belongs
+    to an earlier compaction that already has its note.
+    """
+    entries = _load_transcript(transcript_path)
+    boundary = max((i for i, e in enumerate(entries)
+                    if e.get("type") == "system" and e.get("subtype") == "compact_boundary"), default=-1)
+    for entry in reversed(entries[boundary + 1:]):
+        if entry.get("type") == "user" and entry.get("isCompactSummary"):
+            return _entry_text(entry) or ""
+    return ""
+
+
+def digest_compact_summary(text: str) -> Tuple[str, str]:
+    """(topic, digest) from a compaction summary.
+
+    The topic is the opening of its current-work section (else the request). The digest keeps
+    the request, fixes, findings, pending work and current work, each cut to a
+    budget, so the note stays short and searchable.
+    """
+    text = _REMINDER_BLOCK_RE.sub(" ", text)
+    text = _COMPACT_TAIL_RE.sub("", _COMPACT_LEAD_RE.sub("", text, count=1)).strip()
+    heads = list(_SECTION_RE.finditer(text))
+    sections: Dict[str, str] = {}
+    for i, head in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        sections[head.group(1).strip().lower()] = (head.group(2) + "\n" + text[head.end():end]).strip()
+    parts = []
+    for key, budget in _SUMMARY_KEEP:
+        name = next((n for n in sections if n.startswith(key)), None)
+        if name and sections[name]:
+            parts.append(f"{name.capitalize()}: {truncate(sections[name], budget)}")
+    if not parts:
+        return "", truncate(text, 3000)
+    # What the session was doing when it compacted names the note best; the
+    # request is the fallback. Label lines ("Earlier this session:") are skipped.
+    topic = ""
+    for key in ("current work", "primary request"):
+        body = next((v for n, v in sections.items() if n.startswith(key)), "")
+        for line in body.splitlines():
+            line = " ".join(re.sub(r"^\s*(?:[-*+>]|\d+[.)])\s+|\*+|`", "", line).split())
+            if len(line) >= 15 and not line.endswith(":"):
+                topic = re.split(r"(?<=[.!?])\s+", line)[0].lstrip("-").strip()
+                break
+        if topic:
+            break
+    return topic, truncate("\n\n".join(parts), 2900)
+
 _TAG_RE = re.compile(r"<[^>]+>")
+_REMINDER_BLOCK_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 _TASK_SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
 _PEER_WRAPPER_RE = re.compile(r"^Another Claude session sent a message:\s*", re.IGNORECASE)
 _IDLE_NOTICE_PREFIX = "[Cross-session idle notice]"
@@ -492,6 +573,34 @@ def compacted_at(session_id: str) -> float:
         return 0.0
 
 
+def claim_summary(session_id: str, text: str) -> bool:
+    """True the first time a given compaction summary is claimed for this session.
+
+    The claim is an exclusive file create, so two hooks racing over the same
+    summary save one note between them, and a summary from an earlier
+    compaction is never saved again.
+    """
+    if not session_id or not text:
+        return False
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    target = _seen_file(session_id).with_name(f"{_seen_file(session_id).stem}-{digest}.claim")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        return True  # state dir unusable: saving twice beats never saving
+
+
+def summary_claimed(session_id: str, text: str) -> bool:
+    if not session_id or not text:
+        return False
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    return _seen_file(session_id).with_name(f"{_seen_file(session_id).stem}-{digest}.claim").exists()
+
+
 def turn_already_logged(session_id: str, start_id: str) -> bool:
     if not session_id or not start_id:
         return False
@@ -511,7 +620,7 @@ def mark_turn_logged(session_id: str, start_id: str) -> None:
         tmp.write_text(start_id, encoding="utf-8")
         tmp.replace(target)
         cutoff = time.time() - _SEEN_MAX_AGE
-        for old in target.parent.glob("*.txt"):
+        for old in [*target.parent.glob("*.txt"), *target.parent.glob("*.claim")]:
             try:
                 if old.stat().st_mtime < cutoff:
                     old.unlink()
