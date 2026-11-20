@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import os
 import sys
 import tempfile
@@ -464,6 +465,56 @@ Progress uses measured counts.
         self.assertLessEqual(len(new), 500)
         # The Related list is still dropped, even though it matches too.
         self.assertNotIn("Cache notes", new)
+
+    def test_excerpt_window_matches_other_forms_of_a_keyword(self) -> None:
+        # Every line names George; only the answer also holds "question", in
+        # the singular, while the keyword is "questions".
+        filler = "".join(f"- George picked option {i} for an unrelated thing.\n" for i in range(80))
+        note = ("# Decisions\n\n## Decision Register\n" + filler
+                + "- Every question to George is a gary/ask button.\n" + filler)
+        excerpt = HOOK._clean_excerpt(note, 600, query="questions george")
+        self.assertIn("Every question to George is a gary/ask button", excerpt)
+        # A stem that would be a common word keeps its last letter.
+        self.assertEqual(HOOK._term_stem("theme"), "theme")
+        for short in ("uses", "news", "rule", "status", "process", "need"):
+            self.assertEqual(HOOK._term_stem(short), short)
+
+    def test_excerpt_stems_cover_every_form_search_matches(self) -> None:
+        # The search (obmem) and the excerpt (this hook) must agree on what
+        # counts as the same word, or the hook shows a line the search did not
+        # rank on. The hook cannot import obmem, so this guards the two copies.
+        from scripts.obsidian_memory import _word_forms_regex
+        families = (
+            "question questions questioned questioning", "source sources sourced sourcing",
+            "rule rules ruled ruling", "fix fixes fixed fixing", "test tests tested testing testers",
+            "stop stops stopped stopping", "query queries queried querying", "build builds building",
+            "merge merges merged merging", "class classes", "release releases released releasing",
+            "decide decides decided deciding", "apply applies applied applying", "link links linked",
+        )
+        for family in families:
+            words = family.split()
+            for keyword in words:
+                forms = _word_forms_regex(keyword)
+                if not forms:
+                    continue
+                same = re.compile(rf"\b{forms}\b", re.IGNORECASE)
+                patterns = HOOK._query_terms(keyword)
+                for word in words:
+                    if same.search(word):
+                        with self.subTest(keyword=keyword, word=word):
+                            self.assertTrue(any(p.search(word) for p in patterns))
+        for keyword, other in (("display", "displays"), ("display", "displayed"), ("deploy", "deploys"),
+                               ("stuffed", "stuff"), ("staffed", "staffs"), ("deployed", "deploy"),
+                               ("cat", "cat"), ("quizzed", "quiz"), ("buzzed", "buzz"), ("buzzing", "buzzes")):
+            with self.subTest(keyword=keyword, other=other):
+                self.assertTrue(any(p.search(other) for p in HOOK._query_terms(keyword)))
+        # A short stem must not reach other words that merely start with it.
+        for keyword, other in (("added", "address"), ("series", "server"), ("string", "strategy"),
+                               ("saved", "savvy"), ("coding", "codex"), ("applies", "application"),
+                               ("story", "storage"), ("based", "basic"), ("cat", "cater"),
+                               ("pin", "pine"), ("car", "care")):
+            with self.subTest(keyword=keyword, other=other):
+                self.assertFalse(any(p.search(other) for p in HOOK._query_terms(keyword)))
 
     def test_excerpt_keeps_opening_when_match_is_already_there_or_absent(self) -> None:
         note = "# Fix export\n- Progress uses measured counts.\n" + "- filler line\n" * 100

@@ -407,10 +407,65 @@ def _vault_path(workspace: str) -> Path | None:
     return path if path and path.is_dir() else None
 
 
+def _term_stem(term: str) -> str:
+    """The keyword without one plural or tense ending, for a word-start match.
+
+    obmem search counts "question" and "questions" as one word, so the line
+    picked for the excerpt must too: "questions" alone missed a register line
+    that said "Every question to George is a gary/ask button". Only plain
+    words of five letters or more change, so "uses", "news" and "rule" stay
+    whole, and the stem keeps three letters ("fixes" -> "fix"); -ss, -us and
+    -is are not plurals (process, status, analysis).
+    """
+    if (len(term) < 5 or not term.isalpha() or not term.isascii()
+            or term.endswith(("ss", "us", "is", "eed"))):
+        return term
+    stem = term
+    for ending in ("ies", "ied", "ing", "ed", "es", "s"):
+        if not term.endswith(ending):
+            continue
+        # "-es" is its own ending only after s, x, z, ch and sh (fixes, classes);
+        # elsewhere the e belongs to the word (rules, sources).
+        if ending == "es" and not term[:-2].endswith(("s", "x", "z", "ch", "sh")):
+            continue
+        stem = term[: -len(ending)]
+        # "stopped" -> "stop": the doubled consonant came with the ending.
+        if ending in ("ing", "ed") and len(stem) >= 4 and stem[-1] == stem[-2] and stem[-1] not in "aeioulsf":
+            stem = stem[:-1]
+        break
+    # A final e or y changes with the ending (merge/merging, query/queries).
+    # Not when that leaves a common word ("theme" -> "them").
+    # Not after a vowel ("display" keeps its y: "displays", "displayed").
+    if (stem.endswith(("e", "y")) and len(stem) >= 5 and stem[:-1] not in _STOP_WORDS
+            and not (stem[-1] == "y" and stem[-2] in "aeiou")):
+        stem = stem[:-1]
+    return stem if len(stem) >= 3 else term
+
+
+# The endings obmem search accepts after a word's root (_WORD_FORM_SUFFIXES there).
+_WORD_ENDINGS = r"(?:e|es|s|ed|d|ing|er|ers|y|ies|ied|ying)?"
+
+
 def _query_terms(query: str) -> list[re.Pattern]:
-    """One pattern per search keyword, matching at a word start ("room" finds "rooms")."""
-    terms = {t for t in query.lower().split() if len(t) >= 2}
-    return [re.compile(r"(?<![a-z0-9])" + re.escape(t), re.IGNORECASE) for t in sorted(terms)]
+    """One pattern per search keyword ("room" finds "rooms", "questions" finds
+    "question"). A plain word matches only its own forms, so "added" finds "add"
+    but not "address"; an identifier or number still matches at a word start."""
+    patterns = []
+    for term in sorted({t for t in query.lower().split() if len(t) >= 2}):
+        stem = _term_stem(term)
+        if term.isalpha() and len(term) < 4:
+            # Search matches short words exactly ("cat" not "cater").
+            body = re.escape(term) + r"(?![a-z0-9])"
+        elif stem.isalpha() and stem.isascii():
+            # "stop" -> "stopped": the ending may double the last consonant.
+            # Not before -y, so "saved" does not reach "savvy" ("buzzed" still finds "buzz").
+            double = (f"(?:{re.escape(stem[-1])}(?=ed|ing|er|es|s?(?![a-z0-9])))?"
+                      if stem[-1] not in "aeiouy" else "")
+            body = re.escape(stem) + double + _WORD_ENDINGS + r"(?![a-z0-9])"
+        else:
+            body = re.escape(stem)
+        patterns.append(re.compile(r"(?<![a-z0-9])" + body, re.IGNORECASE))
+    return patterns
 
 
 def _matching_window(text: str, limit: int, query: str) -> str:
