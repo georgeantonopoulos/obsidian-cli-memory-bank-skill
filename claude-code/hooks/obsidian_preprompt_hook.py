@@ -407,9 +407,42 @@ def _vault_path(workspace: str) -> Path | None:
     return path if path and path.is_dir() else None
 
 
+def _term_stem(term: str) -> str:
+    """The keyword without one plural or tense ending, for a word-start match.
+
+    obmem search counts "question" and "questions" as one word, so the line
+    picked for the excerpt must too: "questions" alone missed a register line
+    that said "Every question to George is a gary/ask button". Only plain
+    words of five letters or more change, so "uses", "news" and "rule" stay
+    whole, and the stem keeps three letters ("fixes" -> "fix"); -ss, -us and
+    -is are not plurals (process, status, analysis).
+    """
+    if len(term) < 5 or not term.isalpha() or term.endswith(("ss", "us", "is", "eed")):
+        return term
+    stem = term
+    for ending in ("ies", "ied", "ing", "ed", "es", "s"):
+        if not term.endswith(ending):
+            continue
+        # "-es" is its own ending only after s, x, z, ch and sh (fixes, classes);
+        # elsewhere the e belongs to the word (rules, sources).
+        if ending == "es" and not term[:-2].endswith(("s", "x", "z", "ch", "sh")):
+            continue
+        stem = term[: -len(ending)]
+        # "stopped" -> "stop": the doubled consonant came with the ending.
+        if ending in ("ing", "ed") and len(stem) >= 4 and stem[-1] == stem[-2] and stem[-1] not in "aeiouls":
+            stem = stem[:-1]
+        break
+    # A final e or y changes with the ending (merge/merging, query/queries).
+    # Not when that leaves a common word ("theme" -> "them").
+    if stem.endswith(("e", "y")) and len(stem) >= 5 and stem[:-1] not in _STOP_WORDS:
+        stem = stem[:-1]
+    return stem if len(stem) >= 3 else term
+
+
 def _query_terms(query: str) -> list[re.Pattern]:
-    """One pattern per search keyword, matching at a word start ("room" finds "rooms")."""
-    terms = {t for t in query.lower().split() if len(t) >= 2}
+    """One pattern per search keyword, matching at a word start ("room" finds
+    "rooms", "questions" finds "question")."""
+    terms = {_term_stem(t) for t in query.lower().split() if len(t) >= 2}
     return [re.compile(r"(?<![a-z0-9])" + re.escape(t), re.IGNORECASE) for t in sorted(terms)]
 
 
