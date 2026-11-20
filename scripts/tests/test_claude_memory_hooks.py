@@ -591,6 +591,22 @@ Progress uses measured counts.
                 self.assertEqual(self._searches_for(prompt), [])
         self.assertEqual(len(self._searches_for("Why do the export render settings reset?")), 2)
 
+    def test_a_dropped_name_is_kept_when_one_topic_word_is_left(self) -> None:
+        # The project ("demo") and a listed name are dropped while other words
+        # remain, but put back when only one topic word would be searched.
+        with self._ignore(["Alice"]):
+            searches = self._searches_for("should we merge demo PR 1?")
+            self.assertEqual(len(searches), 2)
+            self.assertEqual(searches[0][searches[0].index("--query") + 1].split(), ["merge", "demo"])
+            searches = self._searches_for("how should questions for Alice be asked?")
+            self.assertEqual(searches[0][searches[0].index("--query") + 1].split(), ["questions", "alice"])
+            searches = self._searches_for("Why does the demo export render reset for Alice?")
+            query = searches[0][searches[0].index("--query") + 1].split()
+            self.assertNotIn("demo", query)
+            self.assertNotIn("alice", query)
+            # Names alone are not a topic: still no search.
+            self.assertEqual(self._searches_for("thanks Alice, demo is good now"), [])
+
     def test_ignore_file_skip_entries_stop_the_search(self) -> None:
         with self._ignore([r"skip:^\[Robot\b", "skip:reply (quiet", "skip:", "skip:   ", "Alice"]):
             self.assertEqual(self._searches_for("[Robot: nightly] export render settings changed"), [])

@@ -275,6 +275,8 @@ def _sanitize_query(prompt: str, max_words: int = 5, project: str = "") -> str:
     text = _NON_ALPHA_RE.sub(" ", text)
     seen: set[str] = set()
     ranked: list[tuple[int, int, int, str]] = []
+    # The project's own name and listed people's names, in prompt order.
+    dropped_names: list[str] = []
     # Specific numbers are the most selective terms there are: rank them first.
     for offset, number in numbers:
         if sum(1 for rank, *_ in ranked if rank == -1) >= _MAX_NUMBERS:
@@ -284,9 +286,12 @@ def _sanitize_query(prompt: str, max_words: int = 5, project: str = "") -> str:
             ranked.append((-1, -len(number), offset, number))
     for position, token in enumerate(text.split()):
         word = token.lower().strip("-")
+        if word in own_names:
+            if word not in dropped_names:
+                dropped_names.append(word)
+            continue
         if (len(word) < 2 or word in seen or word in _STOP_WORDS or word in _REQUEST_VERBS
-                or word in _WORKFLOW_WORDS or word in delivery_words or word in ignored_words
-                or word in own_names):
+                or word in _WORKFLOW_WORDS or word in delivery_words or word in ignored_words):
             continue
         # "tester" after "testers" (or the reverse) adds nothing.
         if word + "s" in seen or (word.endswith("s") and word[:-1] in seen):
@@ -294,12 +299,21 @@ def _sanitize_query(prompt: str, max_words: int = 5, project: str = "") -> str:
         # A listed name is dropped when written as a name ("Rose"), kept as a
         # plain word ("rose gold").
         if word in ignored_names and token[:1].isupper():
+            if word not in dropped_names:
+                dropped_names.append(word)
             continue
         seen.add(word)
         named = word in identifiers or _is_named(token, sentence_starts)
         ranked.append((0 if named else 1, -len(word), position, word))
     ranked.sort()
-    return " ".join(word for *_rest, word in ranked[:max_words])
+    words = [word for *_rest, word in ranked[:max_words]]
+    # Dropping the names is right when other words remain, but a question with
+    # one topic word ("should we merge eemero PR 1?", "how should questions for
+    # George be asked?") would then fall under the keyword minimum and get no
+    # memory at all. There the name is what makes it specific: keep it.
+    if len(words) == 1 and dropped_names:
+        words.append(dropped_names[0])
+    return " ".join(words)
 
 
 def _select_search_hits(output: str, limit: int = 3) -> str:
