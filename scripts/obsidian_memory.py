@@ -3054,7 +3054,7 @@ def _jev_rerank(
     options: Dict[str, Any] = {}
     option_index: Dict[str, int] = {}
     for index, (_score, path) in enumerate(hits):
-        excerpt = _note_excerpt(cli.read(Path(path)), max_chars=1200, query=query)
+        excerpt = _ranking_excerpt(cli.read(Path(path)), query, max_chars=1200)
         option = _jev_option_name(path, option_index)
         option_index[option] = index
         options[option] = {"title": Path(path).stem, "excerpt": excerpt}
@@ -3271,17 +3271,73 @@ def _nonnegative_int(value: str) -> int:
     return number
 
 
+def _line_term_weights(lines: Sequence[str], patterns: Sequence["re.Pattern[str]"]) -> List[float]:
+    """How telling each term is within one note: rarer across its lines counts more.
+
+    A term on every line (a "Source:" label, the project's name) weighs about
+    1/4 of one found on a single line, so a line holding two rare terms beats a
+    line holding three common ones.
+    """
+    total = max(1, len(lines))
+    weights = []
+    for pattern in patterns:
+        found = sum(1 for line in lines if pattern.search(line))
+        weights.append(math.log(1.0 + total / max(1, found)) if found else 0.0)
+    top = max(weights, default=0.0) or 1.0
+    return [max(weight / top, 0.25) if weight else 0.0 for weight in weights]
+
+
+def _ranking_excerpt(text: str, query: str, max_chars: int = 1200) -> str:
+    """What the ranker reads of one note: its title and its best-matching lines.
+
+    One window around the single best line misses a decision written a few
+    screens away in different words; a long register or Current Memory holds
+    several candidate lines. This keeps the title, then the lines that hold the
+    most telling query terms (see _line_term_weights), each cut to a few hundred
+    characters, in note order, until ``max_chars`` is used. Lines with no query
+    term, or a note with no match at all, fall back to the opening.
+    """
+    patterns = _compile_term_patterns(_parse_local_search_query(query)[1]) if query else []
+    _, body = _frontmatter_body(text)
+    lines = [line.strip() for line in body.splitlines()]
+    title = next((line for line in lines if line.startswith("# ")), "")
+    content = [(i, line) for i, line in enumerate(lines) if line and not line.startswith("# ")]
+    weights = _line_term_weights([line for _i, line in content], patterns)
+    scored = []
+    for i, line in content:
+        score = sum(weight for pattern, weight in zip(patterns, weights) if pattern.search(line))
+        if score > 0:
+            scored.append((score, i, line))
+    if not scored:
+        return _note_excerpt(text, max_chars=max_chars)
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    room = max_chars - len(title) - 1
+    picked = []
+    for _score, i, line in scored:
+        piece = line if len(line) <= 300 else line[:297].rstrip() + "..."
+        if len(piece) + 5 > room:
+            break
+        picked.append((i, piece))
+        room -= len(piece) + 5
+    picked.sort()
+    return "\n".join(([title] if title else []) + [piece for _i, piece in picked]) if picked else _note_excerpt(text, max_chars=max_chars, query=query)
+
+
 def _note_excerpt(text: str, *, offset: int = 0, max_chars: int = 6000,
                   query: Optional[str] = None) -> str:
     """Return a bounded, verbatim window with explicit source offsets."""
     if query:
         patterns = _compile_term_patterns(_parse_local_search_query(query)[1])
-        # Prefer the line covering most query terms, not repeated boilerplate.
-        best_score = 0
+        lines = text.splitlines(keepends=True)
+        weights = _line_term_weights(lines, patterns)
+        # Prefer the line covering the most query terms, counting a term that
+        # repeats on many lines (boilerplate such as "Source:") for less.
+        best_score = 0.0
         cursor = 0
-        for line in text.splitlines(keepends=True):
-            matches = [match for pattern in patterns if (match := pattern.search(line))]
-            score = len(matches)
+        for line in lines:
+            matches = [(weight, match) for pattern, weight in zip(patterns, weights) if (match := pattern.search(line))]
+            score = sum(weight for weight, _match in matches)
+            matches = [match for _weight, match in matches]
             if score > best_score:
                 best_score = score
                 first_match = min(match.start() for match in matches)
