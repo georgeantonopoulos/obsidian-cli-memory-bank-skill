@@ -430,12 +430,14 @@ def _term_stem(term: str) -> str:
             continue
         stem = term[: -len(ending)]
         # "stopped" -> "stop": the doubled consonant came with the ending.
-        if ending in ("ing", "ed") and len(stem) >= 4 and stem[-1] == stem[-2] and stem[-1] not in "aeiouls":
+        if ending in ("ing", "ed") and len(stem) >= 4 and stem[-1] == stem[-2] and stem[-1] not in "aeioulsfz":
             stem = stem[:-1]
         break
     # A final e or y changes with the ending (merge/merging, query/queries).
     # Not when that leaves a common word ("theme" -> "them").
-    if stem.endswith(("e", "y")) and len(stem) >= 5 and stem[:-1] not in _STOP_WORDS:
+    # Not after a vowel ("display" keeps its y: "displays", "displayed").
+    if (stem.endswith(("e", "y")) and len(stem) >= 5 and stem[:-1] not in _STOP_WORDS
+            and not (stem[-1] == "y" and stem[-2] in "aeiou")):
         stem = stem[:-1]
     return stem if len(stem) >= 3 else term
 
@@ -451,7 +453,10 @@ def _query_terms(query: str) -> list[re.Pattern]:
     patterns = []
     for term in sorted({t for t in query.lower().split() if len(t) >= 2}):
         stem = _term_stem(term)
-        if stem.isalpha() and stem.isascii():
+        if term.isalpha() and len(term) < 4:
+            # Search matches short words exactly ("cat" not "cater").
+            body = re.escape(term) + r"(?![a-z0-9])"
+        elif stem.isalpha() and stem.isascii():
             # "stop" -> "stopped": the ending may double the last consonant.
             # Only before -ed/-ing/-er, so "saved" does not reach "savvy".
             double = f"(?:{re.escape(stem[-1])}(?=ed|ing|er))?" if stem[-1] not in "aeiouy" else ""

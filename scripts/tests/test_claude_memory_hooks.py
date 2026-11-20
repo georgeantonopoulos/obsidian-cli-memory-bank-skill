@@ -503,10 +503,16 @@ Progress uses measured counts.
                     if same.search(word):
                         with self.subTest(keyword=keyword, word=word):
                             self.assertTrue(any(p.search(word) for p in patterns))
+        for keyword, other in (("display", "displays"), ("display", "displayed"), ("deploy", "deploys"),
+                               ("stuffed", "stuff"), ("staffed", "staffs"), ("deployed", "deploy"),
+                               ("cat", "cat")):
+            with self.subTest(keyword=keyword, other=other):
+                self.assertTrue(any(p.search(other) for p in HOOK._query_terms(keyword)))
         # A short stem must not reach other words that merely start with it.
         for keyword, other in (("added", "address"), ("series", "server"), ("string", "strategy"),
                                ("saved", "savvy"), ("coding", "codex"), ("applies", "application"),
-                               ("story", "storage"), ("based", "basic")):
+                               ("story", "storage"), ("based", "basic"), ("cat", "cater"),
+                               ("pin", "pine"), ("car", "care")):
             with self.subTest(keyword=keyword, other=other):
                 self.assertFalse(any(p.search(other) for p in HOOK._query_terms(keyword)))
 
