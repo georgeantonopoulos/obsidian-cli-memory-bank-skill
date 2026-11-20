@@ -15,6 +15,7 @@ try:  # advisory file locks; not available on Windows, where writes go unlocked
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 import plistlib
+import posixpath
 import re
 import shutil
 import subprocess
@@ -25,7 +26,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -348,6 +349,7 @@ class NotePaths:
     compactions_dir: Path
     archived_runs_dir: Path
     archived_topics_dir: Path
+    archived_compactions_dir: Path
     runs_dir: Path
 
 
@@ -372,6 +374,7 @@ def build_note_paths(project_name: str) -> NotePaths:
     compactions_dir = project_dir / "Compactions"
     archived_runs_dir = project_dir / "Archive" / "Runs"
     archived_topics_dir = project_dir / "Archive" / "Topics"
+    archived_compactions_dir = project_dir / "Archive" / "Compactions"
     runs_dir = project_dir / "Runs"
     return NotePaths(
         project_slug=project_slug,
@@ -390,6 +393,7 @@ def build_note_paths(project_name: str) -> NotePaths:
         compactions_dir=compactions_dir,
         archived_runs_dir=archived_runs_dir,
         archived_topics_dir=archived_topics_dir,
+        archived_compactions_dir=archived_compactions_dir,
         runs_dir=runs_dir,
     )
 
@@ -543,7 +547,11 @@ class ObsidianCLI:
         # First pass: per-note term frequencies and lengths. BM25 needs corpus
         # statistics, so nothing can be scored until every note has been seen.
         documents: List[Tuple[str, List[int], int]] = []
+        # The cheap substring screen uses each term's root so "sourcing"
+        # still lets a note that only says "source" through to the word match.
         lowered_terms = [term.lower() for term in terms if term]
+        screen_terms = [_word_root(term) if _word_forms_regex(term) else term
+                        for term in lowered_terms]
         for note in _markdown_files(root, self.vault_path, skip_archive=not include_archive):
             relative = note.relative_to(self.vault_path).as_posix()
             try:
@@ -554,7 +562,7 @@ class ObsidianCLI:
             # Most notes hold none of the terms; a plain substring check skips
             # them before the slower whole-word counting.
             lowered = haystack.lower()
-            if terms and not any(term in lowered for term in lowered_terms):
+            if terms and not any(term in lowered for term in screen_terms):
                 continue
             if exclude_session and _written_by(text, exclude_session, exclude_since):
                 continue
@@ -563,7 +571,7 @@ class ObsidianCLI:
             title = note.stem
             frequencies = [
                 len(pattern.findall(haystack)) + len(pattern.findall(title)) if term in lowered else 0
-                for pattern, term in zip(patterns, lowered_terms)
+                for pattern, term in zip(patterns, screen_terms)
             ]
             if not terms or any(frequencies):
                 length = max(len(_WORD_RE.findall(haystack)), 1)
@@ -730,10 +738,6 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
             f"- [[{paths.decisions.stem}]]",
             f"- [[{paths.questions.stem}]]",
             f"- [[{paths.run_log.stem}]]",
-            f"- [[{paths.architecture.stem}]]",
-            f"- [[{paths.roadmap.stem}]]",
-            f"- [[{paths.debugging_notes.stem}]]",
-            f"- [[{paths.release_notes.stem}]]",
             "",
             "## Retrieval Cues",
             "- Add stable keywords for high-value searches.",
@@ -754,10 +758,6 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
             "",
             "## Core Topics",
             f"- [[{paths.current_memory.stem}]]",
-            "- [[Architecture]]",
-            "- [[Roadmap]]",
-            "- [[Debugging Notes]]",
-            "- [[Release Notes]]",
             "",
             "## Working Sets",
             f"- [[{paths.decisions.stem}]]",
@@ -820,98 +820,6 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
         ]
     )
 
-    architecture = "\n".join(
-        [
-            build_frontmatter(
-                note_type="architecture",
-                project=project_name,
-                tags=["architecture", paths.project_slug],
-            ),
-            "",
-            f"# {paths.architecture.stem}",
-            "",
-            f"Parent note: [[{project_home_title}]]",
-            f"MOC: [[{paths.moc.stem}]]",
-            "",
-            "## Current Shape",
-            "- Capture the key systems, boundaries, and integration points.",
-            "",
-            "## Linked Context",
-            f"- [[{paths.roadmap.stem}]]",
-            f"- [[{paths.debugging_notes.stem}]]",
-            f"- [[{paths.release_notes.stem}]]",
-        ]
-    )
-
-    roadmap = "\n".join(
-        [
-            build_frontmatter(
-                note_type="roadmap",
-                project=project_name,
-                tags=["roadmap", paths.project_slug],
-            ),
-            "",
-            f"# {paths.roadmap.stem}",
-            "",
-            f"Parent note: [[{project_home_title}]]",
-            f"MOC: [[{paths.moc.stem}]]",
-            "",
-            "## Current Priorities",
-            "- Track near-term milestones and larger follow-up work.",
-            "",
-            "## Linked Context",
-            f"- [[{paths.architecture.stem}]]",
-            f"- [[{paths.questions.stem}]]",
-            f"- [[{paths.release_notes.stem}]]",
-        ]
-    )
-
-    debugging_notes = "\n".join(
-        [
-            build_frontmatter(
-                note_type="debugging-notes",
-                project=project_name,
-                tags=["debugging", paths.project_slug],
-            ),
-            "",
-            f"# {paths.debugging_notes.stem}",
-            "",
-            f"Parent note: [[{project_home_title}]]",
-            f"MOC: [[{paths.moc.stem}]]",
-            "",
-            "## Current Investigations",
-            "- Capture active failures, root-cause notes, and reproduction details.",
-            "",
-            "## Linked Context",
-            f"- [[{paths.architecture.stem}]]",
-            f"- [[{paths.questions.stem}]]",
-            f"- [[{paths.run_log.stem}]]",
-        ]
-    )
-
-    release_notes = "\n".join(
-        [
-            build_frontmatter(
-                note_type="release-notes",
-                project=project_name,
-                tags=["release-notes", paths.project_slug],
-            ),
-            "",
-            f"# {paths.release_notes.stem}",
-            "",
-            f"Parent note: [[{project_home_title}]]",
-            f"MOC: [[{paths.moc.stem}]]",
-            "",
-            "## Shipped Changes",
-            "- Summarize notable releases, migrations, and rollout concerns.",
-            "",
-            "## Linked Context",
-            f"- [[{paths.roadmap.stem}]]",
-            f"- [[{paths.architecture.stem}]]",
-            f"- [[{paths.run_log.stem}]]",
-        ]
-    )
-
     current_memory = "\n".join(
         [
             build_frontmatter(
@@ -942,10 +850,6 @@ def build_seed_notes(project_name: str, paths: NotePaths) -> Dict[Path, str]:
         paths.run_log: run_log,
         paths.decisions: decisions,
         paths.questions: questions,
-        paths.architecture: architecture,
-        paths.roadmap: roadmap,
-        paths.debugging_notes: debugging_notes,
-        paths.release_notes: release_notes,
         paths.current_memory: current_memory,
     }
     # Seed notes are written into a shared vault: qualify every project-local
@@ -1030,6 +934,65 @@ def _markdown_files(root: Path, vault: Path, *, skip_archive: bool) -> Iterator[
                 yield Path(folder) / name
 
 
+_WORD_FORM_SUFFIXES = r"(?:e|es|s|ed|d|ing|er|ers|y|ies|ied|ying)?"
+
+
+def _word_root(term: str) -> str:
+    """Strip one plural or tense ending so word forms share a root.
+
+    ``sourcing``, ``sources`` and ``source`` all become ``sourc``; ``testers``
+    becomes ``tester``; ``queries`` becomes ``quer``. A root is never shorter
+    than four letters, so ``uses``, ``news`` and ``rule`` stay whole, and
+    endings like ``-ss``, ``-us`` and ``-is`` (process, status, analysis) are
+    not plurals.
+    """
+    word = term.lower()
+    candidates: List[str] = []
+    for ending in ("ies", "ied", "ing", "ed"):
+        # "proceed" and "need" end in -eed, which is not a past tense.
+        if word.endswith(ending) and not word.endswith("eed"):
+            candidates.append(word[: -len(ending)])
+            break
+    tense_root = candidates[0] if candidates else ""
+    # "-es" is its own ending only after s, x, z, ch and sh (classes, fixes);
+    # elsewhere the e belongs to the word (sources, rules).
+    if word.endswith(("sses", "xes", "zes", "ches", "shes")):
+        candidates.append(word[:-2])
+    if word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        candidates.append(word[:-1])
+    if not candidates:
+        candidates.append(word)
+    # A tense ending may leave three letters ("saved" -> "sav", "coding" ->
+    # "cod"): the word was long enough to be specific. A bare plural may not,
+    # or "news" would match "new".
+    root = next((c for c in candidates
+                 if len(c) >= (3 if c == tense_root else 4)), word)
+    # A final e or consonant-y belongs to the root's forms (source/sourcing).
+    # Not after a stripped tense ending: "proceed" -> "proce" keeps its e.
+    if (root != tense_root and len(root) >= 5
+            and (root.endswith("e") or (root.endswith("y") and root[-2:-1] not in "aeiou"))):
+        root = root[:-1]
+    # "stopped" -> "stop": a doubled final consonant comes from the ending.
+    if root != word and len(root) >= 4 and root[-1] == root[-2] and root[-1] not in "aeiouls":
+        root = root[:-1]
+    return root
+
+
+def _word_forms_regex(term: str) -> str:
+    """Regex body matching common English forms of a plain word, or "".
+
+    Only lowercase-able alphabetic terms of four or more letters get forms;
+    short words, acronyms in caps (``PR``, ``MIT``), numbers and identifiers
+    with symbols still match exactly.
+    """
+    if len(term) < 4 or not term.isalpha() or not term.isascii() or term.isupper():
+        return ""
+    root = _word_root(term)
+    # A doubled consonant may return before the ending (stop -> stopped).
+    double = f"(?:{re.escape(root[-1])})?" if root[-1] not in "aeiouy" else ""
+    return f"{re.escape(root)}{double}{_WORD_FORM_SUFFIXES}"
+
+
 def _compile_term_patterns(terms: Iterable[str]) -> List["re.Pattern[str]"]:
     """Match whole words, not substrings.
 
@@ -1042,6 +1005,10 @@ def _compile_term_patterns(terms: Iterable[str]) -> List["re.Pattern[str]"]:
     patterns: List["re.Pattern[str]"] = []
     for term in terms:
         if not term:
+            continue
+        forms = _word_forms_regex(term)
+        if forms:
+            patterns.append(re.compile(rf"\b{forms}\b", re.IGNORECASE))
             continue
         escaped = re.escape(term)
         prefix = r"\b" if term[0].isalnum() or term[0] == "_" else ""
@@ -2650,6 +2617,47 @@ def _outside_code(body: str, replace) -> str:
     return "".join(out)
 
 
+def _archive_old_compactions(
+    cli: ObsidianCLI,
+    paths: NotePaths,
+    compaction_path: Path,
+    moved: Optional[List[Tuple[Path, Path]]] = None,
+) -> int:
+    """Move every compaction report but the newest to Archive/Compactions.
+
+    Each report copies the topic takeaways of its day, so older ones repeat
+    what Current Memory and the topics now hold and crowd search results.
+    They stay in the archive as evidence; each (source, destination) pair is
+    added to ``moved`` so links can follow.
+    """
+    reports_dir = cli.vault_path / paths.compactions_dir
+    if not reports_dir.exists():
+        return 0
+    archived = 0
+    for report_abs in sorted(reports_dir.glob("*.md")):
+        source = report_abs.relative_to(cli.vault_path)
+        if source == compaction_path:
+            continue
+        dest = paths.archived_compactions_dir / report_abs.name
+        suffix = 2
+        while (cli.vault_path / dest).exists():
+            dest = paths.archived_compactions_dir / f"{report_abs.stem}-{suffix}.md"
+            suffix += 1
+        if moved is not None:
+            moved.append((source, dest))
+        archived += 1
+        if cli.dry_run:
+            continue
+        body = report_abs.read_text(encoding="utf-8")
+        body = body.rstrip() + "\n\n## Archived Compaction\n"
+        body += f"- Superseded by {_wikilink(compaction_path)}.\n"
+        dest_abs = cli.vault_path / dest
+        dest_abs.parent.mkdir(parents=True, exist_ok=True)
+        dest_abs.write_text(body, encoding="utf-8")
+        report_abs.unlink()
+    return archived
+
+
 def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tuple[int, int]:
     """Follow archived runs and retired topics with every path link that named them.
 
@@ -2812,9 +2820,12 @@ def _plan_archive_destinations(
 
 
 def _unique_compaction_path(vault_path: Path, desired: Path) -> Path:
+    """A report name not used live or in Archive/Compactions, so bare-name
+    links never point at two reports."""
+    archived = desired.parent.parent / "Archive" / "Compactions"
     candidate = desired
     suffix = 2
-    while (vault_path / candidate).exists():
+    while (vault_path / candidate).exists() or (vault_path / archived / candidate.name).exists():
         candidate = desired.with_name(f"{desired.stem}-{suffix}{desired.suffix}")
         suffix += 1
     return candidate
@@ -3393,6 +3404,25 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
     historical_runs = _collect_archived_runs(vault_path, paths)
     if not batch_runs and not (getattr(args, "include_archive", False) and historical_runs):
         print(f"No new run notes found in {paths.runs_dir.as_posix()}.")
+        # Still retire reports an older obmem left behind next to the newest one.
+        # "-compact-p-2" was written after "-compact-p" in the same minute.
+        reports = sorted(
+            (vault_path / paths.compactions_dir).glob("*.md"),
+            key=lambda report: (report.stem[:15], int(m.group(1)) if (m := re.search(r"-(\d+)$", report.stem[16:])) else 1),
+        ) if (vault_path / paths.compactions_dir).exists() else []
+        if len(reports) > 1:
+            moved_reports: List[Tuple[Path, Path]] = []
+            # Current Memory names the report it was built from; keep that one.
+            newest = reports[-1].relative_to(vault_path)
+            current_abs = vault_path / paths.current_memory
+            named = re.search(r"^Latest compaction: \[\[([^\]|#]+)", current_abs.read_text(encoding="utf-8"), re.M) \
+                if current_abs.exists() else None
+            if named and (vault_path / f"{named.group(1)}.md") in reports:
+                newest = Path(f"{named.group(1)}.md")
+            count = _archive_old_compactions(cli, paths, newest, moved_reports)
+            repointed, notes = _repoint_moved_links(cli, moved_reports)
+            print(f"Archived older compaction reports: {count} into {paths.archived_compactions_dir.as_posix()}; "
+                  f"links moved: {repointed} in {notes} note(s)")
         return
     runs = _merge_run_history(historical_runs, batch_runs)
 
@@ -3439,6 +3469,9 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
     )
     if stale_topics:
         print(f"Archived stale topic notes: {stale_topics} into {paths.archived_topics_dir.as_posix()}")
+    old_reports = _archive_old_compactions(cli, paths, compaction_path, moved_topics)
+    if old_reports:
+        print(f"Archived older compaction reports: {old_reports} into {paths.archived_compactions_dir.as_posix()}")
 
     # Intentional neural-network edges: distilled memory is densely linked,
     # archived source notes are sparse evidence.
@@ -3490,7 +3523,7 @@ def cmd_compact_project(args: argparse.Namespace) -> None:
         _append_unique_line(cli, paths.decisions, f"- {_wikilink(compaction_path)}: Prefer {_wikilink(paths.current_memory)} {retrieval_rule}")
     print(f"Pruned hub/index lines pointing at compacted runs: {pruned}")
     print(f"Register links moved to archived runs: {retargeted}")
-    print(f"Other links moved to archived runs and topics: {repointed} in {repointed_notes} note(s)")
+    print(f"Other links moved to archived runs, topics and reports: {repointed} in {repointed_notes} note(s)")
 
     active_runs = len(list((vault_path / paths.runs_dir).glob("*.md"))) if (vault_path / paths.runs_dir).exists() else 0
     archived_runs = len(list((vault_path / paths.archived_runs_dir).glob("*.md"))) if (vault_path / paths.archived_runs_dir).exists() else 0
@@ -3527,6 +3560,178 @@ def run_audit_checks(cli: ObsidianCLI, paths: NotePaths) -> None:
         output = cli.run(command, *command_args)
         print(output)
         print("")
+
+
+# Architecture, Roadmap, Debugging Notes and Release Notes were seeded in every
+# project but nothing writes to them; most still hold only the template.
+_TEMPLATE_HUB_NAMES = ("Architecture", "Roadmap", "Debugging Notes", "Release Notes")
+_TEMPLATE_HUB_PLACEHOLDERS = {
+    "- Capture the key systems, boundaries, and integration points.",
+    "- Track near-term milestones and larger follow-up work.",
+    "- Capture active failures, root-cause notes, and reproduction details.",
+    "- Summarize notable releases, migrations, and rollout concerns.",
+}
+_TEMPLATE_HUB_HEADINGS = {
+    "## Current Shape", "## Current Priorities", "## Current Investigations",
+    "## Shipped Changes", "## Linked Context",
+}
+# Only links to the notes the seed itself wrote: a curated link list is content.
+_SEED_LINK_NAMES = {name.casefold() for name in (
+    *_TEMPLATE_HUB_NAMES, "MOC", "Run Log", "Decisions", "Open Questions", "Current Memory")}
+_WIKILINK_RE = re.compile(r"!?\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|[^\]]*)?\]\]")
+
+
+def _link_target(raw: str) -> str:
+    target = raw.strip().casefold()
+    return target[:-3] if target.endswith(".md") else target
+
+
+def is_template_hub(text: str) -> bool:
+    """True when a hub note holds nothing but the lines its seed template wrote."""
+    _, body = _frontmatter_body(text)
+    for line in body.splitlines():
+        line = line.strip()
+        if not line or line in _TEMPLATE_HUB_PLACEHOLDERS or line in _TEMPLATE_HUB_HEADINGS:
+            continue
+        if line.startswith("# ") and line[2:].strip() in _TEMPLATE_HUB_NAMES:
+            continue
+        if line.startswith(("Parent note: [[", "MOC: [[")) and line.endswith("]]") and line.count("[[") == 1:
+            continue
+        links = _WIKILINK_RE.fullmatch(line[2:]) if line.startswith("- ") else None
+        if links and Path(_link_target(links.group(1))).name in _SEED_LINK_NAMES:
+            continue
+        return False
+    return True
+
+
+def _hub_link_line_re(stems: Sequence[str]) -> "re.Pattern[str]":
+    """A list line holding nothing but a link to one of these hubs."""
+    names = "|".join(re.escape(stem) for stem in stems)
+    return re.compile(
+        rf"^- \[\[(?:[^\]|]*/)?(?:{names})(?:\.md)?(?:\|[^\]]*)?\]\][ \t]*(?:\n|\Z)",
+        re.MULTILINE | re.IGNORECASE)
+
+
+def _read_note(path: Path) -> Optional[str]:
+    """Text of a real note file, or None for symlinks and unreadable files."""
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return None
+
+
+def _link_hits(target: str, folder: str, hub_key: str) -> bool:
+    """Whether a link target written in `folder` can open the hub at `hub_key`.
+
+    Keys are vault-relative, casefolded and without `.md`. Follows the same
+    rules as _NoteIndex: a bare name matches any note of that name; a target
+    with a folder matches the full path, the end of one, or a path relative to
+    the linking note's folder.
+    """
+    key = _link_target(target)
+    if "/" not in key:
+        return key == hub_key.rsplit("/", 1)[-1]
+    stripped = key.lstrip("/")
+    if stripped == hub_key or hub_key.endswith("/" + stripped):
+        return True
+    return posixpath.normpath(posixpath.join(folder, key)) == hub_key
+
+
+def prune_template_hubs(vault_path: Path, project_dirs: Sequence[Path], apply: bool) -> Tuple[List[Path], List[Path]]:
+    """(template hubs, hubs kept) across the given projects.
+
+    A hub is removed only when it holds nothing but its seed template and no
+    note anywhere in the vault links to it, other than bare link lines in its
+    own project. With apply, those link lines go too, so no link is left broken.
+    """
+    bare_line = _hub_link_line_re(_TEMPLATE_HUB_NAMES)
+    project_root = vault_path / PROJECT_ROOT
+    # Every link in the vault: (target, linking note's folder key, note, bare hub line, note's project).
+    links: List[Tuple[str, str, Path, bool, Optional[Path]]] = []
+    for note in vault_path.rglob("*.md"):
+        rel = note.relative_to(vault_path)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        text = _read_note(note)
+        if text is None:
+            continue
+        folder = rel.parent.as_posix().casefold()
+        folder = "" if folder == "." else folder
+        same_project = None
+        if note.is_relative_to(project_root) and len(note.relative_to(project_root).parts) > 1:
+            same_project = project_root / note.relative_to(project_root).parts[0]
+        for line in text.splitlines(keepends=True):
+            is_bare = bool(bare_line.fullmatch(line) or bare_line.fullmatch(line + "\n"))
+            for match in _WIKILINK_RE.finditer(line):
+                links.append((match.group(1), folder, note, is_bare, same_project))
+    removed: List[Path] = []
+    kept: List[Path] = []
+    for project_dir in project_dirs:
+        gone: Dict[str, str] = {}
+        for name in _TEMPLATE_HUB_NAMES:
+            hub = project_dir / f"{name}.md"
+            text = _read_note(hub)
+            if text is None:
+                continue
+            rel = hub.relative_to(vault_path)
+            hub_key = rel.with_suffix("").as_posix().casefold()
+            # Bare link lines in this project are stripped along with the hub, so they do not keep it.
+            linked = any(
+                src != hub and not (is_bare and src_project == project_dir) and _link_hits(target, folder, hub_key)
+                for target, folder, src, is_bare, src_project in links)
+            if not linked and is_template_hub(text):
+                removed.append(rel)
+                gone[name] = hub_key
+            else:
+                kept.append(rel)
+        if not apply or not gone:
+            continue
+        link_line = _hub_link_line_re(list(gone))
+        gone_files = {f"{name}.md" for name in gone}
+        for note in project_dir.rglob("*.md"):
+            text = _read_note(note)
+            if text is None or note.name in gone_files:
+                continue
+            folder = note.relative_to(vault_path).parent.as_posix().casefold()
+
+            def strip(match: "re.Match[str]") -> str:
+                target = _WIKILINK_RE.search(match.group(0))
+                # Only lines that open a hub being deleted; links to another project's hub stay.
+                if target and any(_link_hits(target.group(1), folder, key) for key in gone.values()):
+                    return ""
+                return match.group(0)
+
+            updated = link_line.sub(strip, text)
+            if updated != text:
+                note.write_text(updated, encoding="utf-8", errors="surrogateescape")
+        for name in gone:
+            (project_dir / f"{name}.md").unlink()
+    return removed, kept
+
+
+def cmd_prune_hubs(args: argparse.Namespace) -> None:
+    vault_path = resolve_vault_or_exit(args.workspace)
+    root = vault_path / PROJECT_ROOT
+    if args.project:
+        project_dirs = [vault_path / build_note_paths(args.project.strip()).project_dir]
+        if not project_dirs[0].is_dir():
+            raise SystemExit(f"Project memory not found: {project_dirs[0].relative_to(vault_path).as_posix()}")
+    else:
+        project_dirs = sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    removed, kept = prune_template_hubs(vault_path, project_dirs, apply=args.apply)
+    verb = "Removed" if args.apply else "Would remove"
+    print(f"{verb} {len(removed)} template-only hub note(s) in {len(project_dirs)} project(s).")
+    for path in removed[: args.limit]:
+        print(f"- {path.as_posix()}")
+    if len(removed) > args.limit:
+        print(f"- ... and {len(removed) - args.limit} more")
+    print(f"Kept {len(kept)} hub note(s) with written content or a link to them in a sentence:")
+    for path in kept:
+        print(f"- {path.as_posix()}")
+    if not args.apply and removed:
+        print("Nothing changed. Re-run with --apply to delete them and drop the links that point at them.")
 
 
 def cmd_init_project(args: argparse.Namespace) -> None:
@@ -3813,6 +4018,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser_audit.add_argument("--workspace", help="Workspace path override")
     parser_audit.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser_audit.set_defaults(func=cmd_audit)
+
+    parser_prune_hubs = subparsers.add_parser(
+        "prune-hubs",
+        help="List (or with --apply delete) Architecture/Roadmap/Debugging/Release hubs that hold only their template",
+    )
+    parser_prune_hubs.add_argument("--project", help="One project (default: every project)")
+    parser_prune_hubs.add_argument("--workspace", help="Workspace path override")
+    parser_prune_hubs.add_argument("--apply", action="store_true", help="Delete them; without it nothing changes")
+    parser_prune_hubs.add_argument("--limit", type=int, default=20, help="Paths to list")
+    parser_prune_hubs.set_defaults(func=cmd_prune_hubs)
 
     parser_doctor = subparsers.add_parser("doctor", help="Validate CLI/vault readiness")
     parser_doctor.add_argument("--workspace", help="Workspace path override")

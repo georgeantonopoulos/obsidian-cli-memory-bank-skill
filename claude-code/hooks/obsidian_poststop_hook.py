@@ -19,11 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
+    is_wrapper_prompt,
     last_turn,
     mark_turn_logged,
     only_ignored_edits,
     read_payload,
     record_run,
+    reply_title,
+    strip_reminders,
     truncate,
     turn_already_logged,
 )
@@ -65,10 +68,15 @@ def main() -> int:
         return 0
     workspace, project = context
 
-    prompt = turn["prompt"]
+    prompt = " ".join(strip_reminders(turn["prompt"]).split())
     summary = payload.get("last_assistant_message") or turn["assistant"]
     if not isinstance(summary, str):
         summary = ""
+    # A typed prompt names the task; a wrapper (session message, task notice,
+    # continued session) does not, so the reply's opening sentence does instead.
+    title = prompt
+    if not prompt or is_wrapper_prompt(prompt):
+        title = reply_title(summary) or prompt
     edited = turn["edited_files"]
     actions = "Auto-captured from Claude Code Stop event."
     if edited:
@@ -78,7 +86,7 @@ def main() -> int:
 
     result = record_run(
         workspace, project,
-        title=prompt or summary or f"Claude Code session in {project}",
+        title=title or f"Claude Code session in {project}",
         prompt=prompt or "No user prompt captured.",
         summary=truncate(summary, 1500) or "No assistant summary captured.",
         actions=actions,

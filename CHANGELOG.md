@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- **Search matches other forms of a word.** `sourcing` now finds notes that
+  say `source`, `testers` finds `tester`, `decided` finds `decide`. Plain words
+  of four or more letters share a root (one plural or tense ending removed);
+  short words, all-caps acronyms (`AI`, `PR`, `MIT`), numbers and identifiers
+  still match exactly, and a root only matches at the start of a word. On the
+  local recall set (local ranker, same vault, back to back): plain search finds
+  the decision for 37 of 45 questions instead of 33; the prompt hook shows it
+  for 38 instead of 35, and 7 of 15 vaguely worded questions instead of 5.
+
+- **Auto-saved notes are named after what was done.** When a turn was started
+  by a message from another session or a subagent, a background task notice,
+  the summary that continues a compacted session, or a labelled office prompt
+  ("[Office: ...]"), the Stop hook now titles the note with the first sentence
+  of the reply instead of the wrapper's opening words ("This session is being
+  continued...", "Message from X: [Subagent hand-back]..."). 211 of the 328
+  auto-saved notes in the live vault were started that way. Typed prompts keep
+  their own title, and a reply too short to say anything ("(quiet)") keeps the
+  old one. `<system-reminder>` blocks are dropped from the saved prompt.
+
+- **Compaction notes keep the real summary.** The PreCompact hook used to save
+  a "Pre-compaction snapshot: <project>" note holding only the last five
+  prompts, cut short; 136 of the 1,261 run notes in the live vault were these,
+  all with the same title. The SessionStart hook now saves, after compaction,
+  the summary Claude Code itself wrote: the request, errors and fixes, findings,
+  pending work and current work (about 3,000 characters; the user's own
+  messages and the concept and file lists are left out). The note is titled
+  "Compaction: <what the session was doing>". The note is saved by a detached
+  background process, so session start does not wait for it (0.2 s in a real
+  run). Each compaction gets one note: PreCompact marks the session and claims
+  the summary already on disk, so an earlier compaction's summary is never
+  saved again, and a second start after the same compaction saves nothing. If
+  no new summary appears within 20 seconds, the recent prompts are saved as
+  before.
+
+- **No more empty hub notes.** New projects no longer get Architecture,
+  Roadmap, Debugging Notes and Release Notes: nothing ever wrote to them, and
+  409 of the 424 in the live vault's 106 projects still held only the
+  template. `obmem prune-hubs` lists the template-only ones and `--apply`
+  deletes them and the bare link lines in Home, MOC and sibling hubs. A hub
+  with writing in it, Related links, or a link to it in a sentence is kept. On
+  a copy of the live vault: 409 files gone, 0 broken links before and after,
+  and a second run finds nothing.
+
 - **Fewer Jev calls.** The prompt hook no longer searches memory for messages
   that come from tools or other sessions instead of the user (background task
   notices, messages from another Claude session, the summary that continues a

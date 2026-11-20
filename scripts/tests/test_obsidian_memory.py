@@ -4,13 +4,18 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from scripts import obsidian_memory
+
 from scripts.obsidian_memory import (
+    is_template_hub,
+    prune_template_hubs,
     DEFAULT_AUDIT_EVERY_RUNS,
     PROJECTS_INDEX_PATH,
     _append_to_related_section,
@@ -261,28 +266,146 @@ class ObsidianMemoryTests(unittest.TestCase):
         notes = build_seed_notes("Sequency", paths)
         home = notes[paths.home]
         moc = notes[paths.moc]
-        architecture = notes[paths.architecture]
-        roadmap = notes[paths.roadmap]
         self.assertIn("[[Project Memory/sequency/MOC|MOC]]", home)
         self.assertIn("[[Project Memory/sequency/Sequency Home|Sequency Home]]", moc)
-        self.assertIn("[[Project Memory/sequency/Architecture|Architecture]]", home)
-        self.assertIn("[[Project Memory/sequency/Roadmap|Roadmap]]", home)
         self.assertIn("[[Project Memory/sequency/Current Memory|Current Memory]]", home)
-        self.assertIn("[[Project Memory/sequency/Architecture|Architecture]]", moc)
         self.assertIn("[[Project Memory/sequency/Current Memory|Current Memory]]", moc)
-        self.assertIn("[[Project Memory/sequency/MOC|MOC]]", architecture)
-        self.assertIn("[[Project Memory/sequency/Debugging Notes|Debugging Notes]]", architecture)
-        self.assertIn("[[Project Memory/sequency/Release Notes|Release Notes]]", roadmap)
+        self.assertIn("[[Project Memory/sequency/Decisions|Decisions]]", moc)
+        # Every link in a seed note points at another seed note: a new project has no broken links.
+        stems = {path.stem for path in notes}
+        for body in notes.values():
+            for target in re.findall(r"\[\[([^\]|]+)", body):
+                self.assertIn(Path(target).name, stems, target)
 
-    def test_seed_notes_create_topic_note_files(self) -> None:
+    def test_seed_notes_skip_hubs_nothing_writes_to(self) -> None:
         paths = build_note_paths("Sequency")
         notes = build_seed_notes("Sequency", paths)
-        self.assertIn(paths.architecture, notes)
-        self.assertIn(paths.roadmap, notes)
-        self.assertIn(paths.debugging_notes, notes)
-        self.assertIn(paths.release_notes, notes)
+        for unused in (paths.architecture, paths.roadmap, paths.debugging_notes, paths.release_notes):
+            self.assertNotIn(unused, notes)
         self.assertIn(paths.current_memory, notes)
-        self.assertEqual(len(notes), 10)
+        self.assertEqual(len(notes), 6)
+
+    def _hub_project(self, vault: Path) -> Path:
+        project = vault / "Project Memory" / "demo"
+        project.mkdir(parents=True)
+        link = lambda name: f"- [[Project Memory/demo/{name}|{name}]]"
+        (project / "demo Home.md").write_text(
+            "---\ntype: x\n---\n\n# demo Home\n\n## Knowledge Map\n"
+            + "\n".join(link(n) for n in ("MOC", "Architecture", "Roadmap", "Debugging Notes")) + "\n", encoding="utf-8")
+        (project / "MOC.md").write_text("# MOC\n\n## Core Topics\n" + link("Architecture") + "\nSee [[Project Memory/demo/Roadmap|Roadmap]] for plans.\n", encoding="utf-8")
+        template = ("---\ntype: roadmap\n---\n\n# Roadmap\n\nParent note: [[Project Memory/demo/demo Home|demo Home]]\n"
+                    "MOC: [[Project Memory/demo/MOC|MOC]]\n\n## Current Priorities\n"
+                    "- Track near-term milestones and larger follow-up work.\n\n## Linked Context\n" + link("Architecture") + "\n")
+        (project / "Roadmap.md").write_text(template, encoding="utf-8")
+        (project / "Architecture.md").write_text(template.replace("Roadmap", "Architecture"), encoding="utf-8")
+        (project / "Debugging Notes.md").write_text(template + "\n- Export crash came from a stale cache.\n", encoding="utf-8")
+        return project
+
+    def test_prune_hubs_dry_run_changes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            before = {p.name: p.read_text(encoding="utf-8") for p in project.iterdir()}
+            removed, kept = prune_template_hubs(vault, [project], apply=False)
+            self.assertEqual([p.name for p in removed], ["Architecture.md"])
+            self.assertEqual(sorted(p.name for p in kept), ["Debugging Notes.md", "Roadmap.md"])
+            self.assertEqual(before, {p.name: p.read_text(encoding="utf-8") for p in project.iterdir()})
+
+    def test_prune_hubs_removes_templates_and_their_link_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            prune_template_hubs(vault, [project], apply=True)
+            self.assertFalse((project / "Architecture.md").exists())
+            # MOC names the Roadmap in a sentence, so it stays and that link still works.
+            self.assertTrue((project / "Roadmap.md").exists())
+            home = (project / "demo Home.md").read_text(encoding="utf-8")
+            self.assertNotIn("Architecture", home)
+            self.assertIn("[[Project Memory/demo/Debugging Notes|Debugging Notes]]", home)
+            self.assertIn("[[Project Memory/demo/MOC|MOC]]", home)
+            moc = (project / "MOC.md").read_text(encoding="utf-8")
+            self.assertNotIn("- [[Project Memory/demo/Architecture", moc)
+            self.assertIn("See [[Project Memory/demo/Roadmap|Roadmap]] for plans.", moc)
+            self.assertIn("[[Project Memory/demo/Roadmap|Roadmap]]", home)
+            kept = (project / "Debugging Notes.md").read_text(encoding="utf-8")
+            self.assertIn("stale cache", kept)
+            self.assertNotIn("Architecture", kept)
+
+    def test_template_hub_with_related_links_is_kept(self) -> None:
+        text = "# Architecture\n\n## Related\n\n- [[Project Memory/demo/Runs/x|x]] — Read the source files.\n"
+        self.assertFalse(is_template_hub(text))
+
+    def test_prune_hubs_keeps_hub_linked_from_another_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            other = vault / "Project Memory" / "other"
+            other.mkdir()
+            (other / "MOC.md").write_text("- [[Project Memory/demo/Architecture|Architecture]]\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual(removed, [])
+            self.assertTrue((project / "Architecture.md").exists())
+
+    def test_prune_hubs_keeps_hub_linked_by_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            moc = project / "MOC.md"
+            moc.write_text(moc.read_text(encoding="utf-8") + "See [[./Architecture]] for the layout.\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual(removed, [])
+            self.assertTrue((project / "Architecture.md").exists())
+
+    def test_prune_hubs_keeps_hub_linked_by_path_ending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            other = vault / "Project Memory" / "other"
+            other.mkdir()
+            (other / "Notes.md").write_text("Layout lives in [[demo/Architecture]].\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual(removed, [])
+
+    def test_prune_hubs_keeps_link_line_to_another_projects_hub(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            other = vault / "Project Memory" / "b"
+            other.mkdir()
+            (other / "Architecture.md").write_text("# Architecture\n\nThe renderer runs in its own process.\n", encoding="utf-8")
+            moc = project / "MOC.md"
+            moc.write_text(moc.read_text(encoding="utf-8") + "- [[Project Memory/b/Architecture|Other architecture]]\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual([p.name for p in removed], ["Architecture.md"])
+            text = moc.read_text(encoding="utf-8")
+            self.assertIn("- [[Project Memory/b/Architecture|Other architecture]]", text)
+            self.assertNotIn("- [[Project Memory/demo/Architecture", text)
+
+    def test_prune_hubs_keeps_link_line_with_extra_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            moc = project / "MOC.md"
+            moc.write_text(moc.read_text(encoding="utf-8") + "- [[architecture]] - ship in Q3\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual(removed, [])
+            self.assertIn("- [[architecture]] - ship in Q3", moc.read_text(encoding="utf-8"))
+
+    def test_template_hub_with_curated_link_list_is_kept(self) -> None:
+        self.assertTrue(is_template_hub("# Roadmap\n\n## Linked Context\n- [[Project Memory/demo/MOC|MOC]]\n"))
+        self.assertFalse(is_template_hub("# Roadmap\n\n## Linked Context\n- [[Project Memory/demo/Export Pipeline]]\n"))
+        self.assertFalse(is_template_hub("# Roadmap\n\n## Notes\n"))
+
+    def test_prune_hubs_skips_unreadable_and_linked_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            (project / "Binary.md").write_bytes(b"\xff\xfe [[odd]]\n- [[Architecture]]\n")
+            (project / "Release Notes.md").symlink_to(project / "Architecture.md")
+            (project / "Folder.md").mkdir()
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual([p.name for p in removed], ["Architecture.md"])
+            self.assertEqual((project / "Binary.md").read_bytes(), b"\xff\xfe [[odd]]\n")
 
     def test_contains_cli_error(self) -> None:
         self.assertTrue(_contains_cli_error("Error: failed to open file"))
@@ -515,6 +638,48 @@ class ObsidianMemoryTests(unittest.TestCase):
             # "available"/"maintain"/"chain" all contain "ai" as a substring.
             self.assertNotIn("Topics/Audio.md", output)
             self.assertIn("Runs/ollama-planner.md", output)
+
+    def test_search_matches_other_forms_of_a_word(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = vault / "Project Memory" / "demo"
+            (project / "Runs").mkdir(parents=True, exist_ok=True)
+            (project / "Runs" / "open-source.md").write_text(
+                "The office goes open source under MIT.\n", encoding="utf-8")
+            (project / "Runs" / "beta.md").write_text(
+                "Mark the job done once the tester list shows Day 1+.\n", encoding="utf-8")
+            (project / "Runs" / "unrelated.md").write_text(
+                "Resources and the resourceful planner.\n", encoding="utf-8")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            output = cli.search_files('sourcing path:"Project Memory/demo"')
+            self.assertIn("Runs/open-source.md", output)
+            # A root only matches at the start of a word, never inside one.
+            self.assertNotIn("Runs/unrelated.md", output)
+            self.assertIn("Runs/beta.md", cli.search_files('testers path:"Project Memory/demo"'))
+
+    def test_word_forms_leave_short_words_and_acronyms_exact(self) -> None:
+        self.assertEqual(obsidian_memory._word_root("sourcing"), "sourc")
+        self.assertEqual(obsidian_memory._word_root("sources"), "sourc")
+        self.assertEqual(obsidian_memory._word_root("stopped"), "stop")
+        self.assertEqual(obsidian_memory._word_root("classes"), "class")
+        self.assertEqual(obsidian_memory._word_root("status"), "status")
+        self.assertEqual(obsidian_memory._word_root("news"), "news")
+        for exact in ("AI", "PR", "MIT", "C++", "v1.5", "env"):
+            self.assertEqual(obsidian_memory._word_forms_regex(exact), "", exact)
+        cases = {
+            "proceed": "proceed proceeds proceeding",
+            "saved": "save saves saved saving",
+            "coding": "code coded coding",
+            "added": "add adds added adding",
+        }
+        for term, text in cases.items():
+            pattern = obsidian_memory._compile_term_patterns([term])[0]
+            self.assertEqual(pattern.findall(text), text.split(), term)
+        pattern = obsidian_memory._compile_term_patterns(["news"])[0]
+        self.assertEqual(pattern.findall("new news"), ["news"])
+        pattern = obsidian_memory._compile_term_patterns(["decided"])[0]
+        self.assertEqual(pattern.findall("decide decides decided deciding decidua"),
+                         ["decide", "decides", "decided", "deciding"])
 
     def test_search_ranks_a_focused_note_above_a_large_incidental_one(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1183,7 +1348,8 @@ class CompactionTests(unittest.TestCase):
                 self.assertTrue((vault / paths.topics_dir / "Export.md").exists())
                 self.assertTrue((vault / paths.topics_dir / "Permissions.md").exists())
                 self.assertEqual(len(list((vault / paths.archived_runs_dir).glob("*.md"))), 2)
-                self.assertEqual(len(list((vault / paths.compactions_dir).glob("*.md"))), 2)
+                self.assertEqual(len(list((vault / paths.compactions_dir).glob("*.md"))), 1)
+                self.assertEqual(len(list((vault / paths.archived_compactions_dir).glob("*.md"))), 1)
         finally:
             if original_state_env is None:
                 os.environ.pop("OBMEM_STATE_FILE", None)
@@ -1430,7 +1596,85 @@ class CompactionKeepsLinksTests(unittest.TestCase):
             self.assertFalse(any((vault / paths.runs_dir).glob("*.md")), "runs were archived")
             self.assertFalse((vault / paths.topics_dir / "Video Export.md").exists(), "stale topic retired")
             self.assertIn("0 unresolved link target", cli.audit_unresolved(verbose=True))
-            self.assertIn("Other links moved to archived runs and topics: 4", out.getvalue())
+            self.assertIn("Other links moved to archived runs, topics and reports: 4", out.getvalue())
+
+
+    def test_older_compaction_reports_move_to_the_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            (vault / paths.runs_dir).mkdir(parents=True)
+            run = '---\ntype: "run"\nproject: "Demo"\ntags:\n  - "export"\n---\n\n# {t}\n\n## Summary\n{s}\n'
+            cli = ObsidianCLI(vault, False)
+            args = build_parser().parse_args(["compact-project", "--project", "Demo"])
+            first = None
+            for day, (title, summary) in enumerate([
+                ("Fix export", "Export now writes atomically to the output folder."),
+                ("Cache reader", "The cache reader keeps file handles closed after reads."),
+            ], start=1):
+                (vault / paths.runs_dir / f"2026-11-0{day}-1000-run-{day}.md").write_text(
+                    run.format(t=title, s=summary))
+                with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    cmd_compact_project(args)
+                if first is None:
+                    first = next((vault / paths.compactions_dir).glob("*.md")).stem
+            self.assertIn("Archived older compaction reports: 1", out.getvalue())
+            live = [p.stem for p in (vault / paths.compactions_dir).glob("*.md")]
+            self.assertEqual(len(live), 1)
+            self.assertNotEqual(live[0], first)
+            archived = vault / paths.archived_compactions_dir / f"{first}.md"
+            self.assertTrue(archived.exists())
+            self.assertIn(f"Superseded by [[{paths.compactions_dir.as_posix()}/{live[0]}|", archived.read_text())
+            run_log = (vault / paths.run_log).read_text()
+            self.assertIn(f"[[{paths.archived_compactions_dir.as_posix()}/{first}|", run_log)
+            self.assertIn("0 unresolved link target", cli.audit_unresolved(verbose=True))
+
+
+    def test_reports_left_by_older_obmem_are_retired_without_new_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            reports = vault / paths.compactions_dir
+            reports.mkdir(parents=True)
+            names = ["2026-05-01-0900-compact-demo", "2026-05-01-0900-compact-demo-2", "2026-06-01-0900-compact-demo"]
+            for name in names:
+                (reports / f"{name}.md").write_text(f"# {name}\n")
+            keep = names[1]
+            (vault / paths.current_memory).write_text(
+                f"# Current Memory\n\nLatest compaction: [[{paths.compactions_dir.as_posix()}/{keep}|{keep}]]\n")
+            (vault / paths.run_log).write_text(
+                "".join(f"- [[{paths.compactions_dir.as_posix()}/{n}|{n}]]: Compacted.\n" for n in names))
+            cli = ObsidianCLI(vault, False)
+            args = build_parser().parse_args(["compact-project", "--project", "Demo"])
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                cmd_compact_project(args)
+            self.assertIn("Archived older compaction reports: 2", out.getvalue())
+            self.assertEqual([p.stem for p in reports.glob("*.md")], [keep])
+            self.assertIn("0 unresolved link target", cli.audit_unresolved(verbose=True))
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                cmd_compact_project(args)
+            self.assertNotIn("Archived older", out.getvalue())
+
+
+    def test_without_current_memory_the_latest_same_minute_report_stays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = build_note_paths("Demo")
+            reports = vault / paths.compactions_dir
+            reports.mkdir(parents=True)
+            for name in ["2026-05-01-0900-compact-demo", "2026-05-01-0900-compact-demo-2"]:
+                (reports / f"{name}.md").write_text(f"# {name}\n")
+            args = build_parser().parse_args(["compact-project", "--project", "Demo"])
+            with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                cmd_compact_project(args)
+            self.assertEqual([p.stem for p in reports.glob("*.md")], ["2026-05-01-0900-compact-demo-2"])
+            from scripts.obsidian_memory import _unique_compaction_path
+            self.assertEqual(_unique_compaction_path(vault, paths.compactions_dir / "2026-05-01-0900-compact-demo.md").name,
+                             "2026-05-01-0900-compact-demo-3.md")
 
 
 class RepointMovedLinksTests(unittest.TestCase):
