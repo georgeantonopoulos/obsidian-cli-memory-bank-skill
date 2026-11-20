@@ -311,7 +311,7 @@ def _sanitize_query(prompt: str, max_words: int = 5, project: str = "") -> str:
     # one topic word ("should we merge eemero PR 1?", "how should questions for
     # George be asked?") would then fall under the keyword minimum and get no
     # memory at all. There the name is what makes it specific: keep it.
-    if len(words) == 1 and dropped_names:
+    if len(words) == 1 and dropped_names and max_words > 1:
         words.append(dropped_names[0])
     return " ".join(words)
 
