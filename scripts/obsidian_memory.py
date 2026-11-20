@@ -15,6 +15,7 @@ try:  # advisory file locks; not available on Windows, where writes go unlocked
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 import plistlib
+import posixpath
 import re
 import shutil
 import subprocess
@@ -3621,6 +3622,23 @@ def _read_note(path: Path) -> Optional[str]:
         return None
 
 
+def _link_hits(target: str, folder: str, hub_key: str) -> bool:
+    """Whether a link target written in `folder` can open the hub at `hub_key`.
+
+    Keys are vault-relative, casefolded and without `.md`. Follows the same
+    rules as _NoteIndex: a bare name matches any note of that name; a target
+    with a folder matches the full path, the end of one, or a path relative to
+    the linking note's folder.
+    """
+    key = _link_target(target)
+    if "/" not in key:
+        return key == hub_key.rsplit("/", 1)[-1]
+    stripped = key.lstrip("/")
+    if stripped == hub_key or hub_key.endswith("/" + stripped):
+        return True
+    return posixpath.normpath(posixpath.join(folder, key)) == hub_key
+
+
 def prune_template_hubs(vault_path: Path, project_dirs: Sequence[Path], apply: bool) -> Tuple[List[Path], List[Path]]:
     """(template hubs, hubs kept) across the given projects.
 
@@ -3629,49 +3647,63 @@ def prune_template_hubs(vault_path: Path, project_dirs: Sequence[Path], apply: b
     own project. With apply, those link lines go too, so no link is left broken.
     """
     bare_line = _hub_link_line_re(_TEMPLATE_HUB_NAMES)
-    # Every link target in the vault, except bare hub link lines inside the same project.
-    mentions: Dict[str, List[Path]] = {}
+    project_root = vault_path / PROJECT_ROOT
+    # Every link in the vault: (target, linking note's folder key, note, bare hub line, note's project).
+    links: List[Tuple[str, str, Path, bool, Optional[Path]]] = []
     for note in vault_path.rglob("*.md"):
-        if any(part.startswith(".") for part in note.relative_to(vault_path).parts):
+        rel = note.relative_to(vault_path)
+        if any(part.startswith(".") for part in rel.parts):
             continue
         text = _read_note(note)
         if text is None:
             continue
-        project_root = vault_path / PROJECT_ROOT
+        folder = rel.parent.as_posix().casefold()
+        folder = "" if folder == "." else folder
         same_project = None
         if note.is_relative_to(project_root) and len(note.relative_to(project_root).parts) > 1:
             same_project = project_root / note.relative_to(project_root).parts[0]
         for line in text.splitlines(keepends=True):
             is_bare = bool(bare_line.fullmatch(line) or bare_line.fullmatch(line + "\n"))
             for match in _WIKILINK_RE.finditer(line):
-                mentions.setdefault(_link_target(match.group(1)), []).append(
-                    note if not is_bare else (same_project or note))
+                links.append((match.group(1), folder, note, is_bare, same_project))
     removed: List[Path] = []
     kept: List[Path] = []
     for project_dir in project_dirs:
-        gone: List[str] = []
+        gone: Dict[str, str] = {}
         for name in _TEMPLATE_HUB_NAMES:
             hub = project_dir / f"{name}.md"
             text = _read_note(hub)
             if text is None:
                 continue
             rel = hub.relative_to(vault_path)
-            sources = mentions.get(name.casefold(), []) + mentions.get(_link_target(rel.with_suffix("").as_posix()), [])
-            # A bare line in this project is recorded as the project dir itself: those get stripped.
-            linked = any(src != hub and src != project_dir for src in sources)
+            hub_key = rel.with_suffix("").as_posix().casefold()
+            # Bare link lines in this project are stripped along with the hub, so they do not keep it.
+            linked = any(
+                src != hub and not (is_bare and src_project == project_dir) and _link_hits(target, folder, hub_key)
+                for target, folder, src, is_bare, src_project in links)
             if not linked and is_template_hub(text):
                 removed.append(rel)
-                gone.append(name)
+                gone[name] = hub_key
             else:
                 kept.append(rel)
         if not apply or not gone:
             continue
-        link_line = _hub_link_line_re(gone)
+        link_line = _hub_link_line_re(list(gone))
+        gone_files = {f"{name}.md" for name in gone}
         for note in project_dir.rglob("*.md"):
             text = _read_note(note)
-            if text is None or note.name in {f"{name}.md" for name in gone}:
+            if text is None or note.name in gone_files:
                 continue
-            updated = link_line.sub("", text)
+            folder = note.relative_to(vault_path).parent.as_posix().casefold()
+
+            def strip(match: "re.Match[str]") -> str:
+                target = _WIKILINK_RE.search(match.group(0))
+                # Only lines that open a hub being deleted; links to another project's hub stay.
+                if target and any(_link_hits(target.group(1), folder, key) for key in gone.values()):
+                    return ""
+                return match.group(0)
+
+            updated = link_line.sub(strip, text)
             if updated != text:
                 note.write_text(updated, encoding="utf-8", errors="surrogateescape")
         for name in gone:

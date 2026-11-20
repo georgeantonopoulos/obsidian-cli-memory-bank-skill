@@ -346,6 +346,41 @@ class ObsidianMemoryTests(unittest.TestCase):
             self.assertEqual(removed, [])
             self.assertTrue((project / "Architecture.md").exists())
 
+    def test_prune_hubs_keeps_hub_linked_by_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            moc = project / "MOC.md"
+            moc.write_text(moc.read_text(encoding="utf-8") + "See [[./Architecture]] for the layout.\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual(removed, [])
+            self.assertTrue((project / "Architecture.md").exists())
+
+    def test_prune_hubs_keeps_hub_linked_by_path_ending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            other = vault / "Project Memory" / "other"
+            other.mkdir()
+            (other / "Notes.md").write_text("Layout lives in [[demo/Architecture]].\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual(removed, [])
+
+    def test_prune_hubs_keeps_link_line_to_another_projects_hub(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = self._hub_project(vault)
+            other = vault / "Project Memory" / "b"
+            other.mkdir()
+            (other / "Architecture.md").write_text("# Architecture\n\nThe renderer runs in its own process.\n", encoding="utf-8")
+            moc = project / "MOC.md"
+            moc.write_text(moc.read_text(encoding="utf-8") + "- [[Project Memory/b/Architecture|Other architecture]]\n", encoding="utf-8")
+            removed, _ = prune_template_hubs(vault, [project], apply=True)
+            self.assertEqual([p.name for p in removed], ["Architecture.md"])
+            text = moc.read_text(encoding="utf-8")
+            self.assertIn("- [[Project Memory/b/Architecture|Other architecture]]", text)
+            self.assertNotIn("- [[Project Memory/demo/Architecture", text)
+
     def test_prune_hubs_keeps_link_line_with_extra_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
