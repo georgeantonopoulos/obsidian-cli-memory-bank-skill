@@ -483,7 +483,6 @@ Progress uses measured counts.
         # The search (obmem) and the excerpt (this hook) must agree on what
         # counts as the same word, or the hook shows a line the search did not
         # rank on. The hook cannot import obmem, so this guards the two copies.
-        sys.path.insert(0, str(HOOKS_DIR.parents[1]))
         from scripts.obsidian_memory import _word_forms_regex
         families = (
             "question questions questioned questioning", "source sources sourced sourcing",
@@ -504,6 +503,12 @@ Progress uses measured counts.
                     if same.search(word):
                         with self.subTest(keyword=keyword, word=word):
                             self.assertTrue(any(p.search(word) for p in patterns))
+        # A short stem must not reach other words that merely start with it.
+        for keyword, other in (("added", "address"), ("series", "server"), ("string", "strategy"),
+                               ("saved", "savvy"), ("coding", "codex"), ("applies", "application"),
+                               ("story", "storage"), ("based", "basic")):
+            with self.subTest(keyword=keyword, other=other):
+                self.assertFalse(any(p.search(other) for p in HOOK._query_terms(keyword)))
 
     def test_excerpt_keeps_opening_when_match_is_already_there_or_absent(self) -> None:
         note = "# Fix export\n- Progress uses measured counts.\n" + "- filler line\n" * 100
