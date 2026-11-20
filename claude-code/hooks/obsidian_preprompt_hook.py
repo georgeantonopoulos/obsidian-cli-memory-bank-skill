@@ -458,8 +458,9 @@ def _query_terms(query: str) -> list[re.Pattern]:
             body = re.escape(term) + r"(?![a-z0-9])"
         elif stem.isalpha() and stem.isascii():
             # "stop" -> "stopped": the ending may double the last consonant.
-            # Only before -ed/-ing/-er, so "saved" does not reach "savvy".
-            double = f"(?:{re.escape(stem[-1])}(?=ed|ing|er))?" if stem[-1] not in "aeiouy" else ""
+            # Not before -y, so "saved" does not reach "savvy" ("buzzed" still finds "buzz").
+            double = (f"(?:{re.escape(stem[-1])}(?=ed|ing|er|es|s?(?![a-z0-9])))?"
+                      if stem[-1] not in "aeiouy" else "")
             body = re.escape(stem) + double + _WORD_ENDINGS + r"(?![a-z0-9])"
         else:
             body = re.escape(stem)
