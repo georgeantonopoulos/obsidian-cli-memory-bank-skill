@@ -430,7 +430,7 @@ def _term_stem(term: str) -> str:
             continue
         stem = term[: -len(ending)]
         # "stopped" -> "stop": the doubled consonant came with the ending.
-        if ending in ("ing", "ed") and len(stem) >= 4 and stem[-1] == stem[-2] and stem[-1] not in "aeioulsfz":
+        if ending in ("ing", "ed") and len(stem) >= 4 and stem[-1] == stem[-2] and stem[-1] not in "aeioulsf":
             stem = stem[:-1]
         break
     # A final e or y changes with the ending (merge/merging, query/queries).
