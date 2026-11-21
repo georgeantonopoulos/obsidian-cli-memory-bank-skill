@@ -1070,7 +1070,64 @@ class StopHookTests(unittest.TestCase):
     def test_too_short_reply_keeps_the_wrapper_title(self) -> None:
         start = {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "peer", "name": "Gary", "body": "status?"},
                  "message": {"content": "Another Claude session sent a message: status?"}}
-        self.assertEqual(self._titled(start, "(quiet)")["title"], "Message from Gary: status?")
+        self.assertEqual(self._titled(start, "Hm, yes.")["title"], "Message from Gary: status?")
+
+    def test_waiting_and_empty_replies_are_not_logged(self) -> None:
+        start = {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}}
+        for reply in ("(quiet)", "OK", "The suite is still running. I'll finish once it reports back.",
+                      "Waiting on the independent review before the final report.",
+                      "Waiting for the app build and the test suite.",
+                      "The full test suite is still running. I'll pick this up when it reports back.",
+                      "I’m waiting on CI.", "Build is still going; I'll run the headless check once it lands.",
+                      "The review is still running. I'll merge and ship once it reports back."):
+            with self.subTest(reply=reply):
+                turn = [start, {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Edit", "input": {"file_path": "/b.py"}},
+                    {"type": "text", "text": reply}]}}]
+                with self._state():
+                    self.assertFalse(self._run_stop(turn).called)
+
+    def test_replies_with_an_outcome_are_still_logged(self) -> None:
+        start = {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}}
+        for reply in ("I fixed the export hook and the tests pass.", "Done.",
+                      "Fixed the deadlock: the two threads were waiting on each other.",
+                      "Fixed the race where the worker kept waiting for the lock.",
+                      "Renamed the config key in all three files. I'll check the docs next.",
+                      "Patched the path bug; the hook is running correctly now.",
+                      "Merged the PR. Waiting on CI.", "Done. Waiting on the review.",
+                      "Shipped the fix: waiting on CI.",
+                      "Fixed the crash, though the old worker is still running.",
+                      "Both fixes landed and CI is still going.",
+                      "Fixed the systemd unit; the service is now running and survives reboot.",
+                      "Fixed the deadlock: the worker no longer waits for itself.",
+                      "Still waiting on CI, but the migration is done and applied.",
+                      "Waiting on CI, I fixed the deadlock and merged the PR.",
+                      "Tests still running, but I fixed the bug and pushed.",
+                      "The suite is still running; fix is merged.",
+                      "Waiting for review: PR merged and deployed to prod.",
+                      "Once it finishes I'll merge the fix, already patched the crash.",
+                      "Waiting on CI\n- merged the PR",
+                      "Shipped it so CI is still running.",
+                      "Merged it while CI is still running.",
+                      "Confirmed the old cron is still running.",
+                      "Verified the server is still running after the restart.",
+                      "The old hook is still running twice per turn.",
+                      "The daemon is still running as root.",
+                      "Waiting on CI and the fix is merged.", "Waiting on CI after merging the fix.",
+                      "Waiting for CI now that the crash fix is pushed.",
+                      "Waiting on the lock was the root cause of the hang.",
+                      "Waiting for the DB connection caused the timeout.",
+                      "I'll pick it up tomorrow since the root cause is the stale cache",
+                      "Now watching the deploy that fixed the login bug.",
+                      "Still waiting on CI since the build passed locally",
+                      "Once it lands the export bug is fixed for every project.",
+                      "Waiting on CI and the deploy broke staging.", "Waiting on CI and the leak went away.",
+                      "Waiting on the reviewer who wrote the broken migration.",
+                      "Waiting on 3 tests that fail on Linux only.", "I'll note it broke the importer.",
+                      "The time now comes first and is never cut off; common names fit whole. "
+                      "Waiting for Codex's review of PR #3 before merging it into main."):
+            with self.subTest(reply=reply[:30]):
+                self.assertEqual(self._titled(start, reply)["title"], "fix the export hook")
 
     def test_reply_title_shapes(self) -> None:
         self.assertEqual(COMMON.reply_title("Done. The cache is cleared for every project."),

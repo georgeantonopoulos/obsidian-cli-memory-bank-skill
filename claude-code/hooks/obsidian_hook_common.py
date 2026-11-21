@@ -111,6 +111,56 @@ def strip_reminders(text: str) -> str:
     return _PASTE_TAG_RE.sub(" ", _REMINDER_RE.sub(" ", text))
 
 
+# A reply that only says the work is waiting ("The suite is still running.
+# I'll finish once it reports back.") records nothing; the turn that picks the
+# work up again records the outcome. Every clause must be, as a whole, one of
+# the waiting shapes below, built only from the small vocabulary of pending
+# work, so "Merged the PR. Waiting on CI." and "Waiting on CI and the deploy
+# broke staging." keep their notes. A word outside the list means "log it".
+_WORK_WORD = (r"(?:the|a|an|my|its|their|both|all|this|that|and|or|of|to|before|"
+              r"full|whole|unit|app|test|tests|focused|headless|remaining|last|final|"
+              r"independent|live|two|three|other|first|second|"
+              r"run|runs|suite|build|builds|CI|review|reviews|reviewer|reviewers|"
+              r"check|checks|fact-check|job|jobs|agent|agents|agent's|investigators?|"
+              r"survey|ranking|builders?|validator|Codex|CodeRabbit|PR|"
+              r"report|reports|reporting|back|merging|starting|finish|click|"
+              r"office|rewrite|status|page|deploy|answer|[#]?\d+)")
+_OBJECT = rf"(?: {_WORK_WORD}){{1,10}}"
+_SUBJECT = r"(?:it|they|both|each one|that|the (?:run|build|review|suite|tests?))"
+_DONE_VERB = r"(?:reports?(?: back)?|finish(?:es)?|lands?|comes? back)"
+_NEXT_STEP = r"(?:finish|merge|ship|run|rerun|check|re-check|report|commit|continue|start)"
+_WAITING_SENTENCE_RE = re.compile(
+    rf"(?:(?:I['’]m|I am|now|still) )?(?:still )?waiting (?:on|for){_OBJECT}"
+    r"|(?:the |both |my )?(?:(?:full|whole|unit|app|test|focused|headless|remaining|last|independent) ){0,3}"
+    r"(?:tests?|suite|(?:test )?run|build|CI|reviews?|reviewer|checks?|jobs?|agents?)"
+    r"(?:'s| is| are)? still (?:running|building|going)"
+    rf"|(?:once|when) {_SUBJECT} {_DONE_VERB}"
+    rf"|I['’]ll (?:wait|pick (?:this |it )?up|{_NEXT_STEP}(?: (?:and )?{_NEXT_STEP})?(?:{_OBJECT})?)"
+    rf"(?: (?:once|when) {_SUBJECT} {_DONE_VERB})?"
+    rf"|now watching{_OBJECT}",
+    re.IGNORECASE)
+_EMPTY_REPLIES = {"", "(quiet)", "quiet", "ok", "ok."}
+_PROGRESS_REPLY_CHARS = 130
+# Clauses are judged one by one, so "Still waiting on CI, but the migration is
+# done." keeps its note: the clause after the comma reports an outcome.
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?;:,])\s+|\s+-\s+|\n+")
+
+
+def is_progress_reply(reply: str) -> bool:
+    """True for a reply with nothing to remember: empty, "(quiet)", "OK", or a
+    short reply in which every clause says the work waits on something."""
+    lines = strip_reminders(reply).strip().strip("*_` ")
+    text = " ".join(lines.split())
+    if text.lower() in _EMPTY_REPLIES:
+        return True
+    if len(text) > _PROGRESS_REPLY_CHARS:
+        return False
+    clauses = [" ".join(part.split()).strip("*_`-• ") for part in _CLAUSE_SPLIT_RE.split(lines)]
+    clauses = [clause for clause in clauses if clause]
+    return bool(clauses) and all(
+        _WAITING_SENTENCE_RE.fullmatch(clause.rstrip(".;,:!")) for clause in clauses)
+
+
 def reply_title(reply: str) -> str:
     """The reply's opening sentence, as a note title ('' if there is none).
 
