@@ -1121,6 +1121,9 @@ class StopHookTests(unittest.TestCase):
                       "Now watching the deploy that fixed the login bug.",
                       "Still waiting on CI since the build passed locally",
                       "Once it lands the export bug is fixed for every project.",
+                      "Waiting on CI and the deploy broke staging.", "Waiting on CI and the leak went away.",
+                      "Waiting on the reviewer who wrote the broken migration.",
+                      "Waiting on 3 tests that fail on Linux only.", "I'll note it broke the importer.",
                       "The time now comes first and is never cut off; common names fit whole. "
                       "Waiting for Codex's review of PR #3 before merging it into main."):
             with self.subTest(reply=reply[:30]):

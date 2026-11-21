@@ -114,22 +114,28 @@ def strip_reminders(text: str) -> str:
 # A reply that only says the work is waiting ("The suite is still running.
 # I'll finish once it reports back.") records nothing; the turn that picks the
 # work up again records the outcome. Every clause must be, as a whole, one of
-# the waiting shapes below, and the free words in it may not report anything
-# (no past tense, "was", "since", "caused"), so "Merged the PR. Waiting on CI."
-# and "Waiting on CI after merging the fix." keep their notes.
-_NO_OUTCOME = (r"(?:(?!(?:\w+ed|was|were|is|are|has|have|had|after|since|because|so|"
-               r"which|now|caused?|causes|root|fix(?:es)?|done|merging|fixing|pushing)\b)"
-               r"[\w'’#+./-]+)")
-_OBJECT = rf"(?: {_NO_OUTCOME}){{1,9}}"
+# the waiting shapes below, built only from the small vocabulary of pending
+# work, so "Merged the PR. Waiting on CI." and "Waiting on CI and the deploy
+# broke staging." keep their notes. A word outside the list means "log it".
+_WORK_WORD = (r"(?:the|a|an|my|its|their|both|all|this|that|and|or|of|to|before|"
+              r"full|whole|unit|app|test|tests|focused|headless|remaining|last|final|"
+              r"independent|live|two|three|other|first|second|"
+              r"run|runs|suite|build|builds|CI|review|reviews|reviewer|reviewers|"
+              r"check|checks|fact-check|job|jobs|agent|agents|agent's|investigators?|"
+              r"survey|ranking|builders?|validator|Codex|CodeRabbit|PR|"
+              r"report|reports|reporting|back|merging|starting|finish|click|"
+              r"office|rewrite|status|page|deploy|answer|[#]?\d+)")
+_OBJECT = rf"(?: {_WORK_WORD}){{1,10}}"
 _SUBJECT = r"(?:it|they|both|each one|that|the (?:run|build|review|suite|tests?))"
 _DONE_VERB = r"(?:reports?(?: back)?|finish(?:es)?|lands?|comes? back)"
+_NEXT_STEP = r"(?:finish|merge|ship|run|rerun|check|re-check|report|commit|continue|start)"
 _WAITING_SENTENCE_RE = re.compile(
     rf"(?:(?:I['’]m|I am|now|still) )?(?:still )?waiting (?:on|for){_OBJECT}"
     r"|(?:the |both |my )?(?:(?:full|whole|unit|app|test|focused|headless|remaining|last|independent) ){0,3}"
     r"(?:tests?|suite|(?:test )?run|build|CI|reviews?|reviewer|checks?|jobs?|agents?)"
     r"(?:'s| is| are)? still (?:running|building|going)"
     rf"|(?:once|when) {_SUBJECT} {_DONE_VERB}"
-    rf"|I['’]ll (?:wait|pick (?:this |it )?up|{_NO_OUTCOME}(?: {_NO_OUTCOME}){{0,5}})"
+    rf"|I['’]ll (?:wait|pick (?:this |it )?up|{_NEXT_STEP}(?: (?:and )?{_NEXT_STEP})?(?:{_OBJECT})?)"
     rf"(?: (?:once|when) {_SUBJECT} {_DONE_VERB})?"
     rf"|now watching{_OBJECT}",
     re.IGNORECASE)
