@@ -115,6 +115,8 @@ _EXCERPT_CHARS = 2000
 # A better-ranked note from another project gets a shorter excerpt of its own.
 _OTHER_EXCERPT_CHARS = 1200
 _NAV_LINE_RE = re.compile(r"^(?:Parent note|MOC|Run log|Decision register|Question log):")
+_LINK_LIST_RE = re.compile(r"^## (?:Related|Related Topics|Source Runs)[ \t]*\n(?:(?!#{1,2} ).*(?:\n|$))*",
+                           re.MULTILINE)
 _READ_FOOTER_RE = re.compile(r"^\[Excerpt: characters .*\]$")
 
 
@@ -530,9 +532,9 @@ def _clean_excerpt(text: str, limit: int = _EXCERPT_CHARS, query: str = "") -> s
         end = text.find("\n---", 3)
         if end != -1:
             text = text[end + 4:]
-    related = re.search(r"^## Related\b", text, re.MULTILINE)
-    if related:
-        text = text[:related.start()]
+    # Link lists (Related, Related Topics, Source Runs) go, up to the next
+    # heading: a section after them ("Restored entries") holds real decisions.
+    text = _LINK_LIST_RE.sub("", text)
     lines = [line for line in text.splitlines()
              if not _NAV_LINE_RE.match(line) and not _READ_FOOTER_RE.match(line)]
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()

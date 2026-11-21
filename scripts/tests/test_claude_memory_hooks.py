@@ -466,6 +466,18 @@ Progress uses measured counts.
         # The Related list is still dropped, even though it matches too.
         self.assertNotIn("Cache notes", new)
 
+    def test_excerpt_keeps_a_section_after_the_link_lists(self) -> None:
+        # Decisions restored below the Related list must still be shown.
+        note = ("# Decisions\n\n## Decision Register\n- Keep the queue serial.\n\n"
+                "## Related Topics\n- [[UI]]\n\n## Source Runs\n- [[run-1]]: old run\n\n"
+                "## Related\n- [[Other]]\n\n## Restored entries\n"
+                "- Weekly email App Units include free/promo units.\n")
+        excerpt = HOOK._clean_excerpt(note)
+        self.assertIn("Keep the queue serial.", excerpt)
+        self.assertIn("free/promo units", excerpt)
+        for gone in ("Related", "Source Runs", "[[UI]]", "run-1", "[[Other]]"):
+            self.assertNotIn(gone, excerpt)
+
     def test_excerpt_window_matches_other_forms_of_a_keyword(self) -> None:
         # Every line names George; only the answer also holds "question", in
         # the singular, while the keyword is "questions".
