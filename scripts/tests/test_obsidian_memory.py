@@ -657,6 +657,37 @@ class ObsidianMemoryTests(unittest.TestCase):
             self.assertNotIn("Runs/unrelated.md", output)
             self.assertIn("Runs/beta.md", cli.search_files('testers path:"Project Memory/demo"'))
 
+    def test_search_finds_the_other_spelling_of_a_word(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            project = vault / "Project Memory" / "demo"
+            (project / "Runs").mkdir(parents=True, exist_ok=True)
+            (project / "Runs" / "grade.md").write_text(
+                "The color picker is centered and canceled jobs are gray.\n", encoding="utf-8")
+            (project / "Runs" / "repo.md").write_text(
+                "We licensed it under MIT and organized the repo.\n", encoding="utf-8")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            for query, note in (("colour", "grade"), ("centre", "grade"), ("cancelled", "grade"),
+                                ("grey", "grade"), ("licence", "repo"), ("organise", "repo")):
+                with self.subTest(query=query):
+                    self.assertIn(f"Runs/{note}.md", cli.search_files(f'{query} path:"Project Memory/demo"'))
+            self.assertIn("Runs/grade.md", cli.search_files('colors path:"Project Memory/demo"'))
+
+    def test_spelling_variants_leave_other_words_alone(self) -> None:
+        variants = obsidian_memory._spelling_variants
+        self.assertEqual(variants("colour"), ["color"])
+        self.assertEqual(variants("favorites"), ["favourites"])
+        self.assertEqual(variants("modelling"), ["modeling"])
+        self.assertEqual(variants("organisation"), ["organization"])
+        self.assertEqual(variants("analyzed"), ["analysed"])
+        self.assertEqual(variants("center"), ["centre"])
+        for word in ("source", "course", "hour", "tour", "four", "raise", "noise", "prize", "size",
+                     "rise", "called", "filled", "metal", "enter", "after", "water"):
+            self.assertEqual(variants(word), [], word)
+        # The other spelling's forms count, not words that merely share letters.
+        pattern = obsidian_memory._compile_term_patterns(["colour"])[0]
+        self.assertEqual(pattern.findall("color colors coloured colorado"), ["color", "colors", "coloured"])
+
     def test_word_forms_leave_short_words_and_acronyms_exact(self) -> None:
         self.assertEqual(obsidian_memory._word_root("sourcing"), "sourc")
         self.assertEqual(obsidian_memory._word_root("sources"), "sourc")

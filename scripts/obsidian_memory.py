@@ -550,8 +550,12 @@ class ObsidianCLI:
         # The cheap substring screen uses each term's root so "sourcing"
         # still lets a note that only says "source" through to the word match.
         lowered_terms = [term.lower() for term in terms if term]
-        screen_terms = [_word_root(term) if _word_forms_regex(term) else term
-                        for term in lowered_terms]
+        # The other spelling's root too: "colour" lets a note saying "color" through.
+        screen_terms = [
+            tuple(_word_root(form) for form in (term, *_spelling_variants(term)))
+            if _word_forms_regex(term) else (term,)
+            for term in lowered_terms
+        ]
         for note in _markdown_files(root, self.vault_path, skip_archive=not include_archive):
             relative = note.relative_to(self.vault_path).as_posix()
             try:
@@ -562,7 +566,7 @@ class ObsidianCLI:
             # Most notes hold none of the terms; a plain substring check skips
             # them before the slower whole-word counting.
             lowered = haystack.lower()
-            if terms and not any(term in lowered for term in screen_terms):
+            if terms and not any(root in lowered for roots in screen_terms for root in roots):
                 continue
             if exclude_session and _written_by(text, exclude_session, exclude_since):
                 continue
@@ -570,8 +574,9 @@ class ObsidianCLI:
             # is counted twice rather than given a separate scoring branch.
             title = note.stem
             frequencies = [
-                len(pattern.findall(haystack)) + len(pattern.findall(title)) if term in lowered else 0
-                for pattern, term in zip(patterns, screen_terms)
+                len(pattern.findall(haystack)) + len(pattern.findall(title))
+                if any(root in lowered for root in roots) else 0
+                for pattern, roots in zip(patterns, screen_terms)
             ]
             if not terms or any(frequencies):
                 length = max(len(_WORD_RE.findall(haystack)), 1)
@@ -993,6 +998,58 @@ def _word_forms_regex(term: str) -> str:
     return f"{re.escape(root)}{double}{_WORD_FORM_SUFFIXES}"
 
 
+# British and American spellings of one word. Notes mix them ("color" 2,150
+# times, "colour" 1,328), so a search in one spelling must find the other.
+# Pairs are word starts: the rest of the word ("-ed", "-ite") carries over.
+_SPELLING_PAIRS = (
+    ("colour", "color"), ("behaviour", "behavior"), ("favour", "favor"), ("flavour", "flavor"),
+    ("honour", "honor"), ("labour", "labor"), ("neighbour", "neighbor"), ("humour", "humor"),
+    ("rumour", "rumor"), ("harbour", "harbor"), ("armour", "armor"), ("vapour", "vapor"),
+    ("grey", "gray"), ("licenc", "licens"), ("defenc", "defens"), ("offenc", "offens"),
+    ("catalogu", "catalog"), ("dialogu", "dialog"), ("aluminium", "aluminum"), ("mould", "mold"),
+    ("jewellery", "jewelry"),
+)
+# centre/center, metre/meter: the -re and -er endings swap with what follows.
+_RE_ER_STEMS = ("cent", "met", "lit", "theat", "fib", "calib", "spect", "lust", "somb", "sab", "meag")
+_RE_ER_ENDINGS = (("re", "er"), ("res", "ers"), ("red", "ered"), ("ring", "ering"))
+# cancelled/canceled, modelling/modeling: verbs whose final l doubles in British.
+_DOUBLE_L_STEMS = (
+    "cancel", "travel", "model", "label", "level", "fuel", "signal", "channel", "tunnel",
+    "total", "dial", "marvel", "counsel", "panel", "pencil", "shovel", "swivel", "trial",
+    "rival", "equal", "funnel", "quarrel", "jewel", "duel",
+)
+# organise/organize, analyse/analyze, organisation/organization.
+_ISE_IZE_RE = re.compile(r"^([a-z]{3,}[iy])([sz])(e|es|ed|ing|er|ers|able|ation|ations)$")
+
+
+def _spelling_variants(term: str) -> List[str]:
+    """The other spelling of a British or American word ("colour" -> "color")."""
+    word = term.lower()
+    variants: List[str] = []
+    for british, american in _SPELLING_PAIRS:
+        if word.startswith(british):
+            variants.append(american + word[len(british):])
+        elif word.startswith(american):
+            variants.append(british + word[len(american):])
+    for stem in _RE_ER_STEMS:
+        for british, american in _RE_ER_ENDINGS:
+            if word == stem + british:
+                variants.append(stem + american)
+            elif word == stem + american:
+                variants.append(stem + british)
+    for stem in _DOUBLE_L_STEMS:
+        for ending in ("ed", "ing", "er", "ers"):
+            if word == f"{stem}l{ending}":
+                variants.append(stem + ending)
+            elif word == stem + ending:
+                variants.append(f"{stem}l{ending}")
+    match = _ISE_IZE_RE.match(word)
+    if match:
+        swapped = "z" if match.group(2) == "s" else "s"
+        variants.append(match.group(1) + swapped + match.group(3))
+    return [variant for variant in dict.fromkeys(variants) if variant != word]
+
+
 def _compile_term_patterns(terms: Iterable[str]) -> List["re.Pattern[str]"]:
     """Match whole words, not substrings.
 
@@ -1008,7 +1065,8 @@ def _compile_term_patterns(terms: Iterable[str]) -> List["re.Pattern[str]"]:
             continue
         forms = _word_forms_regex(term)
         if forms:
-            patterns.append(re.compile(rf"\b{forms}\b", re.IGNORECASE))
+            alternatives = [forms, *filter(None, map(_word_forms_regex, _spelling_variants(term)))]
+            patterns.append(re.compile(rf"\b(?:{'|'.join(alternatives)})\b", re.IGNORECASE))
             continue
         escaped = re.escape(term)
         prefix = r"\b" if term[0].isalnum() or term[0] == "_" else ""
