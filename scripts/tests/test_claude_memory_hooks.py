@@ -1070,7 +1070,27 @@ class StopHookTests(unittest.TestCase):
     def test_too_short_reply_keeps_the_wrapper_title(self) -> None:
         start = {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "peer", "name": "Gary", "body": "status?"},
                  "message": {"content": "Another Claude session sent a message: status?"}}
-        self.assertEqual(self._titled(start, "(quiet)")["title"], "Message from Gary: status?")
+        self.assertEqual(self._titled(start, "Hm, yes.")["title"], "Message from Gary: status?")
+
+    def test_waiting_and_empty_replies_are_not_logged(self) -> None:
+        start = {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}}
+        for reply in ("(quiet)", "OK", "The suite is still running. I'll finish once it reports back.",
+                      "Waiting on the independent review before the final report.",
+                      "The pinned checksum is updated. Waiting for the app build and the test suite."):
+            with self.subTest(reply=reply):
+                turn = [start, {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Edit", "input": {"file_path": "/b.py"}},
+                    {"type": "text", "text": reply}]}}]
+                with self._state():
+                    self.assertFalse(self._run_stop(turn).called)
+
+    def test_replies_with_an_outcome_are_still_logged(self) -> None:
+        start = {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}}
+        for reply in ("I fixed the export hook and the tests pass.",
+                      "The time now comes first and is never cut off; common names fit whole. "
+                      "Waiting for Codex's review of PR #3 before merging it into main."):
+            with self.subTest(reply=reply[:30]):
+                self.assertEqual(self._titled(start, reply)["title"], "fix the export hook")
 
     def test_reply_title_shapes(self) -> None:
         self.assertEqual(COMMON.reply_title("Done. The cache is cleared for every project."),

@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
+    is_progress_reply,
     is_wrapper_prompt,
     last_turn,
     mark_turn_logged,
@@ -72,6 +73,9 @@ def main() -> int:
     summary = payload.get("last_assistant_message") or turn["assistant"]
     if not isinstance(summary, str):
         summary = ""
+    # "Waiting on the review" is not memory; the turn that finishes the work is.
+    if is_progress_reply(summary):
+        return 0
     # A typed prompt names the task; a wrapper (session message, task notice,
     # continued session) does not, so the reply's opening sentence does instead.
     title = prompt

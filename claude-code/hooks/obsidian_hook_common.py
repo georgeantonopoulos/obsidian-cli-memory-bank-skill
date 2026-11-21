@@ -111,6 +111,29 @@ def strip_reminders(text: str) -> str:
     return _PASTE_TAG_RE.sub(" ", _REMINDER_RE.sub(" ", text))
 
 
+# A reply that only says the work is waiting on something ("The suite is still
+# running. I'll finish once it reports back.") records nothing; the turn that
+# picks the work up again records the outcome. Longer replies usually carry a
+# fact as well, so they are kept.
+_PROGRESS_REPLY_RE = re.compile(
+    r"\b(?:still (?:running|building|going)|waiting (?:on|for)|wait(?:s|ing)? for|"
+    r"i'll (?:pick (?:this |it )?up|finish|report|check|ship)|"
+    r"once (?:it|they|that|the \w+) (?:reports?|finish(?:es)?)|when (?:it|they) reports? back|"
+    r"(?:is|are) (?:now )?running\b|now watching)",
+    re.IGNORECASE)
+_EMPTY_REPLIES = {"", "(quiet)", "quiet", "ok", "ok.", "done", "done."}
+_PROGRESS_REPLY_CHARS = 130
+
+
+def is_progress_reply(reply: str) -> bool:
+    """True for a reply with nothing to remember: empty, "(quiet)", "OK", or a
+    short note that the work is waiting on a build, test run or review."""
+    text = " ".join(strip_reminders(reply).split()).strip("*_` ")
+    if text.lower() in _EMPTY_REPLIES:
+        return True
+    return len(text) <= _PROGRESS_REPLY_CHARS and bool(_PROGRESS_REPLY_RE.search(text))
+
+
 def reply_title(reply: str) -> str:
     """The reply's opening sentence, as a note title ('' if there is none).
 
