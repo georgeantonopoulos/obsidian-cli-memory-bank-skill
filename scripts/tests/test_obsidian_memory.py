@@ -301,6 +301,149 @@ class ObsidianMemoryTests(unittest.TestCase):
         (project / "Debugging Notes.md").write_text(template + "\n- Export crash came from a stale cache.\n", encoding="utf-8")
         return project
 
+    _WRAPPED_STEM = "2026-11-11-0917-message-from-gary-the-manager-nice-work"
+
+    def _wrapped_run(self, vault: Path, summary: str = "Fixed the export crash by clearing the stale cache. More detail follows.", tags: str = "[auto-log, claude-code]") -> Path:
+        runs = vault / "Project Memory" / "demo" / "Runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        note = runs / f"{self._WRAPPED_STEM}.md"
+        note.write_text(
+            f'---\ntitle: "Message from Gary (the manager): nice work"\ntags: {tags}\n---\n\n'
+            "# Message from Gary (the manager): nice work\n\n## Prompt\nMessage from Gary (the manager): nice work\n\n"
+            f"## Summary\n{summary}\n",
+            encoding="utf-8",
+        )
+        (vault / "Project Memory" / "demo" / "Run Log.md").write_text(
+            f"# Run Log\n\n- [[Project Memory/demo/Runs/{self._WRAPPED_STEM}|{self._WRAPPED_STEM}]]\n"
+            f"- [[{self._WRAPPED_STEM}#Summary|the Gary one]]\n"
+            f"| [[Project Memory/demo/Runs/{self._WRAPPED_STEM}\\|{self._WRAPPED_STEM}]] |\n"
+            f"`[[{self._WRAPPED_STEM}]]`\n",
+            encoding="utf-8",
+        )
+        return note
+
+    def test_retitle_runs_dry_run_changes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = self._wrapped_run(vault)
+            before = {p: p.read_text(encoding="utf-8") for p in vault.rglob("*.md")}
+            renamed = obsidian_memory.retitle_wrapper_runs(ObsidianCLI(vault_path=vault, dry_run=True), [note.parent])
+            self.assertEqual(len(renamed), 1)
+            self.assertEqual(renamed[0][2], "Fixed the export crash by clearing the stale cache.")
+            self.assertEqual(before, {p: p.read_text(encoding="utf-8") for p in vault.rglob("*.md")})
+
+    def test_retitle_runs_renames_note_and_repoints_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = self._wrapped_run(vault)
+            [(_, new, title)] = obsidian_memory.retitle_wrapper_runs(ObsidianCLI(vault_path=vault, dry_run=False), [note.parent])
+            stem = "2026-11-11-0917-fixed-the-export-crash-by-clearing-the-stale-cache"
+            self.assertEqual(new.stem, stem)
+            self.assertFalse(note.exists())
+            body = (vault / new).read_text(encoding="utf-8")
+            self.assertIn(f'title: "{title}"', body)
+            self.assertIn(f"# {title}\n", body)
+            self.assertIn("## Prompt\nMessage from Gary (the manager): nice work", body)
+            log = (vault / "Project Memory" / "demo" / "Run Log.md").read_text(encoding="utf-8")
+            self.assertIn(f"- [[Project Memory/demo/Runs/{stem}|{stem}]]", log)
+            self.assertIn(f"- [[{stem}#Summary|the Gary one]]", log)
+            self.assertIn(f"| [[Project Memory/demo/Runs/{stem}\\|{stem}]] |", log)
+            self.assertIn(f"`[[{self._WRAPPED_STEM}]]`", log)
+
+    def test_retitle_runs_leaves_written_notes_and_empty_replies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = self._wrapped_run(vault, tags="[decision]")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            self.assertEqual(obsidian_memory.retitle_wrapper_runs(cli, [note.parent]), [])
+            self._wrapped_run(vault, summary="(quiet)")
+            self.assertEqual(obsidian_memory.retitle_wrapper_runs(cli, [note.parent]), [])
+            self._wrapped_run(vault, summary="Waiting on CI.")
+            self.assertEqual(obsidian_memory.retitle_wrapper_runs(cli, [note.parent]), [])
+            self.assertTrue(note.exists())
+
+    def test_retitle_runs_suffixes_a_taken_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = self._wrapped_run(vault)
+            taken = note.parent / "2026-11-11-0917-fixed-the-export-crash-by-clearing-the-stale-cache.md"
+            taken.write_text("# other\n", encoding="utf-8")
+            [(_, new, _)] = obsidian_memory.retitle_wrapper_runs(ObsidianCLI(vault_path=vault, dry_run=False), [note.parent])
+            self.assertEqual(new.stem, taken.stem + "-2")
+            self.assertEqual(taken.read_text(encoding="utf-8"), "# other\n")
+
+    _NEW_STEM = "2026-11-11-0917-fixed-the-export-crash-by-clearing-the-stale-cache"
+
+    def test_retitle_runs_follows_embeds_and_partial_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = self._wrapped_run(vault)
+            other = vault / "Project Memory" / "demo" / "Topics.md"
+            other.write_text(f"![[{self._WRAPPED_STEM}]]\n[[Runs/{self._WRAPPED_STEM}.md|x]]\n[[Other/Runs/{self._WRAPPED_STEM}]]\n", encoding="utf-8")
+            obsidian_memory.retitle_wrapper_runs(ObsidianCLI(vault_path=vault, dry_run=False), [note.parent])
+            self.assertEqual(
+                other.read_text(encoding="utf-8"),
+                f"![[{self._NEW_STEM}]]\n[[Runs/{self._NEW_STEM}|x]]\n[[Other/Runs/{self._WRAPPED_STEM}]]\n",
+            )
+
+    def test_retitle_runs_only_touches_frontmatter_title_and_keeps_crlf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = self._wrapped_run(vault, summary="Fixed the export crash by clearing the stale cache.\ntitle: keep me")
+            note.write_bytes(note.read_bytes().replace(b"\n", b"\r\n"))
+            obsidian_memory.retitle_wrapper_runs(ObsidianCLI(vault_path=vault, dry_run=False), [note.parent])
+            body = (note.parent / f"{self._NEW_STEM}.md").read_bytes()
+            self.assertIn(b"title: keep me\r\n", body)
+            self.assertIn(b'title: "Fixed the export crash by clearing the stale cache."\r\n', body)
+            self.assertIn(b"# Fixed the export crash by clearing the stale cache.\r\n", body)
+            self.assertNotIn(b"\n\n", body.replace(b"\r\n", b""))
+
+    def test_retitle_runs_skips_a_name_used_twice_and_avoids_names_elsewhere(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = self._wrapped_run(vault)
+            elsewhere = vault / "Project Memory" / "other" / "Runs"
+            elsewhere.mkdir(parents=True)
+            (elsewhere / f"{self._NEW_STEM}.md").write_text("# other\n", encoding="utf-8")
+            cli = ObsidianCLI(vault_path=vault, dry_run=True)
+            [(_, new, _)] = obsidian_memory.retitle_wrapper_runs(cli, [note.parent])
+            self.assertEqual(new.stem, self._NEW_STEM + "-2")
+            (elsewhere / f"{self._WRAPPED_STEM}.md").write_text("# twin\n", encoding="utf-8")
+            self.assertEqual(obsidian_memory.retitle_wrapper_runs(cli, [note.parent]), [])
+
+    def test_retitle_runs_repoints_links_when_a_later_rename_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = self._wrapped_run(vault)
+            real_rename = Path.rename
+            calls = []
+
+            def flaky(path: Path, target: Path) -> Path:
+                calls.append(path)
+                if len(calls) > 1:
+                    raise KeyboardInterrupt
+                return real_rename(path, target)
+
+            second = note.with_name("2026-11-11-0918-message-from-gary-second.md")
+            second.write_text(note.read_text(encoding="utf-8"), encoding="utf-8")
+            with patch.object(Path, "rename", flaky), self.assertRaises(KeyboardInterrupt):
+                obsidian_memory.retitle_wrapper_runs(ObsidianCLI(vault_path=vault, dry_run=False), [note.parent])
+            log = (vault / "Project Memory" / "demo" / "Run Log.md").read_text(encoding="utf-8")
+            self.assertIn(f"[[Project Memory/demo/Runs/{self._NEW_STEM}|{self._NEW_STEM}]]", log)
+            self.assertTrue(second.exists())
+
+    def test_retitle_runs_reports_writes_that_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = self._wrapped_run(vault)
+            failures: list = []
+            with patch.object(obsidian_memory.os, "replace", side_effect=OSError("disk full")):
+                renamed = obsidian_memory.retitle_wrapper_runs(ObsidianCLI(vault_path=vault, dry_run=False), [note.parent], failures)
+            self.assertEqual(len(renamed), 1)
+            self.assertEqual(len(failures), 2)
+            self.assertIn("heading not rewritten", failures[0])
+            self.assertIn("links not updated, Project Memory/demo/Run Log.md", failures[1])
+
     def test_prune_hubs_dry_run_changes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
