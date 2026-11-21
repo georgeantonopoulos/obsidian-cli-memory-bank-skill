@@ -432,6 +432,18 @@ class ObsidianMemoryTests(unittest.TestCase):
             self.assertIn(f"[[Project Memory/demo/Runs/{self._NEW_STEM}|{self._NEW_STEM}]]", log)
             self.assertTrue(second.exists())
 
+    def test_retitle_runs_reports_writes_that_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            note = self._wrapped_run(vault)
+            failures: list = []
+            with patch.object(obsidian_memory.os, "replace", side_effect=OSError("disk full")):
+                renamed = obsidian_memory.retitle_wrapper_runs(ObsidianCLI(vault_path=vault, dry_run=False), [note.parent], failures)
+            self.assertEqual(len(renamed), 1)
+            self.assertEqual(len(failures), 2)
+            self.assertIn("heading not rewritten", failures[0])
+            self.assertIn("links not updated, Project Memory/demo/Run Log.md", failures[1])
+
     def test_prune_hubs_dry_run_changes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)

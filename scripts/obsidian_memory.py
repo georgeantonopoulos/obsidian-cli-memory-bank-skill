@@ -2835,7 +2835,9 @@ def _retitle_text(text: str, title: str) -> Tuple[str, int]:
     return text[:start] + _H1_RE.sub(lambda _: f"# {title}", text[start:], count=1), 1
 
 
-def retitle_wrapper_runs(cli: ObsidianCLI, run_dirs: Sequence[Path]) -> List[Tuple[Path, Path, str]]:
+def retitle_wrapper_runs(
+    cli: ObsidianCLI, run_dirs: Sequence[Path], failures: Optional[List[str]] = None
+) -> List[Tuple[Path, Path, str]]:
     """Rename wrapper-titled captured notes after their reply and re-point links.
 
     The file name is the title search weighs most, so "message-from-gary-..."
@@ -2846,8 +2848,10 @@ def retitle_wrapper_runs(cli: ObsidianCLI, run_dirs: Sequence[Path]) -> List[Tup
     vault is left alone, since a bare link to it can't be told apart. Links are
     re-pointed even if a rename fails partway, so the vault never keeps a dead
     link. Returns (old path, new path, title), vault-relative, of notes renamed
-    (or that would be, in a dry run).
+    (or that would be, in a dry run). Notes or links that could not be written
+    are added to ``failures``.
     """
+    failures = [] if failures is None else failures
     stem_counts: Dict[str, int] = {}
     for existing in cli.vault_path.rglob("*.md"):
         stem_counts[existing.stem.lower()] = stem_counts.get(existing.stem.lower(), 0) + 1
@@ -2871,21 +2875,20 @@ def retitle_wrapper_runs(cli: ObsidianCLI, run_dirs: Sequence[Path]) -> List[Tup
             try:
                 (cli.vault_path / old).rename(cli.vault_path / new)
             except OSError as exc:
-                print(f"Skipped {old.as_posix()}: {exc}", file=sys.stderr)
+                failures.append(f"not renamed, {old.as_posix()}: {exc}")
                 continue
             renamed.append((old, new, title))
-            try:
-                _rewrite_note(cli.vault_path / new, lambda text, title=title: _retitle_text(text, title))
-            except OSError as exc:
-                print(f"Renamed but kept the old heading in {new.as_posix()}: {exc}", file=sys.stderr)
+            if not _rewrite_note(cli.vault_path / new, lambda text, title=title: _retitle_text(text, title)):
+                failures.append(f"renamed but heading not rewritten, {new.as_posix()}")
     finally:
-        _repoint_renamed_links(cli.vault_path, renamed)
+        failures.extend(_repoint_renamed_links(cli.vault_path, renamed))
     return renamed
 
 
-def _repoint_renamed_links(vault: Path, renamed: Sequence[Tuple[Path, Path, str]]) -> None:
+def _repoint_renamed_links(vault: Path, renamed: Sequence[Tuple[Path, Path, str]]) -> List[str]:
+    """Re-point links to renamed notes; returns the notes whose links could not be written."""
     if not renamed:
-        return
+        return []
     by_path = {_link_key(old.with_suffix("").as_posix()): new for old, new, _ in renamed}
     by_name = {old.stem.lower(): new for old, new, _ in renamed}
 
@@ -2918,16 +2921,15 @@ def _repoint_renamed_links(vault: Path, renamed: Sequence[Tuple[Path, Path, str]
         return _outside_code(text, lambda chunk: _ANY_LINK_RE.sub(_repoint, chunk)), count
 
     needles = set(by_name)
+    failed: List[str] = []
     for note in vault.rglob("*.md"):
         try:
-            lowered = note.read_text(encoding="utf-8").lower()
+            text = note.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        if any(needle in lowered for needle in needles):
-            try:
-                _rewrite_note(note, _transform)
-            except OSError as exc:
-                print(f"Could not update links in {note.relative_to(vault).as_posix()}: {exc}", file=sys.stderr)
+        if any(needle in text.lower() for needle in needles) and _transform(text)[1] and not _rewrite_note(note, _transform):
+            failed.append(f"links not updated, {note.relative_to(vault).as_posix()}")
+    return failed
 
 
 def _retarget_run_links(cli: ObsidianCLI, relative_path: Path, moved: List[Tuple[Path, Path]]) -> int:
@@ -3971,7 +3973,8 @@ def cmd_retitle_runs(args: argparse.Namespace) -> None:
     if args.include_archive:
         run_dirs += [d / "Archive" / "Runs" for d in project_dirs]
     cli = ObsidianCLI(vault_path=vault_path, dry_run=not args.apply)
-    renamed = retitle_wrapper_runs(cli, run_dirs)
+    failures: List[str] = []
+    renamed = retitle_wrapper_runs(cli, run_dirs, failures)
     verb = "Renamed" if args.apply else "Would rename"
     print(f"{verb} {len(renamed)} captured note(s) titled after a wrapper message.")
     for old, new, title in renamed[: args.limit]:
@@ -3980,6 +3983,11 @@ def cmd_retitle_runs(args: argparse.Namespace) -> None:
         print(f"- ... and {len(renamed) - args.limit} more")
     if not args.apply and renamed:
         print("Nothing changed. Re-run with --apply to rename them and re-point their links.")
+    if failures:
+        print(f"{len(failures)} write(s) failed; fix them by hand or restore from backup:", file=sys.stderr)
+        for line in failures:
+            print(f"- {line}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def cmd_init_project(args: argparse.Namespace) -> None:
