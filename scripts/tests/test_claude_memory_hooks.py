@@ -1076,9 +1076,9 @@ class StopHookTests(unittest.TestCase):
         start = {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}}
         for reply in ("(quiet)", "OK", "The suite is still running. I'll finish once it reports back.",
                       "Waiting on the independent review before the final report.",
-                      "The pinned checksum is updated. Waiting for the app build and the test suite.",
-                      "Diff looks right. The suite's still running; I'll commit when it reports.",
-                      "The fix is waiting on the reviewer; once it reports I'll ship it and tell Vera."):
+                      "Waiting for the app build and the test suite.",
+                      "The full test suite is still running. I'll pick this up when it reports back.",
+                      "I’m waiting on CI."):
             with self.subTest(reply=reply):
                 turn = [start, {"type": "assistant", "message": {"content": [
                     {"type": "tool_use", "name": "Edit", "input": {"file_path": "/b.py"}},
@@ -1093,6 +1093,12 @@ class StopHookTests(unittest.TestCase):
                       "Fixed the race where the worker kept waiting for the lock.",
                       "Renamed the config key in all three files. I'll check the docs next.",
                       "Patched the path bug; the hook is running correctly now.",
+                      "Merged the PR. Waiting on CI.", "Done. Waiting on the review.",
+                      "Shipped the fix: waiting on CI.",
+                      "Fixed the crash, though the old worker is still running.",
+                      "Both fixes landed and CI is still going.",
+                      "Fixed the systemd unit; the service is now running and survives reboot.",
+                      "Fixed the deadlock: the worker no longer waits for itself.",
                       "The time now comes first and is never cut off; common names fit whole. "
                       "Waiting for Codex's review of PR #3 before merging it into main."):
             with self.subTest(reply=reply[:30]):

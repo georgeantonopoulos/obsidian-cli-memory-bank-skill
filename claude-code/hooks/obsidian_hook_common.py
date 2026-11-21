@@ -113,14 +113,15 @@ def strip_reminders(text: str) -> str:
 
 # A reply that only says the work is waiting ("The suite is still running.
 # I'll finish once it reports back.") records nothing; the turn that picks the
-# work up again records the outcome. Only the last sentence decides, and only
-# when it is about waiting, so "Fixed the deadlock: the threads were waiting on
-# each other." is kept. Longer replies usually carry a fact too, so they stay.
+# work up again records the outcome. Every sentence must be about waiting, and
+# say so in its opening words, so "Merged the PR. Waiting on CI." and "Fixed
+# the crash, though the old worker is still running." keep their notes.
 _WAITING_SENTENCE_RE = re.compile(
-    r"^(?:(?:I'm|I am|now|still|and)\s+)?waiting (?:on|for)\b"
-    r"|\bstill (?:running|building|going)\b"
-    r"|\b(?:once|when) (?:it|they|both|each one|that) (?:reports?|finish(?:es)?|lands?)\b"
-    r"|^I'll (?:pick (?:this |it )?up|wait)\b|^now watching\b",
+    r"^(?:(?:I['’]m|I am|now|still)\s+)?waiting (?:on|for)\b"
+    r"|^(?:(?!and\b|but\b)[\w'’+.-]+ ){0,4}?(?:is |are )?still (?:running|building|going)\b"
+    r"|^(?:once|when) (?:it|they|both|each one|that) (?:reports?|finish(?:es)?|lands?)\b"
+    r"|^I['’]ll (?:pick (?:this |it )?up|wait)\b|^now watching\b"
+    r"|^I['’]ll (?:[\w'’-]+ ){1,6}?(?:once|when) (?:it|they|both|each one|that) (?:reports?|finish(?:es)?|lands?)\b",
     re.IGNORECASE)
 _EMPTY_REPLIES = {"", "(quiet)", "quiet", "ok", "ok."}
 _PROGRESS_REPLY_CHARS = 130
@@ -128,15 +129,14 @@ _PROGRESS_REPLY_CHARS = 130
 
 def is_progress_reply(reply: str) -> bool:
     """True for a reply with nothing to remember: empty, "(quiet)", "OK", or a
-    short reply whose last sentence says the work waits on a build, run or review."""
+    short reply in which every sentence says the work waits on something."""
     text = " ".join(strip_reminders(reply).split()).strip("*_` ")
     if text.lower() in _EMPTY_REPLIES:
         return True
     if len(text) > _PROGRESS_REPLY_CHARS:
         return False
-    last = [part for part in _SENTENCE_END_RE.split(text) if part][-1]
-    return any(_WAITING_SENTENCE_RE.search(clause.strip())
-               for clause in re.split(r"[;:,]\s+", last))
+    sentences = [part.strip() for part in _SENTENCE_END_RE.split(text) if part.strip()]
+    return bool(sentences) and all(_WAITING_SENTENCE_RE.search(sentence) for sentence in sentences)
 
 
 def reply_title(reply: str) -> str:
