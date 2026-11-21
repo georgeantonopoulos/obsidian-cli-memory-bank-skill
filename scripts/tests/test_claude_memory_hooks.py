@@ -1049,12 +1049,23 @@ class StopHookTests(unittest.TestCase):
                 "This session is being continued from a previous conversation. <system-reminder>tools</system-reminder> Summary: ..."}},
             {"type": "user", "uuid": "u1", "origin": {"kind": "human"},
              "message": {"content": "[Office: goal step] George's goal for this room is lean memory."}},
+            {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content":
+                '<pasted_content id="fd82">\n[Office: goal step] George\'s goal for this room is lean memory.\n'
+                '</pasted_content id="fd82">'}},
         ]
         for start in starts:
             with self.subTest(start=start["message"]["content"][:30]):
                 kwargs = self._titled(start, reply)
                 self.assertEqual(kwargs["title"], "The export hook is fixed and live.")
                 self.assertNotIn("system-reminder", kwargs["prompt"])
+                self.assertNotIn("pasted_content", kwargs["prompt"])
+
+    def test_pasted_prompt_is_named_by_its_words_not_its_tag(self) -> None:
+        start = {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content":
+                 '<pasted_content id="ab12">fix the export hook</pasted_content id="ab12">'}}
+        kwargs = self._titled(start, "I fixed the export hook and the tests pass.")
+        self.assertEqual(kwargs["title"], "fix the export hook")
+        self.assertEqual(kwargs["prompt"], "fix the export hook")
 
     def test_too_short_reply_keeps_the_wrapper_title(self) -> None:
         start = {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "peer", "name": "Gary", "body": "status?"},
