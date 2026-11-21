@@ -1006,8 +1006,12 @@ _SPELLING_PAIRS = (
     ("honour", "honor"), ("labour", "labor"), ("neighbour", "neighbor"), ("humour", "humor"),
     ("rumour", "rumor"), ("harbour", "harbor"), ("armour", "armor"), ("vapour", "vapor"),
     ("grey", "gray"), ("licenc", "licens"), ("defenc", "defens"), ("offenc", "offens"),
-    ("catalogu", "catalog"), ("dialogu", "dialog"), ("aluminium", "aluminum"), ("mould", "mold"),
-    ("jewellery", "jewelry"),
+    ("aluminium", "aluminum"), ("mould", "mold"), ("jewellery", "jewelry"),
+)
+# Whole words whose British "-ue" has no simple word-start swap.
+_SPELLING_WORDS = (
+    ("catalogue", "catalog"), ("catalogues", "catalogs"), ("catalogued", "cataloged"),
+    ("cataloguing", "cataloging"), ("dialogue", "dialog"), ("dialogues", "dialogs"),
 )
 # centre/center, metre/meter: the -re and -er endings swap with what follows.
 _RE_ER_STEMS = ("cent", "met", "lit", "theat", "fib", "calib", "spect", "lust", "somb", "sab", "meag")
@@ -1031,6 +1035,11 @@ def _spelling_variants(term: str) -> List[str]:
             variants.append(american + word[len(british):])
         elif word.startswith(american):
             variants.append(british + word[len(american):])
+    for british, american in _SPELLING_WORDS:
+        if word == british:
+            variants.append(american)
+        elif word == american:
+            variants.append(british)
     for stem in _RE_ER_STEMS:
         for british, american in _RE_ER_ENDINGS:
             if word == stem + british:

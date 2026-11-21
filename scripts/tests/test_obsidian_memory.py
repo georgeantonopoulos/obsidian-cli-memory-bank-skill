@@ -681,6 +681,9 @@ class ObsidianMemoryTests(unittest.TestCase):
         self.assertEqual(variants("organisation"), ["organization"])
         self.assertEqual(variants("analyzed"), ["analysed"])
         self.assertEqual(variants("center"), ["centre"])
+        self.assertEqual(variants("catalogue"), ["catalog"])
+        self.assertEqual(variants("cataloging"), ["cataloguing"])
+        self.assertEqual(variants("dialogs"), ["dialogues"])
         for word in ("source", "course", "hour", "tour", "four", "raise", "noise", "prize", "size",
                      "rise", "called", "filled", "metal", "enter", "after", "water"):
             self.assertEqual(variants(word), [], word)
