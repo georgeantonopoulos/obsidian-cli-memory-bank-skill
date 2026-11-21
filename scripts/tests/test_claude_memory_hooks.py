@@ -637,6 +637,8 @@ Progress uses measured counts.
             '<cross-session-message from="uds:/tmp/x.sock">Check the export render settings</cross-session-message>',
             "Another Claude session sent a message:\nCheck the export render settings",
             "This session is being continued from a previous conversation. Export render settings work",
+            "[Subagent hand-back] The text below is the final report of a subagent.\n"
+            "  Export render settings checked at render.py:1038",
         ):
             with self.subTest(prompt=prompt[:30]):
                 self.assertEqual(self._searches_for(prompt), [])
