@@ -93,6 +93,9 @@ _WRAPPER_PROMPT_RES = (
     re.compile(r"\[(?:Office|Scheduled)\b[^\]]{0,60}\]"),
 )
 _REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
+# The client wraps pasted text (office prompts arrive this way) in these tags.
+# Only the tags go; the pasted words are the prompt.
+_PASTE_TAG_RE = re.compile(r"</?pasted_content\b[^>]{0,80}>")
 _MARKDOWN_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|#+|>)\s+|\*+|__|`", re.MULTILINE)
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 _MIN_REPLY_TITLE = 15
@@ -104,7 +107,8 @@ def is_wrapper_prompt(prompt: str) -> bool:
 
 
 def strip_reminders(text: str) -> str:
-    return _REMINDER_RE.sub(" ", text)
+    """Drop system reminders and the tags around pasted text."""
+    return _PASTE_TAG_RE.sub(" ", _REMINDER_RE.sub(" ", text))
 
 
 def reply_title(reply: str) -> str:
