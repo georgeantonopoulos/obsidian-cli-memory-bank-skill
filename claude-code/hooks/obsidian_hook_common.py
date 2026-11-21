@@ -125,18 +125,23 @@ _WAITING_SENTENCE_RE = re.compile(
     re.IGNORECASE)
 _EMPTY_REPLIES = {"", "(quiet)", "quiet", "ok", "ok."}
 _PROGRESS_REPLY_CHARS = 130
+# Clauses are judged one by one, so "Still waiting on CI, but the migration is
+# done." keeps its note: the clause after the comma reports an outcome.
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?;:,])\s+|\s+-\s+|\n+")
 
 
 def is_progress_reply(reply: str) -> bool:
     """True for a reply with nothing to remember: empty, "(quiet)", "OK", or a
-    short reply in which every sentence says the work waits on something."""
-    text = " ".join(strip_reminders(reply).split()).strip("*_` ")
+    short reply in which every clause says the work waits on something."""
+    lines = strip_reminders(reply).strip().strip("*_` ")
+    text = " ".join(lines.split())
     if text.lower() in _EMPTY_REPLIES:
         return True
     if len(text) > _PROGRESS_REPLY_CHARS:
         return False
-    sentences = [part.strip() for part in _SENTENCE_END_RE.split(text) if part.strip()]
-    return bool(sentences) and all(_WAITING_SENTENCE_RE.search(sentence) for sentence in sentences)
+    clauses = [" ".join(part.split()).strip("*_`-• ") for part in _CLAUSE_SPLIT_RE.split(lines)]
+    clauses = [clause for clause in clauses if clause]
+    return bool(clauses) and all(_WAITING_SENTENCE_RE.search(clause) for clause in clauses)
 
 
 def reply_title(reply: str) -> str:

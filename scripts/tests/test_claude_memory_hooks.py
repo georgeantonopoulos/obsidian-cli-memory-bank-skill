@@ -1099,6 +1099,13 @@ class StopHookTests(unittest.TestCase):
                       "Both fixes landed and CI is still going.",
                       "Fixed the systemd unit; the service is now running and survives reboot.",
                       "Fixed the deadlock: the worker no longer waits for itself.",
+                      "Still waiting on CI, but the migration is done and applied.",
+                      "Waiting on CI, I fixed the deadlock and merged the PR.",
+                      "Tests still running, but I fixed the bug and pushed.",
+                      "The suite is still running; fix is merged.",
+                      "Waiting for review: PR merged and deployed to prod.",
+                      "Once it finishes I'll merge the fix, already patched the crash.",
+                      "Waiting on CI\n- merged the PR",
                       "The time now comes first and is never cut off; common names fit whole. "
                       "Waiting for Codex's review of PR #3 before merging it into main."):
             with self.subTest(reply=reply[:30]):
