@@ -1078,7 +1078,8 @@ class StopHookTests(unittest.TestCase):
                       "Waiting on the independent review before the final report.",
                       "Waiting for the app build and the test suite.",
                       "The full test suite is still running. I'll pick this up when it reports back.",
-                      "I’m waiting on CI."):
+                      "I’m waiting on CI.", "Build is still going; I'll run the headless check once it lands.",
+                      "The review is still running. I'll merge and ship once it reports back."):
             with self.subTest(reply=reply):
                 turn = [start, {"type": "assistant", "message": {"content": [
                     {"type": "tool_use", "name": "Edit", "input": {"file_path": "/b.py"}},
@@ -1106,6 +1107,12 @@ class StopHookTests(unittest.TestCase):
                       "Waiting for review: PR merged and deployed to prod.",
                       "Once it finishes I'll merge the fix, already patched the crash.",
                       "Waiting on CI\n- merged the PR",
+                      "Shipped it so CI is still running.",
+                      "Merged it while CI is still running.",
+                      "Confirmed the old cron is still running.",
+                      "Verified the server is still running after the restart.",
+                      "The old hook is still running twice per turn.",
+                      "The daemon is still running as root.",
                       "The time now comes first and is never cut off; common names fit whole. "
                       "Waiting for Codex's review of PR #3 before merging it into main."):
             with self.subTest(reply=reply[:30]):

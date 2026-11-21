@@ -118,7 +118,9 @@ def strip_reminders(text: str) -> str:
 # the crash, though the old worker is still running." keep their notes.
 _WAITING_SENTENCE_RE = re.compile(
     r"^(?:(?:I['’]m|I am|now|still)\s+)?waiting (?:on|for)\b"
-    r"|^(?:(?!and\b|but\b)[\w'’+.-]+ ){0,4}?(?:is |are )?still (?:running|building|going)\b"
+    r"|^(?:the |both |my )?(?:(?:full|whole|unit|app|test|focused|headless|remaining|last|independent)\s+){0,3}"
+    r"(?:tests?|suite|(?:test )?run|build|CI|reviews?|reviewer|checks?|jobs?|agents?)"
+    r"(?:'s| is| are)? still (?:running|building|going)[.;,:!]?$"
     r"|^(?:once|when) (?:it|they|both|each one|that) (?:reports?|finish(?:es)?|lands?)\b"
     r"|^I['’]ll (?:pick (?:this |it )?up|wait)\b|^now watching\b"
     r"|^I['’]ll (?:[\w'’-]+ ){1,6}?(?:once|when) (?:it|they|both|each one|that) (?:reports?|finish(?:es)?|lands?)\b",
