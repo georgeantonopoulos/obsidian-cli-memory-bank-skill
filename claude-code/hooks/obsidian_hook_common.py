@@ -113,17 +113,25 @@ def strip_reminders(text: str) -> str:
 
 # A reply that only says the work is waiting ("The suite is still running.
 # I'll finish once it reports back.") records nothing; the turn that picks the
-# work up again records the outcome. Every sentence must be about waiting, and
-# say so in its opening words, so "Merged the PR. Waiting on CI." and "Fixed
-# the crash, though the old worker is still running." keep their notes.
+# work up again records the outcome. Every clause must be, as a whole, one of
+# the waiting shapes below, and the free words in it may not report anything
+# (no past tense, "was", "since", "caused"), so "Merged the PR. Waiting on CI."
+# and "Waiting on CI after merging the fix." keep their notes.
+_NO_OUTCOME = (r"(?:(?!(?:\w+ed|was|were|is|are|has|have|had|after|since|because|so|"
+               r"which|now|caused?|causes|root|fix(?:es)?|done|merging|fixing|pushing)\b)"
+               r"[\w'’#+./-]+)")
+_OBJECT = rf"(?: {_NO_OUTCOME}){{1,9}}"
+_SUBJECT = r"(?:it|they|both|each one|that|the (?:run|build|review|suite|tests?))"
+_DONE_VERB = r"(?:reports?(?: back)?|finish(?:es)?|lands?|comes? back)"
 _WAITING_SENTENCE_RE = re.compile(
-    r"^(?:(?:I['’]m|I am|now|still)\s+)?waiting (?:on|for)\b"
-    r"|^(?:the |both |my )?(?:(?:full|whole|unit|app|test|focused|headless|remaining|last|independent)\s+){0,3}"
+    rf"(?:(?:I['’]m|I am|now|still) )?(?:still )?waiting (?:on|for){_OBJECT}"
+    r"|(?:the |both |my )?(?:(?:full|whole|unit|app|test|focused|headless|remaining|last|independent) ){0,3}"
     r"(?:tests?|suite|(?:test )?run|build|CI|reviews?|reviewer|checks?|jobs?|agents?)"
-    r"(?:'s| is| are)? still (?:running|building|going)[.;,:!]?$"
-    r"|^(?:once|when) (?:it|they|both|each one|that) (?:reports?|finish(?:es)?|lands?)\b"
-    r"|^I['’]ll (?:pick (?:this |it )?up|wait)\b|^now watching\b"
-    r"|^I['’]ll (?:[\w'’-]+ ){1,6}?(?:once|when) (?:it|they|both|each one|that) (?:reports?|finish(?:es)?|lands?)\b",
+    r"(?:'s| is| are)? still (?:running|building|going)"
+    rf"|(?:once|when) {_SUBJECT} {_DONE_VERB}"
+    rf"|I['’]ll (?:wait|pick (?:this |it )?up|{_NO_OUTCOME}(?: {_NO_OUTCOME}){{0,5}})"
+    rf"(?: (?:once|when) {_SUBJECT} {_DONE_VERB})?"
+    rf"|now watching{_OBJECT}",
     re.IGNORECASE)
 _EMPTY_REPLIES = {"", "(quiet)", "quiet", "ok", "ok."}
 _PROGRESS_REPLY_CHARS = 130
@@ -143,7 +151,8 @@ def is_progress_reply(reply: str) -> bool:
         return False
     clauses = [" ".join(part.split()).strip("*_`-• ") for part in _CLAUSE_SPLIT_RE.split(lines)]
     clauses = [clause for clause in clauses if clause]
-    return bool(clauses) and all(_WAITING_SENTENCE_RE.search(clause) for clause in clauses)
+    return bool(clauses) and all(
+        _WAITING_SENTENCE_RE.fullmatch(clause.rstrip(".;,:!")) for clause in clauses)
 
 
 def reply_title(reply: str) -> str:

@@ -1113,6 +1113,14 @@ class StopHookTests(unittest.TestCase):
                       "Verified the server is still running after the restart.",
                       "The old hook is still running twice per turn.",
                       "The daemon is still running as root.",
+                      "Waiting on CI and the fix is merged.", "Waiting on CI after merging the fix.",
+                      "Waiting for CI now that the crash fix is pushed.",
+                      "Waiting on the lock was the root cause of the hang.",
+                      "Waiting for the DB connection caused the timeout.",
+                      "I'll pick it up tomorrow since the root cause is the stale cache",
+                      "Now watching the deploy that fixed the login bug.",
+                      "Still waiting on CI since the build passed locally",
+                      "Once it lands the export bug is fixed for every project.",
                       "The time now comes first and is never cut off; common names fit whole. "
                       "Waiting for Codex's review of PR #3 before merging it into main."):
             with self.subTest(reply=reply[:30]):
