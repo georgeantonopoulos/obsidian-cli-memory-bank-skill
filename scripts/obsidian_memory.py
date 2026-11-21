@@ -2776,6 +2776,8 @@ def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tu
 def _hook_helpers():
     """The Stop hook's own title rules, so a retitled note reads like a new one."""
     hooks = Path(__file__).resolve().parent.parent / "claude-code" / "hooks"
+    if not (hooks / "obsidian_hook_common.py").is_file():
+        raise SystemExit("retitle-runs needs the repository checkout (claude-code/hooks); run it from there.")
     if str(hooks) not in sys.path:
         sys.path.insert(0, str(hooks))
     import obsidian_hook_common  # noqa: PLC0415
@@ -2784,8 +2786,12 @@ def _hook_helpers():
 
 
 _PASTE_TAG_TITLE_RE = re.compile(r"</?pasted_content\b")
-_H1_RE = re.compile(r"^# .*$", re.MULTILINE)
-_FRONTMATTER_TITLE_RE = re.compile(r"^title: .*$", re.MULTILINE)
+_H1_RE = re.compile(r"^# [^\r\n]*", re.MULTILINE)
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?^---[ \t]*\r?$", re.MULTILINE | re.DOTALL)
+_FRONTMATTER_TITLE_RE = re.compile(r"^title: [^\r\n]*", re.MULTILINE)
+_RUN_STAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{4}-")
+# Path links plus embeds: a renamed note must not leave ![[old]] behind.
+_ANY_LINK_RE = re.compile(_PATH_LINK_RE.pattern.replace("(?<!!)", "", 1))
 
 
 def _wrapper_titled_runs(run_dirs: Iterable[Path]) -> Iterator[Tuple[Path, str]]:
@@ -2795,6 +2801,8 @@ def _wrapper_titled_runs(run_dirs: Iterable[Path]) -> Iterator[Tuple[Path, str]]
     common = _hook_helpers()
     for run_dir in run_dirs:
         for note in sorted(run_dir.glob("*.md")) if run_dir.is_dir() else []:
+            if not _RUN_STAMP_RE.match(note.stem):
+                continue
             try:
                 body = note.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -2815,40 +2823,71 @@ def _wrapper_titled_runs(run_dirs: Iterable[Path]) -> Iterator[Tuple[Path, str]]
                 yield note, title
 
 
+def _retitle_text(text: str, title: str) -> Tuple[str, int]:
+    """New frontmatter title (inside the frontmatter only) and heading."""
+    front = _FRONTMATTER_RE.match(text)
+    if front:
+        block = _FRONTMATTER_TITLE_RE.sub(
+            lambda _: f"title: {json.dumps(title, ensure_ascii=False)}", front.group(0), count=1
+        )
+        text = block + text[front.end():]
+    start = front.end() if front else 0
+    return text[:start] + _H1_RE.sub(lambda _: f"# {title}", text[start:], count=1), 1
+
+
 def retitle_wrapper_runs(cli: ObsidianCLI, run_dirs: Sequence[Path]) -> List[Tuple[Path, Path, str]]:
     """Rename wrapper-titled captured notes after their reply and re-point links.
 
     The file name is the title search weighs most, so "message-from-gary-..."
     made those notes match any prompt that named the sender. Each note keeps its
     timestamp; its heading, frontmatter title and file name take the new title,
-    and every link to it (by path or bare name, alias kept unless it was the old
-    name) follows. Returns (old path, new path, title), vault-relative.
+    and every link to it (path, partial path, bare name or embed; alias kept
+    unless it was the old name) follows. A note whose name is not unique in the
+    vault is left alone, since a bare link to it can't be told apart. Links are
+    re-pointed even if a rename fails partway, so the vault never keeps a dead
+    link. Returns (old path, new path, title), vault-relative, of notes renamed
+    (or that would be, in a dry run).
     """
-    renamed: List[Tuple[Path, Path, str]] = []
-    taken: set = set()
+    stem_counts: Dict[str, int] = {}
+    for existing in cli.vault_path.rglob("*.md"):
+        stem_counts[existing.stem.lower()] = stem_counts.get(existing.stem.lower(), 0) + 1
+    planned: List[Tuple[Path, Path, str]] = []
+    taken = set(stem_counts)
     for note, title in _wrapper_titled_runs(run_dirs):
-        stamp = note.stem[:15]
-        base = f"{stamp}-{slugify(title)}"[:120].rstrip("-")
+        if stem_counts.get(note.stem.lower(), 0) > 1:
+            continue
+        base = f"{note.stem[:15]}-{slugify(title)}"[:120].rstrip("-")
         stem, suffix = base, 2
-        while (note.parent / f"{stem}.md").exists() and stem != note.stem or stem.lower() in taken:
+        while stem.lower() in taken:
             stem, suffix = f"{base}-{suffix}", suffix + 1
         taken.add(stem.lower())
-        if stem == note.stem:
-            continue
-        renamed.append((note.relative_to(cli.vault_path), note.with_name(f"{stem}.md").relative_to(cli.vault_path), title))
-    if cli.dry_run or not renamed:
-        return renamed
+        planned.append((note.relative_to(cli.vault_path), note.with_name(f"{stem}.md").relative_to(cli.vault_path), title))
+    if cli.dry_run or not planned:
+        return planned
 
-    for old, new, title in renamed:
-        def _retitle(text: str, title: str = title) -> Tuple[str, int]:
-            text = _FRONTMATTER_TITLE_RE.sub(lambda _: f"title: {json.dumps(title, ensure_ascii=False)}", text, count=1)
-            return _H1_RE.sub(lambda _: f"# {title}", text, count=1), 1
-        _rewrite_note(cli.vault_path / old, _retitle)
-        (cli.vault_path / old).rename(cli.vault_path / new)
+    renamed: List[Tuple[Path, Path, str]] = []
+    try:
+        for old, new, title in planned:
+            try:
+                (cli.vault_path / old).rename(cli.vault_path / new)
+            except OSError as exc:
+                print(f"Skipped {old.as_posix()}: {exc}", file=sys.stderr)
+                continue
+            renamed.append((old, new, title))
+            try:
+                _rewrite_note(cli.vault_path / new, lambda text, title=title: _retitle_text(text, title))
+            except OSError as exc:
+                print(f"Renamed but kept the old heading in {new.as_posix()}: {exc}", file=sys.stderr)
+    finally:
+        _repoint_renamed_links(cli.vault_path, renamed)
+    return renamed
 
+
+def _repoint_renamed_links(vault: Path, renamed: Sequence[Tuple[Path, Path, str]]) -> None:
+    if not renamed:
+        return
     by_path = {_link_key(old.with_suffix("").as_posix()): new for old, new, _ in renamed}
     by_name = {old.stem.lower(): new for old, new, _ in renamed}
-    needles = set(by_name)
 
     def _transform(text: str) -> Tuple[str, int]:
         count = 0
@@ -2856,27 +2895,39 @@ def retitle_wrapper_runs(cli: ObsidianCLI, run_dirs: Sequence[Path]) -> List[Tup
         def _repoint(match: "re.Match[str]") -> str:
             nonlocal count
             key = _link_key(match.group(1))
-            new = by_path.get(key) or (by_name.get(key) if "/" not in key else None)
+            name = key.rsplit("/", 1)[-1]
+            new = by_path.get(key)
+            if new is None and name in by_name:
+                candidate = by_name[name]
+                old_path = _link_key(candidate.with_name(name).with_suffix("").as_posix())
+                if "/" not in key or old_path.endswith("/" + key):
+                    new = candidate
             if new is None:
                 return match.group(0)
             count += 1
+            raw = match.group(1).strip().rstrip("\\").strip()
+            if raw.lower().endswith(".md"):
+                raw = raw[:-3]
+            prefix = raw[: len(raw) - len(name)]  # the folders the link spelled out, as written
             alias = match.group(3) or ""
-            if alias.lstrip("\\|").strip().lower() == Path(key).name:
+            if alias.lstrip("\\|").strip().lower() == name:
                 alias = alias[: alias.index("|") + 1] + new.stem
-            target = new.with_suffix("").as_posix() if "/" in key else new.stem
             trail = "\\" if match.group(1).rstrip().endswith("\\") else ""
-            return f"[[{target}{trail}{match.group(2) or ''}{alias}]]"
+            return f"[[{prefix}{new.stem}{trail}{match.group(2) or ''}{alias}]]"
 
-        return _outside_code(text, lambda chunk: _PATH_LINK_RE.sub(_repoint, chunk)), count
+        return _outside_code(text, lambda chunk: _ANY_LINK_RE.sub(_repoint, chunk)), count
 
-    for note in cli.vault_path.rglob("*.md"):
+    needles = set(by_name)
+    for note in vault.rglob("*.md"):
         try:
             lowered = note.read_text(encoding="utf-8").lower()
         except (OSError, UnicodeDecodeError):
             continue
         if any(needle in lowered for needle in needles):
-            _rewrite_note(note, _transform)
-    return renamed
+            try:
+                _rewrite_note(note, _transform)
+            except OSError as exc:
+                print(f"Could not update links in {note.relative_to(vault).as_posix()}: {exc}", file=sys.stderr)
 
 
 def _retarget_run_links(cli: ObsidianCLI, relative_path: Path, moved: List[Tuple[Path, Path]]) -> int:
