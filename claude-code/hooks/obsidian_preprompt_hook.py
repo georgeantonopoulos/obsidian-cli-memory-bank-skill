@@ -91,6 +91,9 @@ _MACHINE_PROMPT_RES = (
     re.compile(r"<cross-session-message\b", re.IGNORECASE),
     re.compile(r"Another Claude session sent a message:", re.IGNORECASE),
     re.compile(r"This session is being continued from a previous conversation", re.IGNORECASE),
+    # A subagent's final report reaches the hook without the "Another Claude
+    # session" line, so its file paths and line numbers were searched.
+    re.compile(r"\[Subagent hand-back\]", re.IGNORECASE),
 )
 # Auto-copies of the agent's memory files ("Memory sync: x.md"); those load anyway.
 _MEMORY_COPY_RE = re.compile(r"memory-sync-[^/]*\.md$")
