@@ -2773,6 +2773,112 @@ def _repoint_moved_links(cli: ObsidianCLI, moved: List[Tuple[Path, Path]]) -> Tu
     return links, notes
 
 
+def _hook_helpers():
+    """The Stop hook's own title rules, so a retitled note reads like a new one."""
+    hooks = Path(__file__).resolve().parent.parent / "claude-code" / "hooks"
+    if str(hooks) not in sys.path:
+        sys.path.insert(0, str(hooks))
+    import obsidian_hook_common  # noqa: PLC0415
+
+    return obsidian_hook_common
+
+
+_PASTE_TAG_TITLE_RE = re.compile(r"</?pasted_content\b")
+_H1_RE = re.compile(r"^# .*$", re.MULTILINE)
+_FRONTMATTER_TITLE_RE = re.compile(r"^title: .*$", re.MULTILINE)
+
+
+def _wrapper_titled_runs(run_dirs: Iterable[Path]) -> Iterator[Tuple[Path, str]]:
+    """Captured notes (tag auto-log) titled after the message that started the
+    turn ("Message from Gary: ...", "Background task: ..."), with the title the
+    Stop hook now gives such a note: the reply's opening sentence."""
+    common = _hook_helpers()
+    for run_dir in run_dirs:
+        for note in sorted(run_dir.glob("*.md")) if run_dir.is_dir() else []:
+            try:
+                body = note.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if "auto-log" not in _note_tags(body[:4096]):
+                continue
+            heading = _H1_RE.search(body)
+            if not heading:
+                continue
+            old = heading.group(0)[2:].strip()
+            if not (_PASTE_TAG_TITLE_RE.search(old) or common.is_wrapper_prompt(common.strip_reminders(old))):
+                continue
+            summary = _section(body, "Summary")
+            if common.is_progress_reply(summary):
+                continue
+            title = common.truncate(common.reply_title(summary), 80)
+            if title and slugify(title):
+                yield note, title
+
+
+def retitle_wrapper_runs(cli: ObsidianCLI, run_dirs: Sequence[Path]) -> List[Tuple[Path, Path, str]]:
+    """Rename wrapper-titled captured notes after their reply and re-point links.
+
+    The file name is the title search weighs most, so "message-from-gary-..."
+    made those notes match any prompt that named the sender. Each note keeps its
+    timestamp; its heading, frontmatter title and file name take the new title,
+    and every link to it (by path or bare name, alias kept unless it was the old
+    name) follows. Returns (old path, new path, title), vault-relative.
+    """
+    renamed: List[Tuple[Path, Path, str]] = []
+    taken: set = set()
+    for note, title in _wrapper_titled_runs(run_dirs):
+        stamp = note.stem[:15]
+        base = f"{stamp}-{slugify(title)}"[:120].rstrip("-")
+        stem, suffix = base, 2
+        while (note.parent / f"{stem}.md").exists() and stem != note.stem or stem.lower() in taken:
+            stem, suffix = f"{base}-{suffix}", suffix + 1
+        taken.add(stem.lower())
+        if stem == note.stem:
+            continue
+        renamed.append((note.relative_to(cli.vault_path), note.with_name(f"{stem}.md").relative_to(cli.vault_path), title))
+    if cli.dry_run or not renamed:
+        return renamed
+
+    for old, new, title in renamed:
+        def _retitle(text: str, title: str = title) -> Tuple[str, int]:
+            text = _FRONTMATTER_TITLE_RE.sub(lambda _: f"title: {json.dumps(title, ensure_ascii=False)}", text, count=1)
+            return _H1_RE.sub(lambda _: f"# {title}", text, count=1), 1
+        _rewrite_note(cli.vault_path / old, _retitle)
+        (cli.vault_path / old).rename(cli.vault_path / new)
+
+    by_path = {_link_key(old.with_suffix("").as_posix()): new for old, new, _ in renamed}
+    by_name = {old.stem.lower(): new for old, new, _ in renamed}
+    needles = set(by_name)
+
+    def _transform(text: str) -> Tuple[str, int]:
+        count = 0
+
+        def _repoint(match: "re.Match[str]") -> str:
+            nonlocal count
+            key = _link_key(match.group(1))
+            new = by_path.get(key) or (by_name.get(key) if "/" not in key else None)
+            if new is None:
+                return match.group(0)
+            count += 1
+            alias = match.group(3) or ""
+            if alias.lstrip("\\|").strip().lower() == Path(key).name:
+                alias = alias[: alias.index("|") + 1] + new.stem
+            target = new.with_suffix("").as_posix() if "/" in key else new.stem
+            trail = "\\" if match.group(1).rstrip().endswith("\\") else ""
+            return f"[[{target}{trail}{match.group(2) or ''}{alias}]]"
+
+        return _outside_code(text, lambda chunk: _PATH_LINK_RE.sub(_repoint, chunk)), count
+
+    for note in cli.vault_path.rglob("*.md"):
+        try:
+            lowered = note.read_text(encoding="utf-8").lower()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if any(needle in lowered for needle in needles):
+            _rewrite_note(note, _transform)
+    return renamed
+
+
 def _retarget_run_links(cli: ObsidianCLI, relative_path: Path, moved: List[Tuple[Path, Path]]) -> int:
     """Point links at archived runs instead of deleting the lines that hold them.
 
@@ -3801,6 +3907,30 @@ def cmd_prune_hubs(args: argparse.Namespace) -> None:
         print("Nothing changed. Re-run with --apply to delete them and drop the links that point at them.")
 
 
+def cmd_retitle_runs(args: argparse.Namespace) -> None:
+    vault_path = resolve_vault_or_exit(args.workspace)
+    root = vault_path / PROJECT_ROOT
+    if args.project:
+        project_dirs = [vault_path / build_note_paths(args.project.strip()).project_dir]
+        if not project_dirs[0].is_dir():
+            raise SystemExit(f"Project memory not found: {project_dirs[0].relative_to(vault_path).as_posix()}")
+    else:
+        project_dirs = sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    run_dirs = [d / "Runs" for d in project_dirs]
+    if args.include_archive:
+        run_dirs += [d / "Archive" / "Runs" for d in project_dirs]
+    cli = ObsidianCLI(vault_path=vault_path, dry_run=not args.apply)
+    renamed = retitle_wrapper_runs(cli, run_dirs)
+    verb = "Renamed" if args.apply else "Would rename"
+    print(f"{verb} {len(renamed)} captured note(s) titled after a wrapper message.")
+    for old, new, title in renamed[: args.limit]:
+        print(f"- {old.stem} -> {title}")
+    if len(renamed) > args.limit:
+        print(f"- ... and {len(renamed) - args.limit} more")
+    if not args.apply and renamed:
+        print("Nothing changed. Re-run with --apply to rename them and re-point their links.")
+
+
 def cmd_init_project(args: argparse.Namespace) -> None:
     vault_path = resolve_vault_or_exit(args.workspace)
     cli = ObsidianCLI(vault_path=vault_path, dry_run=args.dry_run)
@@ -4095,6 +4225,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser_prune_hubs.add_argument("--apply", action="store_true", help="Delete them; without it nothing changes")
     parser_prune_hubs.add_argument("--limit", type=int, default=20, help="Paths to list")
     parser_prune_hubs.set_defaults(func=cmd_prune_hubs)
+    parser_retitle = subparsers.add_parser(
+        "retitle-runs",
+        help="Retitle captured notes named after a wrapper message (\"Message from X: ...\") after their reply",
+    )
+    parser_retitle.add_argument("--project", help="One project (default: every project)")
+    parser_retitle.add_argument("--workspace", help="Workspace path override")
+    parser_retitle.add_argument("--include-archive", action="store_true", help="Also archived runs")
+    parser_retitle.add_argument("--apply", action="store_true", help="Rename them; without it nothing changes")
+    parser_retitle.add_argument("--limit", type=int, default=20, help="Renames to list")
+    parser_retitle.set_defaults(func=cmd_retitle_runs)
 
     parser_doctor = subparsers.add_parser("doctor", help="Validate CLI/vault readiness")
     parser_doctor.add_argument("--workspace", help="Workspace path override")
