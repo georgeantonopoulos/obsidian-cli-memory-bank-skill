@@ -1076,7 +1076,9 @@ class StopHookTests(unittest.TestCase):
         start = {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}}
         for reply in ("(quiet)", "OK", "The suite is still running. I'll finish once it reports back.",
                       "Waiting on the independent review before the final report.",
-                      "The pinned checksum is updated. Waiting for the app build and the test suite."):
+                      "The pinned checksum is updated. Waiting for the app build and the test suite.",
+                      "Diff looks right. The suite's still running; I'll commit when it reports.",
+                      "The fix is waiting on the reviewer; once it reports I'll ship it and tell Vera."):
             with self.subTest(reply=reply):
                 turn = [start, {"type": "assistant", "message": {"content": [
                     {"type": "tool_use", "name": "Edit", "input": {"file_path": "/b.py"}},
@@ -1086,7 +1088,11 @@ class StopHookTests(unittest.TestCase):
 
     def test_replies_with_an_outcome_are_still_logged(self) -> None:
         start = {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}}
-        for reply in ("I fixed the export hook and the tests pass.",
+        for reply in ("I fixed the export hook and the tests pass.", "Done.",
+                      "Fixed the deadlock: the two threads were waiting on each other.",
+                      "Fixed the race where the worker kept waiting for the lock.",
+                      "Renamed the config key in all three files. I'll check the docs next.",
+                      "Patched the path bug; the hook is running correctly now.",
                       "The time now comes first and is never cut off; common names fit whole. "
                       "Waiting for Codex's review of PR #3 before merging it into main."):
             with self.subTest(reply=reply[:30]):
