@@ -34,6 +34,21 @@ PRE = _load("obsidian_precompact_hook")
 FAKE_KEY = "apikey_" + "0123456789abcdef" * 2 + "_" + "fedcba9876543210" * 4
 
 
+
+_WRAPPER_ENV = None
+
+
+def setUpModule() -> None:
+    # Keep the user's own ~/.config/obmem/wrapper-prompts.txt out of the tests.
+    global _WRAPPER_ENV
+    tmp = tempfile.mkdtemp()
+    _WRAPPER_ENV = unittest.mock.patch.dict(os.environ, {"OBMEM_WRAPPER_PROMPTS_FILE": os.path.join(tmp, "none.txt")})
+    _WRAPPER_ENV.start()
+
+
+def tearDownModule() -> None:
+    _WRAPPER_ENV.stop()
+
 class ClaudeSessionStartHookTests(unittest.TestCase):
     def _run(self, doctor_returncode: int) -> str:
         doctor = unittest.mock.Mock(returncode=doctor_returncode, stdout="", stderr="vault offline")
@@ -1160,7 +1175,7 @@ class WrapperPromptFileTests(unittest.TestCase):
         return patch.dict(os.environ, {"OBMEM_WRAPPER_PROMPTS_FILE": str(path)})
 
     def test_listed_patterns_match_at_prompt_start(self) -> None:
-        with self._with("# a nightly job\n\\[Nightly\\b[^\\]]{0,60}\\]\n(unclosed\n\n"):
+        with self._with("# a nightly job\n\\[Nightly\\b[^\\]]{0,60}\\]\n(unclosed\n.*\n\\s*\n\n"):
             self.assertEqual(len(COMMON.user_wrapper_patterns()), 1)
             self.assertTrue(COMMON.is_wrapper_prompt("  [Nightly: tidy] read the log"))
             self.assertFalse(COMMON.is_wrapper_prompt("why does [Nightly: tidy] fail?"))

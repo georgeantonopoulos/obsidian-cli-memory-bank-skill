@@ -114,7 +114,8 @@ def user_wrapper_patterns() -> Tuple[re.Pattern, ...]:
     For tools that start turns with a fixed label (a scheduler, a dispatcher)
     whose opening words would otherwise become every note's title. One Python
     regular expression per line, matched at the start of the prompt; ``#`` for
-    comments. A line that is not a valid expression is skipped.
+    comments. A line that is not a valid expression, or that matches an empty
+    prompt (and so every prompt), is skipped.
     """
     path = _wrapper_prompts_file()
     try:
@@ -132,9 +133,12 @@ def user_wrapper_patterns() -> Tuple[re.Pattern, ...]:
             if not line or line.startswith("#"):
                 continue
             try:
-                patterns.append(re.compile(line))
+                pattern = re.compile(line)
             except re.error:
                 continue
+            if pattern.match(""):  # would match every prompt
+                continue
+            patterns.append(pattern)
         _user_wrapper_cache.clear()
         _user_wrapper_cache[key] = tuple(patterns)
     return _user_wrapper_cache[key]

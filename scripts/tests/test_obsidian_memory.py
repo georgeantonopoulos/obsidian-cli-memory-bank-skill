@@ -51,6 +51,21 @@ from scripts.obsidian_memory import (
 )
 
 
+
+_WRAPPER_ENV = None
+
+
+def setUpModule() -> None:
+    # Keep the user's own ~/.config/obmem/wrapper-prompts.txt out of the tests.
+    global _WRAPPER_ENV
+    tmp = tempfile.mkdtemp()
+    _WRAPPER_ENV = unittest.mock.patch.dict(os.environ, {"OBMEM_WRAPPER_PROMPTS_FILE": os.path.join(tmp, "none.txt")})
+    _WRAPPER_ENV.start()
+
+
+def tearDownModule() -> None:
+    _WRAPPER_ENV.stop()
+
 class ObsidianMemoryTests(unittest.TestCase):
     def test_audit_checks_qualified_target_not_another_projects_stem(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

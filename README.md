@@ -214,7 +214,7 @@ A turn is skipped only when every file it edited matches. Set `OBMEM_CAPTURE_IGN
 \[Nightly\b[^\]]{0,60}\]
 ```
 
-No file means only the built-in wrappers count. Invalid lines are skipped. Set `OBMEM_WRAPPER_PROMPTS_FILE` to use another path.
+No file means only the built-in wrappers count. Invalid lines, and lines that would match any prompt (such as `.*`), are skipped. Set `OBMEM_WRAPPER_PROMPTS_FILE` to use another path.
 
 **Updating.** `pipx upgrade obsidian-cli-memory-bank`, then copy all hook scripts again (`cp claude-code/hooks/*.py ~/.claude/hooks/`); they share `obsidian_hook_common.py`, so old and new copies must not be mixed. Symlinked hooks need nothing. See [`CHANGELOG.md`](CHANGELOG.md).
 
