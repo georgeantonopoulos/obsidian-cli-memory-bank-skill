@@ -34,6 +34,21 @@ PRE = _load("obsidian_precompact_hook")
 FAKE_KEY = "apikey_" + "0123456789abcdef" * 2 + "_" + "fedcba9876543210" * 4
 
 
+
+_WRAPPER_ENV = None
+
+
+def setUpModule() -> None:
+    # Keep the user's own ~/.config/obmem/wrapper-prompts.txt out of the tests.
+    global _WRAPPER_ENV
+    tmp = tempfile.mkdtemp()
+    _WRAPPER_ENV = unittest.mock.patch.dict(os.environ, {"OBMEM_WRAPPER_PROMPTS_FILE": os.path.join(tmp, "none.txt")})
+    _WRAPPER_ENV.start()
+
+
+def tearDownModule() -> None:
+    _WRAPPER_ENV.stop()
+
 class ClaudeSessionStartHookTests(unittest.TestCase):
     def _run(self, doctor_returncode: int) -> str:
         doctor = unittest.mock.Mock(returncode=doctor_returncode, stdout="", stderr="vault offline")
@@ -479,13 +494,13 @@ Progress uses measured counts.
             self.assertNotIn(gone, excerpt)
 
     def test_excerpt_window_matches_other_forms_of_a_keyword(self) -> None:
-        # Every line names George; only the answer also holds "question", in
+        # Every line names Alex; only the answer also holds "question", in
         # the singular, while the keyword is "questions".
-        filler = "".join(f"- George picked option {i} for an unrelated thing.\n" for i in range(80))
+        filler = "".join(f"- Alex picked option {i} for an unrelated thing.\n" for i in range(80))
         note = ("# Decisions\n\n## Decision Register\n" + filler
-                + "- Every question to George is a gary/ask button.\n" + filler)
-        excerpt = HOOK._clean_excerpt(note, 600, query="questions george")
-        self.assertIn("Every question to George is a gary/ask button", excerpt)
+                + "- Every question to Alex goes through the review form.\n" + filler)
+        excerpt = HOOK._clean_excerpt(note, 600, query="questions alex")
+        self.assertIn("Every question to Alex goes through the review form", excerpt)
         # A stem that would be a common word keeps its last letter.
         self.assertEqual(HOOK._term_stem("theme"), "theme")
         for short in ("uses", "news", "rule", "status", "process", "need"):
@@ -756,9 +771,9 @@ Progress uses measured counts.
             words = HOOK._sanitize_query("Create a $0 sale on Acme Pay so testers get it free").split()
             self.assertIn("$0", words)
             self.assertIn("sale", words)
-            words = HOOK._sanitize_query("[Scheduled: Widget 1.5 store review] check mail").split()
+            words = HOOK._sanitize_query("[Reminder: Widget 1.5 store review] check mail").split()
             self.assertIn("1.5", words)
-            self.assertNotIn("scheduled", words)
+            self.assertNotIn("reminder", words)
             self.assertNotIn("2", HOOK._sanitize_query("fix 2 bugs in the export queue").split())
 
     def test_typed_prompt_keeps_messaging_words_as_topic(self) -> None:
@@ -868,7 +883,7 @@ class HookCommonTests(unittest.TestCase):
         notice = ("<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n"
                   "<summary>Background command \"make test\" completed (exit code 0)</summary>\n</task-notification>")
         path = self._transcript([
-            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "[Scheduled: Daily brief] read mail"}},
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "[Reminder: Daily brief] read mail"}},
             {"type": "user", "origin": {"kind": "task-notification"}, "message": {"content": notice}},
         ])
         self.assertEqual(COMMON.last_turn(path)["prompt"],
@@ -989,7 +1004,10 @@ class StopHookTests(unittest.TestCase):
     def _state(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        return patch.dict(os.environ, {"OBMEM_STOP_LOG": "", "OBMEM_STOP_STATE": str(Path(tmp.name) / "seen")})
+        wrappers = Path(tmp.name) / "wrapper-prompts.txt"
+        wrappers.write_text("\\[Build\\b[^\\]]{0,60}\\]\n", encoding="utf-8")
+        return patch.dict(os.environ, {"OBMEM_STOP_LOG": "", "OBMEM_STOP_STATE": str(Path(tmp.name) / "seen"),
+                                       "OBMEM_WRAPPER_PROMPTS_FILE": str(wrappers)})
 
     EDIT_TURN = [
         {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}},
@@ -1041,16 +1059,16 @@ class StopHookTests(unittest.TestCase):
     def test_wrapper_started_turns_take_the_replys_opening_sentence(self) -> None:
         reply = "**The export hook is fixed** and live.\n\n- Tests: 12 pass."
         starts = [
-            {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "peer", "name": "Gary", "body": "fix export"},
+            {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "peer", "name": "Reviewer", "body": "fix export"},
              "message": {"content": "Another Claude session sent a message: fix export"}},
             {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "task-notification"},
              "message": {"content": "<task-notification><summary>Background command \"cd x\" completed</summary></task-notification>"}},
             {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content":
                 "This session is being continued from a previous conversation. <system-reminder>tools</system-reminder> Summary: ..."}},
             {"type": "user", "uuid": "u1", "origin": {"kind": "human"},
-             "message": {"content": "[Office: goal step] George's goal for this room is lean memory."}},
+             "message": {"content": "[Build: nightly] The goal for this project is lean memory."}},
             {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content":
-                '<pasted_content id="fd82">\n[Office: goal step] George\'s goal for this room is lean memory.\n'
+                '<pasted_content id="fd82">\n[Build: nightly] The goal for this project is lean memory.\n'
                 '</pasted_content id="fd82">'}},
         ]
         for start in starts:
@@ -1068,9 +1086,9 @@ class StopHookTests(unittest.TestCase):
         self.assertEqual(kwargs["prompt"], "fix the export hook")
 
     def test_too_short_reply_keeps_the_wrapper_title(self) -> None:
-        start = {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "peer", "name": "Gary", "body": "status?"},
+        start = {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "peer", "name": "Reviewer", "body": "status?"},
                  "message": {"content": "Another Claude session sent a message: status?"}}
-        self.assertEqual(self._titled(start, "Hm, yes.")["title"], "Message from Gary: status?")
+        self.assertEqual(self._titled(start, "Hm, yes.")["title"], "Message from Reviewer: status?")
 
     def test_waiting_and_empty_replies_are_not_logged(self) -> None:
         start = {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": "fix the export hook"}}
@@ -1137,16 +1155,37 @@ class StopHookTests(unittest.TestCase):
         self.assertEqual(COMMON.reply_title("- `obmem` search now matches word forms. More."),
                          "obmem search now matches word forms.")
         self.assertEqual(COMMON.reply_title(""), "")
-        self.assertFalse(COMMON.is_wrapper_prompt("fix the [Office: x] label parsing"))
         self.assertFalse(COMMON.is_wrapper_prompt("Message from the CEO needs a reply draft"))
         self.assertFalse(COMMON.is_wrapper_prompt("[Bug: login fails on Safari] please fix"))
-        self.assertTrue(COMMON.is_wrapper_prompt("[Scheduled: Whiteboard tidy] The office..."))
         self.assertEqual(COMMON.reply_title("```python\nprint('a long line of code here')\n```\nThe parser now keeps decimals."),
                          "The parser now keeps decimals.")
         self.assertEqual(COMMON.reply_title("| File | Change |\n|---|---|\nThe table above lists every change."),
                          "The table above lists every change.")
         self.assertEqual(COMMON.reply_title("--no-verify skips the hook entirely now."), "no-verify skips the hook entirely now.")
         self.assertEqual(COMMON.reply_title("*Done* and pushed to the branch."), "Done and pushed to the branch.")
+
+
+class WrapperPromptFileTests(unittest.TestCase):
+    def _with(self, text):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "wrapper-prompts.txt"
+        if text is not None:
+            path.write_text(text, encoding="utf-8")
+        return patch.dict(os.environ, {"OBMEM_WRAPPER_PROMPTS_FILE": str(path)})
+
+    def test_listed_patterns_match_at_prompt_start(self) -> None:
+        with self._with("# a nightly job\n\\[Nightly\\b[^\\]]{0,60}\\]\n(unclosed\n.*\n\\s*\n\n"):
+            self.assertEqual(len(COMMON.user_wrapper_patterns()), 1)
+            self.assertTrue(COMMON.is_wrapper_prompt("  [Nightly: tidy] read the log"))
+            self.assertFalse(COMMON.is_wrapper_prompt("why does [Nightly: tidy] fail?"))
+            self.assertFalse(COMMON.is_wrapper_prompt("(unclosed paren in the prompt"))
+
+    def test_no_file_means_only_built_in_wrappers(self) -> None:
+        with self._with(None):
+            self.assertEqual(COMMON.user_wrapper_patterns(), ())
+            self.assertFalse(COMMON.is_wrapper_prompt("[Nightly: tidy] read the log"))
+            self.assertTrue(COMMON.is_wrapper_prompt("Background task: export finished"))
 
 
 class CaptureIgnoreTests(StopHookTests.__base__):

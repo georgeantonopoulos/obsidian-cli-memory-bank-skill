@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Wrapper prompts of your own tools are configurable.** Prompts that start
+  with a label your own tooling adds (for example `[Nightly: ...]`) can be
+  listed in `~/.config/obmem/wrapper-prompts.txt` (or the path in
+  `OBMEM_WRAPPER_PROMPTS_FILE`), one regular expression per line, matched at
+  the start of the prompt. Notes from those turns are titled from the reply.
+  The file is empty by default; built-in patterns cover only Claude Code's own
+  wrappers.
+
 - **Search matches other forms of a word.** `sourcing` now finds notes that
   say `source`, `testers` finds `tester`, `decided` finds `decide`. Plain words
   of four or more letters share a root (one plural or tense ending removed);
@@ -13,8 +21,8 @@
 
 - **Auto-saved notes are named after what was done.** When a turn was started
   by a message from another session or a subagent, a background task notice,
-  the summary that continues a compacted session, or a labelled office prompt
-  ("[Office: ...]"), the Stop hook now titles the note with the first sentence
+  the summary that continues a compacted session, or a labelled prompt sent by
+  a tool (patterns listed in `~/.config/obmem/wrapper-prompts.txt`), the Stop hook now titles the note with the first sentence
   of the reply instead of the wrapper's opening words ("This session is being
   continued...", "Message from X: [Subagent hand-back]..."). 211 of the 328
   auto-saved notes in the live vault were started that way. Typed prompts keep

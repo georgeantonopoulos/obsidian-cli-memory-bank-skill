@@ -2796,7 +2796,7 @@ _ANY_LINK_RE = re.compile(_PATH_LINK_RE.pattern.replace("(?<!!)", "", 1))
 
 def _wrapper_titled_runs(run_dirs: Iterable[Path]) -> Iterator[Tuple[Path, str]]:
     """Captured notes (tag auto-log) titled after the message that started the
-    turn ("Message from Gary: ...", "Background task: ..."), with the title the
+    turn ("Message from Reviewer: ...", "Background task: ..."), with the title the
     Stop hook now gives such a note: the reply's opening sentence."""
     common = _hook_helpers()
     for run_dir in run_dirs:
@@ -2840,7 +2840,7 @@ def retitle_wrapper_runs(
 ) -> List[Tuple[Path, Path, str]]:
     """Rename wrapper-titled captured notes after their reply and re-point links.
 
-    The file name is the title search weighs most, so "message-from-gary-..."
+    The file name is the title search weighs most, so "message-from-reviewer-..."
     made those notes match any prompt that named the sender. Each note keeps its
     timestamp; its heading, frontmatter title and file name take the new title,
     and every link to it (path, partial path, bare name or embed; alias kept
