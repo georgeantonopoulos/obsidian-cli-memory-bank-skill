@@ -301,21 +301,21 @@ class ObsidianMemoryTests(unittest.TestCase):
         (project / "Debugging Notes.md").write_text(template + "\n- Export crash came from a stale cache.\n", encoding="utf-8")
         return project
 
-    _WRAPPED_STEM = "2026-11-11-0917-message-from-gary-the-manager-nice-work"
+    _WRAPPED_STEM = "2026-11-11-0917-message-from-reviewer-nice-work"
 
     def _wrapped_run(self, vault: Path, summary: str = "Fixed the export crash by clearing the stale cache. More detail follows.", tags: str = "[auto-log, claude-code]") -> Path:
         runs = vault / "Project Memory" / "demo" / "Runs"
         runs.mkdir(parents=True, exist_ok=True)
         note = runs / f"{self._WRAPPED_STEM}.md"
         note.write_text(
-            f'---\ntitle: "Message from Gary (the manager): nice work"\ntags: {tags}\n---\n\n'
-            "# Message from Gary (the manager): nice work\n\n## Prompt\nMessage from Gary (the manager): nice work\n\n"
+            f'---\ntitle: "Message from Reviewer: nice work"\ntags: {tags}\n---\n\n'
+            "# Message from Reviewer: nice work\n\n## Prompt\nMessage from Reviewer: nice work\n\n"
             f"## Summary\n{summary}\n",
             encoding="utf-8",
         )
         (vault / "Project Memory" / "demo" / "Run Log.md").write_text(
             f"# Run Log\n\n- [[Project Memory/demo/Runs/{self._WRAPPED_STEM}|{self._WRAPPED_STEM}]]\n"
-            f"- [[{self._WRAPPED_STEM}#Summary|the Gary one]]\n"
+            f"- [[{self._WRAPPED_STEM}#Summary|the review one]]\n"
             f"| [[Project Memory/demo/Runs/{self._WRAPPED_STEM}\\|{self._WRAPPED_STEM}]] |\n"
             f"`[[{self._WRAPPED_STEM}]]`\n",
             encoding="utf-8",
@@ -343,10 +343,10 @@ class ObsidianMemoryTests(unittest.TestCase):
             body = (vault / new).read_text(encoding="utf-8")
             self.assertIn(f'title: "{title}"', body)
             self.assertIn(f"# {title}\n", body)
-            self.assertIn("## Prompt\nMessage from Gary (the manager): nice work", body)
+            self.assertIn("## Prompt\nMessage from Reviewer: nice work", body)
             log = (vault / "Project Memory" / "demo" / "Run Log.md").read_text(encoding="utf-8")
             self.assertIn(f"- [[Project Memory/demo/Runs/{stem}|{stem}]]", log)
-            self.assertIn(f"- [[{stem}#Summary|the Gary one]]", log)
+            self.assertIn(f"- [[{stem}#Summary|the review one]]", log)
             self.assertIn(f"| [[Project Memory/demo/Runs/{stem}\\|{stem}]] |", log)
             self.assertIn(f"`[[{self._WRAPPED_STEM}]]`", log)
 
@@ -424,7 +424,7 @@ class ObsidianMemoryTests(unittest.TestCase):
                     raise KeyboardInterrupt
                 return real_rename(path, target)
 
-            second = note.with_name("2026-11-11-0918-message-from-gary-second.md")
+            second = note.with_name("2026-11-11-0918-message-from-reviewer-second.md")
             second.write_text(note.read_text(encoding="utf-8"), encoding="utf-8")
             with patch.object(Path, "rename", flaky), self.assertRaises(KeyboardInterrupt):
                 obsidian_memory.retitle_wrapper_runs(ObsidianCLI(vault_path=vault, dry_run=False), [note.parent])
@@ -788,7 +788,7 @@ class ObsidianMemoryTests(unittest.TestCase):
             project = vault / "Project Memory" / "demo"
             (project / "Runs").mkdir(parents=True, exist_ok=True)
             (project / "Runs" / "open-source.md").write_text(
-                "The office goes open source under MIT.\n", encoding="utf-8")
+                "The project goes open source under MIT.\n", encoding="utf-8")
             (project / "Runs" / "beta.md").write_text(
                 "Mark the job done once the tester list shows Day 1+.\n", encoding="utf-8")
             (project / "Runs" / "unrelated.md").write_text(

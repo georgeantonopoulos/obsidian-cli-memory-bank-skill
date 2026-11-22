@@ -14,7 +14,7 @@ class SanitizeQueryTests(unittest.TestCase):
         self.assertIn("implementation", result)
 
     def test_strips_unix_paths(self) -> None:
-        prompt = "Check /Users/george/Dev/project/src/main.py for bugs"
+        prompt = "Check /Users/alex/Dev/project/src/main.py for bugs"
         result = sanitize_query(prompt)
         self.assertNotIn("/Users", result)
         self.assertIn("bugs", result)

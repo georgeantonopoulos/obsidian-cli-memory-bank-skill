@@ -81,19 +81,18 @@ def truncate(text: str, limit: int) -> str:
 
 
 # Turns started by something other than a typed prompt: a message from another
-# session or a subagent, a background task notice, the summary that continues a
-# session after its context ran out, or a labelled office/scheduled prompt. Their
-# opening words are the same wrapper every time, so they make useless titles.
+# session or a subagent, a background task notice, or the summary that continues
+# a session after its context ran out. Their opening words are the same wrapper
+# every time, so they make useless titles. Tools that send labelled prompts of
+# their own add patterns in the user's wrapper-prompts file (see below).
 _WRAPPER_PROMPT_RES = (
     re.compile(r"Message from [^:]{1,80}:"),
     re.compile(r"Background task:"),
     re.compile(r"This session is being continued from a previous conversation", re.IGNORECASE),
     re.compile(re.escape("[Cross-session idle notice]")),
-    # Only the office's own labels: "[Bug: ...]" typed by the user is a real prompt.
-    re.compile(r"\[(?:Office|Scheduled)\b[^\]]{0,60}\]"),
 )
 _REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
-# The client wraps pasted text (office prompts arrive this way) in these tags.
+# The client wraps pasted text in these tags.
 # Only the tags go; the pasted words are the prompt.
 _PASTE_TAG_RE = re.compile(r"</?pasted_content\b[^>]{0,80}>")
 _MARKDOWN_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|#+|>)\s+|\*+|__|`", re.MULTILINE)
@@ -101,9 +100,49 @@ _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 _MIN_REPLY_TITLE = 15
 
 
+def _wrapper_prompts_file() -> Path:
+    override = os.environ.get("OBMEM_WRAPPER_PROMPTS_FILE", "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".config" / "obmem" / "wrapper-prompts.txt"
+
+
+_user_wrapper_cache: Dict[Tuple[str, float], Tuple[re.Pattern, ...]] = {}
+
+
+def user_wrapper_patterns() -> Tuple[re.Pattern, ...]:
+    """Optional per-user regular expressions for prompts that are wrappers.
+
+    For tools that start turns with a fixed label (a scheduler, a dispatcher)
+    whose opening words would otherwise become every note's title. One Python
+    regular expression per line, matched at the start of the prompt; ``#`` for
+    comments. A line that is not a valid expression is skipped.
+    """
+    path = _wrapper_prompts_file()
+    try:
+        key = (str(path), path.stat().st_mtime)
+    except (OSError, ValueError):
+        return ()
+    if key not in _user_wrapper_cache:
+        patterns = []
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except (OSError, ValueError):
+            lines = []
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                patterns.append(re.compile(line))
+            except re.error:
+                continue
+        _user_wrapper_cache.clear()
+        _user_wrapper_cache[key] = tuple(patterns)
+    return _user_wrapper_cache[key]
+
+
 def is_wrapper_prompt(prompt: str) -> bool:
     start = prompt.lstrip()
-    return any(pattern.match(start) for pattern in _WRAPPER_PROMPT_RES)
+    return any(pattern.match(start) for pattern in _WRAPPER_PROMPT_RES + user_wrapper_patterns())
 
 
 def strip_reminders(text: str) -> str:
@@ -124,7 +163,7 @@ _WORK_WORD = (r"(?:the|a|an|my|its|their|both|all|this|that|and|or|of|to|before|
               r"check|checks|fact-check|job|jobs|agent|agents|agent's|investigators?|"
               r"survey|ranking|builders?|validator|Codex|CodeRabbit|PR|"
               r"report|reports|reporting|back|merging|starting|finish|click|"
-              r"office|rewrite|status|page|deploy|answer|[#]?\d+)")
+              r"rewrite|status|page|deploy|answer|[#]?\d+)")
 _OBJECT = rf"(?: {_WORK_WORD}){{1,10}}"
 _SUBJECT = r"(?:it|they|both|each one|that|the (?:run|build|review|suite|tests?))"
 _DONE_VERB = r"(?:reports?(?: back)?|finish(?:es)?|lands?|comes? back)"

@@ -207,6 +207,15 @@ No file means no extra words. Messages that come from tools or other sessions ra
 
 A turn is skipped only when every file it edited matches. Set `OBMEM_CAPTURE_IGNORE_FILE` to use another path.
 
+**Titling notes from tools that label their prompts (optional).** A note is normally titled from the prompt. When a turn starts with a wrapper rather than your own words (a message from another session, a background task notice, a continued-session summary), the Stop hook titles it from the first sentence of the reply instead. If your own tooling starts turns with a fixed label, list a regular expression for it in `~/.config/obmem/wrapper-prompts.txt`, one per line, matched at the start of the prompt:
+
+```text
+# prompts sent by a nightly job
+\[Nightly\b[^\]]{0,60}\]
+```
+
+No file means only the built-in wrappers count. Invalid lines are skipped. Set `OBMEM_WRAPPER_PROMPTS_FILE` to use another path.
+
 **Updating.** `pipx upgrade obsidian-cli-memory-bank`, then copy all hook scripts again (`cp claude-code/hooks/*.py ~/.claude/hooks/`); they share `obsidian_hook_common.py`, so old and new copies must not be mixed. Symlinked hooks need nothing. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ### Codex
