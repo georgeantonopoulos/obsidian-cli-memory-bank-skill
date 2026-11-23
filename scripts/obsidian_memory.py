@@ -3547,7 +3547,7 @@ def _ask_later_decisions(cli: "ObsidianCLI", read_paths: List[str], anchors: Lis
     just after the answer, and later ones on the same subject, are cheap to
     show. Returns (stem, decision) pairs, oldest first."""
     read_stems = {Path(p).stem for p in read_paths}
-    found: Dict[str, Tuple[Tuple[bool, str], str]] = {}
+    found: Dict[Tuple[str, str], Tuple[bool, str]] = {}
     by_project: Dict[str, List[Tuple[str, str]]] = {}
     for path in anchors:
         match = _ASK_RUN_RE.match(path)
@@ -3558,7 +3558,7 @@ def _ask_later_decisions(cli: "ObsidianCLI", read_paths: List[str], anchors: Lis
             register = cli.read(Path(f"Project Memory/{project}/Decisions.md"))
         except (OSError, RuntimeError):
             continue
-        entries: List[Tuple[str, str, str]] = []
+        entries: List[Tuple[str, str, str, datetime]] = []
         for line in register.splitlines():
             match = _ASK_REGISTER_RE.match(line.strip())
             if not match:
@@ -3566,29 +3566,35 @@ def _ask_later_decisions(cli: "ObsidianCLI", read_paths: List[str], anchors: Lis
             text = match.group(3).strip()
             if re.fullmatch(r"(?i)none( yet)?\.?", text):
                 continue
-            entries.append((match.group(1), match.group(2), text))
+            try:
+                when = datetime.strptime(match.group(2), "%Y-%m-%d-%H%M")
+            except ValueError:
+                continue  # a hand-edited line with an impossible date
+            entries.append((match.group(1), match.group(2), text, when))
         entries.sort(key=lambda entry: entry[1])
         for stem, stamp in notes:
             try:
                 start = datetime.strptime(stamp, "%Y-%m-%d-%H%M")
             except ValueError:
                 continue
-            own = " ".join(text for s, _st, text in entries if s == stem)
+            own = " ".join(text for s, _st, text, _w in entries if s == stem)
             subject = _compile_term_patterns(terms + _ask_keywords(own, limit=8))
             later = [e for e in entries if e[1] > stamp and e[0] not in read_stems and e[0] != stem]
-            for index, (other, other_stamp, text) in enumerate(later):
-                when = datetime.strptime(other_stamp, "%Y-%m-%d-%H%M")
-                near = index < ASK_LATER_NEXT
+            # "Near" counts runs, not lines: one run may record several decisions.
+            near_stems = list(dict.fromkeys(e[0] for e in later))[:ASK_LATER_NEXT]
+            for other, other_stamp, text, when in later:
+                near = other in near_stems
                 same_subject = (when - start).days <= ASK_LATER_DAYS and any(
                     pat.search(other.replace("-", " ")) or pat.search(text) for pat in subject)
                 if same_subject or near:
                     rank = (not near, other_stamp)
-                    if other not in found or rank < found[other][0]:
-                        found[other] = (rank, text)
+                    key = (other, text)
+                    if key not in found or rank < found[key]:
+                        found[key] = rank
     # The entries right after the answer win the slots (a reversal usually
     # follows within a few runs); show the kept ones in date order.
-    kept = sorted(found.items(), key=lambda item: item[1][0])[:ASK_LATER_MAX]
-    return sorted((stem, text) for stem, (_rank, text) in kept)
+    kept = sorted(found.items(), key=lambda item: item[1])[:ASK_LATER_MAX]
+    return sorted(key for key, _rank in kept)
 
 
 def cmd_ask(args: argparse.Namespace) -> None:

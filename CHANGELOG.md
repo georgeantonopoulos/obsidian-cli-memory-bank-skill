@@ -15,6 +15,11 @@
   `weak` for 10 of 15, prompting a second search. Without Jev, word overlap
   alone said "found" wrongly 6 of 16 times, so it reports `unchecked`.
 
+- **`obmem ask` lists later decisions.** A note can match the question yet hold a
+  decision a later run replaced, and the replacing note often shares none of the
+  question's words. When `ask` reads a run note that may be the answer, it now lists
+  the next decisions after it in the project's `Decisions.md`, plus later ones on
+  the same subject within a week (5 at most), so the agent can check none replaces it.
 - **Wrapper prompts of your own tools are configurable.** Prompts that start
   with a label your own tooling adds (for example `[Nightly: ...]`) can be
   listed in `~/.config/obmem/wrapper-prompts.txt` (or the path in

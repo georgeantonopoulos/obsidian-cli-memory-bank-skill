@@ -106,6 +106,7 @@ def _register_vault(tmp: str) -> Path:
     stems = {
         "2026-11-01-1000-shop-sells-the-tool-for-9": "Pricing: sell the tool for $9 from a shop page",
         "2026-11-01-1005-name-check": "None yet",
+        "2026-02-30-1200-impossible-date": "Pricing never decided",
         "2026-11-01-1010-tool-goes-open-source": "Open source with a tip jar",
         "2026-11-01-1020-colour-of-the-logo": "Logo stays orange",
         "2026-11-01-1030-docs-site": "Docs live on the website",
@@ -116,6 +117,8 @@ def _register_vault(tmp: str) -> Path:
     lines = ["# Decisions", ""]
     for stem, decision in stems.items():
         lines.append(f"- [[{runs}{stem}|{stem}]]: {decision}")
+        if stem.endswith("open-source"):
+            lines.append(f"- [[{runs}{stem}|{stem}]]: No price for the tool")
         (vault / runs).mkdir(parents=True, exist_ok=True)
         (vault / f"{runs}{stem}.md").write_text(f"# {stem}\n\n## Decisions\n- {decision}\n", encoding="utf-8")
     (vault / "Project Memory/demo/Decisions.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -131,6 +134,11 @@ class LaterDecisionTests(unittest.TestCase):
         later = out.split("Later decisions in this project")[1].split("\nNext:")[0]
         # The next few entries, so a reversal with none of the question's words shows.
         self.assertIn("Open source with a tip jar", later)
+        # Every decision of a later run is kept, and the 3 nearest are runs, not lines.
+        self.assertIn("No price for the tool", later)
+        self.assertIn("Docs live on the website", later)
+        # An impossible date in a hand-edited line is skipped, not a crash.
+        self.assertNotIn("Pricing never decided", later)
         # "None yet" lines carry nothing to check.
         self.assertNotIn("name-check", later)
         # Same subject within a week is kept; a month later is not.
