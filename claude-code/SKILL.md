@@ -34,6 +34,8 @@ obmem ask --project "ProjectName" --question "Should the read cache store half o
 
 `ask` searches, reads the 2 best unseen notes around their matching lines, and ends with a status. `found`: use it as evidence and confirm current state in the code. `weak`: ask once more with different words (`--query` with names, files or errors from these notes or the code), passing every note already read to `--exclude`. `unchecked`: Jev did not run, so judge the excerpts yourself. `nothing`: try other words once. Stop after two follow-ups per question.
 
+A matching note can hold a decision a later run reversed. When `ask` lists later decisions from the project, check none replaces the answer before using it; read that note if unsure.
+
 If memory still does not settle it and the gap changes the result, ask the user: one question at a time, multiple choice where possible, recommended option first, saying what you searched. Do not ask what the code, repo or memory can answer, or about small reversible choices: decide those and say so. Record each answer as a decision (`record-run --decisions`) so the next session finds it instead of asking.
 
 ## Hooks and capture

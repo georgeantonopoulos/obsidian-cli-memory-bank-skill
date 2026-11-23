@@ -3528,6 +3528,69 @@ def _ask_verdict(jev: Optional[float], cover: float, terms: int) -> str:
     return "found" if cover >= ASK_FOUND_LINE_COVER and jev >= ASK_FOUND_JEV else "weak"
 
 
+_ASK_RUN_RE = re.compile(r"^Project Memory/([^/]+)/Runs/(\d{4}-\d{2}-\d{2}-\d{4})[^/]*\.md$")
+_ASK_REGISTER_RE = re.compile(
+    r"^- \[\[Project Memory/[^/]+/Runs/((\d{4}-\d{2}-\d{2}-\d{4})[^|\]]*)(?:\|[^\]]*)?\]\]:\s*(.+)$")
+ASK_LATER_DAYS = 7
+ASK_LATER_NEXT = 3
+ASK_LATER_MAX = 5
+
+
+def _ask_later_decisions(cli: "ObsidianCLI", read_paths: List[str], anchors: List[str],
+                         terms: List[str]) -> List[Tuple[str, str]]:
+    """Decisions recorded after the run notes in ``anchors``, from their
+    project's Decisions.md register, that may replace what those notes say.
+
+    A note that matches the question can hold a decision that a later run
+    reversed, and the later note often shares none of the question's words.
+    The register lists every run's decisions in date order, so the entries
+    just after the answer, and later ones on the same subject, are cheap to
+    show. Returns (stem, decision) pairs, oldest first."""
+    read_stems = {Path(p).stem for p in read_paths}
+    found: Dict[str, Tuple[Tuple[bool, str], str]] = {}
+    by_project: Dict[str, List[Tuple[str, str]]] = {}
+    for path in anchors:
+        match = _ASK_RUN_RE.match(path)
+        if match:
+            by_project.setdefault(match.group(1), []).append((Path(path).stem, match.group(2)))
+    for project, notes in by_project.items():
+        try:
+            register = cli.read(Path(f"Project Memory/{project}/Decisions.md"))
+        except (OSError, RuntimeError):
+            continue
+        entries: List[Tuple[str, str, str]] = []
+        for line in register.splitlines():
+            match = _ASK_REGISTER_RE.match(line.strip())
+            if not match:
+                continue
+            text = match.group(3).strip()
+            if re.fullmatch(r"(?i)none( yet)?\.?", text):
+                continue
+            entries.append((match.group(1), match.group(2), text))
+        entries.sort(key=lambda entry: entry[1])
+        for stem, stamp in notes:
+            try:
+                start = datetime.strptime(stamp, "%Y-%m-%d-%H%M")
+            except ValueError:
+                continue
+            own = " ".join(text for s, _st, text in entries if s == stem)
+            subject = _compile_term_patterns(terms + _ask_keywords(own, limit=8))
+            later = [e for e in entries if e[1] > stamp and e[0] not in read_stems and e[0] != stem]
+            for index, (other, other_stamp, text) in enumerate(later):
+                when = datetime.strptime(other_stamp, "%Y-%m-%d-%H%M")
+                near = index < ASK_LATER_NEXT
+                same_subject = (when - start).days <= ASK_LATER_DAYS and any(
+                    pat.search(other.replace("-", " ")) or pat.search(text) for pat in subject)
+                if same_subject or near:
+                    rank = (not near, other_stamp)
+                    if other not in found or rank < found[other][0]:
+                        found[other] = (rank, text)
+    # The entries right after the answer win the slots (a reversal usually
+    # follows within a few runs); show the kept ones in date order.
+    kept = sorted(found.items(), key=lambda item: item[1][0])[:ASK_LATER_MAX]
+    return sorted((stem, text) for stem, (_rank, text) in kept)
+
+
 def cmd_ask(args: argparse.Namespace) -> None:
     """Search, read the best unseen notes around the matching lines, and say
     whether the evidence answers the question: found, weak or nothing."""
@@ -3593,12 +3656,28 @@ def cmd_ask(args: argparse.Namespace) -> None:
         print(f"  {path} ({verdict}; {score}{anywhere}/{len(terms)} words in excerpt)")
     for path, _jev, _cover, _anywhere, excerpt, _verdict in read:
         print(f"\n--- {path} ---\n{excerpt}")
-    if status == "found":
+    # Any note that may be the answer (found, judged relevant by Jev, or not
+    # judged at all) gets checked for later decisions that could replace it.
+    anchors = [item[0] for item in read
+               if item[5] != "weak" or (item[1] is not None and item[1] >= ASK_FOUND_JEV)]
+    later = _ask_later_decisions(cli, [item[0] for item in read], anchors, terms)
+    if later:
+        print("\nLater decisions in this project (check none replaces the answer above):")
+        for stem, text in later:
+            print(f"  {text}  [{stem}]")
+    if status == "found" and later:
+        print("\nNext: use it unless a later decision above replaces it (read that note "
+              "with read-note if unsure); confirm current state in the code or repo.")
+    elif status == "found":
         print("\nNext: use it as evidence; confirm current state in the code or repo.")
     elif status == "unchecked":
+        if later:
+            print("\nIf an excerpt answers it, check no later decision above replaces it.")
         print("\nNext: no relevance check ran (Jev off), so judge the excerpts yourself. "
               "If they do not settle it, ask again with other words and --exclude the notes above.")
     else:
+        if later:
+            print("\nIf an excerpt answers it, check no later decision above replaces it.")
         print("\nNext: if this does not settle it, ask again with other words "
               "(names from these notes or the code) and --exclude the notes above. "
               "After two weak follow-ups, ask the user if the gap changes what you build.")

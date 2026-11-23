@@ -98,3 +98,46 @@ class AskTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _register_vault(tmp: str) -> Path:
+    vault = Path(tmp)
+    runs = "Project Memory/demo/Runs/"
+    stems = {
+        "2026-11-01-1000-shop-sells-the-tool-for-9": "Pricing: sell the tool for $9 from a shop page",
+        "2026-11-01-1005-name-check": "None yet",
+        "2026-11-01-1010-tool-goes-open-source": "Open source with a tip jar",
+        "2026-11-01-1020-colour-of-the-logo": "Logo stays orange",
+        "2026-11-01-1030-docs-site": "Docs live on the website",
+        "2026-11-01-1040-test-runner": "Tests run on every push",
+        "2026-11-20-0900-pricing-page-copy": "Pricing page copy says free",
+        "2026-12-30-0900-pricing-revisit": "Pricing reconsidered for teams",
+    }
+    lines = ["# Decisions", ""]
+    for stem, decision in stems.items():
+        lines.append(f"- [[{runs}{stem}|{stem}]]: {decision}")
+        (vault / runs).mkdir(parents=True, exist_ok=True)
+        (vault / f"{runs}{stem}.md").write_text(f"# {stem}\n\n## Decisions\n- {decision}\n", encoding="utf-8")
+    (vault / "Project Memory/demo/Decisions.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return vault
+
+
+class LaterDecisionTests(unittest.TestCase):
+    def test_answer_from_a_run_note_lists_the_decisions_after_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = _ask(_register_vault(tmp), "--question", "what price do we sell the tool for?",
+                       "--exclude", "Decisions", "--notes", "1")
+        self.assertIn("shop-sells-the-tool-for-9.md", out.split("Later decisions")[0])
+        later = out.split("Later decisions in this project")[1].split("\nNext:")[0]
+        # The next few entries, so a reversal with none of the question's words shows.
+        self.assertIn("Open source with a tip jar", later)
+        # "None yet" lines carry nothing to check.
+        self.assertNotIn("name-check", later)
+        # Same subject within a week is kept; a month later is not.
+        self.assertNotIn("Pricing reconsidered", later)
+        self.assertNotIn("shop-sells-the-tool-for-9]", later)
+
+    def test_no_later_section_for_notes_outside_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = _ask(_vault(tmp), "--question", "what float does the disk cache store?")
+        self.assertNotIn("Later decisions", out)
