@@ -9,8 +9,9 @@
   `unchecked` when Jev did not run. Index pages (MOC, Run Log, compactions)
   are read last. The skill now says to follow up at most twice, then ask the
   user one multiple-choice question at a time and record the answer as a
-  decision. On the local recall set with Jev on, `found` matched the expected
-  decision line 38 of 40 times on direct questions; on vague questions it says
+  decision. Checked on 60 questions about past decisions in a real vault
+  (45 worded directly, 15 vaguely), with Jev on: `found` showed the expected
+  decision line 38 of 40 times on direct questions; on vague questions it said
   `weak` for 10 of 15, prompting a second search. Without Jev, word overlap
   alone said "found" wrongly 6 of 16 times, so it reports `unchecked`.
 

@@ -3519,8 +3519,8 @@ def _ask_line_cover(excerpt: str, terms: List[str]) -> Tuple[float, int]:
 
 def _ask_verdict(jev: Optional[float], cover: float, terms: int) -> str:
     if jev is None:
-        # Word overlap alone is a poor judge: on the recall benchmark its "found"
-        # was wrong 6 of 16 times even with every word on one line.
+        # Word overlap alone is a poor judge: notes that share the question's
+        # words often hold a different decision, so leave the call to the agent.
         return "unchecked"
     if terms < 2:
         # One search word cannot show the line answers anything.
