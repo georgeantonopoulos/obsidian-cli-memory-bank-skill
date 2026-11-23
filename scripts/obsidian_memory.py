@@ -6,6 +6,8 @@ Manage a project knowledge memory bank in Obsidian via Obsidian CLI.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import math
 import os
@@ -3476,6 +3478,217 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 
 
+# --- ask: one follow-up question to memory, with a verdict on the evidence ---
+
+_ASK_EXTRA_STOP = frozenset(
+    "a an the or and nor not of to in on at by for from with is are was were be been do does did "
+    "we our us i me my you your it its this that these those what which who whom "
+    "how why when where whether should would could can will shall may might "
+    "there here any some ever again still yet please".split()
+)
+_ASK_HIT_RE = re.compile(r"^\s{2}(.+\.md) \(score (\d+)(?:; Jev ([\d.]+))?(?:; best)?\)$")
+# A note counts as an answer when Jev (if it ranked) judged it relevant and one
+# line of the excerpt carries at least 60% of the question's search words.
+ASK_FOUND_JEV = 0.7
+_ASK_INDEX_RE = re.compile(r"/(?:Compactions|Archive)/|/(?:Run Log|MOC)\.md$")
+ASK_FOUND_LINE_COVER = 0.6
+
+
+def _ask_keywords(question: str, limit: int = 6) -> List[str]:
+    """Distinct content words from the question, in the order asked."""
+    words: List[str] = []
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9.+_-]*", question):
+        token = token.strip("._-").lower()
+        if (len(token) < 2 or token in words or token in STOP_WORDS
+                or token in _ASK_EXTRA_STOP):
+            continue
+        words.append(token)
+    return words[:limit]
+
+
+def _ask_line_cover(excerpt: str, terms: List[str]) -> Tuple[float, int]:
+    """Best share of search words found on one line, and words found anywhere."""
+    patterns = _compile_term_patterns(terms)
+    if not patterns:
+        return 0.0, 0
+    best = max((sum(1 for pat in patterns if pat.search(line))
+                for line in excerpt.splitlines()), default=0)
+    anywhere = sum(1 for pat in patterns if pat.search(excerpt))
+    return best / len(patterns), anywhere
+
+
+def _ask_verdict(jev: Optional[float], cover: float, terms: int) -> str:
+    if jev is None:
+        # Word overlap alone is a poor judge: notes that share the question's
+        # words often hold a different decision, so leave the call to the agent.
+        return "unchecked"
+    if terms < 2:
+        # One search word cannot show the line answers anything.
+        return "found" if jev >= ASK_FOUND_JEV else "weak"
+    return "found" if cover >= ASK_FOUND_LINE_COVER and jev >= ASK_FOUND_JEV else "weak"
+
+
+_ASK_RUN_RE = re.compile(r"^Project Memory/([^/]+)/Runs/(\d{4}-\d{2}-\d{2}-\d{4})[^/]*\.md$")
+_ASK_REGISTER_RE = re.compile(
+    r"^- \[\[Project Memory/[^/]+/Runs/((\d{4}-\d{2}-\d{2}-\d{4})[^|\]]*)(?:\|[^\]]*)?\]\]:\s*(.+)$")
+ASK_LATER_DAYS = 7
+ASK_LATER_NEXT = 3
+ASK_LATER_MAX = 5
+
+
+def _ask_later_decisions(cli: "ObsidianCLI", read_paths: List[str], anchors: List[str],
+                         terms: List[str]) -> List[Tuple[str, str]]:
+    """Decisions recorded after the run notes in ``anchors``, from their
+    project's Decisions.md register, that may replace what those notes say.
+
+    A note that matches the question can hold a decision that a later run
+    reversed, and the later note often shares none of the question's words.
+    The register lists every run's decisions in date order, so the entries
+    just after the answer, and later ones on the same subject, are cheap to
+    show. Returns (stem, decision) pairs, oldest first."""
+    read_stems = {Path(p).stem for p in read_paths}
+    found: Dict[Tuple[str, str], Tuple[bool, str]] = {}
+    by_project: Dict[str, List[Tuple[str, str]]] = {}
+    for path in anchors:
+        match = _ASK_RUN_RE.match(path)
+        if match:
+            by_project.setdefault(match.group(1), []).append((Path(path).stem, match.group(2)))
+    for project, notes in by_project.items():
+        try:
+            register = cli.read(Path(f"Project Memory/{project}/Decisions.md"))
+        except (OSError, RuntimeError):
+            continue
+        entries: List[Tuple[str, str, str, datetime]] = []
+        for line in register.splitlines():
+            match = _ASK_REGISTER_RE.match(line.strip())
+            if not match:
+                continue
+            text = match.group(3).strip()
+            if re.fullmatch(r"(?i)none( yet)?\.?", text):
+                continue
+            try:
+                when = datetime.strptime(match.group(2), "%Y-%m-%d-%H%M")
+            except ValueError:
+                continue  # a hand-edited line with an impossible date
+            entries.append((match.group(1), match.group(2), text, when))
+        entries.sort(key=lambda entry: entry[1])
+        for stem, stamp in notes:
+            try:
+                start = datetime.strptime(stamp, "%Y-%m-%d-%H%M")
+            except ValueError:
+                continue
+            own = " ".join(text for s, _st, text, _w in entries if s == stem)
+            subject = _compile_term_patterns(terms + _ask_keywords(own, limit=8))
+            later = [e for e in entries if e[1] > stamp and e[0] not in read_stems and e[0] != stem]
+            # "Near" counts runs, not lines: one run may record several decisions.
+            near_stems = list(dict.fromkeys(e[0] for e in later))[:ASK_LATER_NEXT]
+            for other, other_stamp, text, when in later:
+                near = other in near_stems
+                same_subject = (when - start).days <= ASK_LATER_DAYS and any(
+                    pat.search(other.replace("-", " ")) or pat.search(text) for pat in subject)
+                if same_subject or near:
+                    rank = (not near, other_stamp)
+                    key = (other, text)
+                    if key not in found or rank < found[key]:
+                        found[key] = rank
+    # The entries right after the answer win the slots (a reversal usually
+    # follows within a few runs); show the kept ones in date order.
+    kept = sorted(found.items(), key=lambda item: item[1])[:ASK_LATER_MAX]
+    return sorted(key for key, _rank in kept)
+
+
+def cmd_ask(args: argparse.Namespace) -> None:
+    """Search, read the best unseen notes around the matching lines, and say
+    whether the evidence answers the question: found, weak or nothing."""
+    terms = [t for t in (args.query.split() if args.query else _ask_keywords(args.question)) if t]
+    if not terms:
+        raise SystemExit("obmem ask: the question has no searchable words; pass --query")
+    exclude = {e.strip().removesuffix(".md") for e in (args.exclude or []) if e.strip()}
+    search_args = argparse.Namespace(
+        workspace=args.workspace, dry_run=args.dry_run, project=args.project,
+        all_projects=args.all_projects, query=" ".join(terms), intent=args.question,
+        limit=min(30, args.notes + len(exclude) + 3), ranker=args.ranker,
+        include_archive=args.include_archive, min_jev=None,
+    )
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        cmd_search(search_args)
+    if args.dry_run:
+        print(buffer.getvalue(), end="")
+        return
+    hits = []
+    for line in buffer.getvalue().splitlines():
+        match = _ASK_HIT_RE.match(line)
+        if not match:
+            continue
+        path = match.group(1)
+        if path.removesuffix(".md") in exclude or Path(path).stem in exclude:
+            continue
+        hits.append((path, float(match.group(3)) if match.group(3) else None))
+    # Index pages repeat one-line copies of other notes: a title match there
+    # reads as an answer without the detail, so read them only as a last resort.
+    hits.sort(key=lambda hit: bool(_ASK_INDEX_RE.search(hit[0])))
+    print(f"Question: {args.question}")
+    print(f"Searched for: {' '.join(terms)}")
+    if not hits:
+        print("Status: nothing (no unseen note matches these words)")
+        print("Next: try other words once (a name, file or error from the code); "
+              "if still nothing and the gap changes what you build, ask the user.")
+        return
+    vault_path = resolve_vault_or_exit(args.workspace)
+    cli = ObsidianCLI(vault_path=vault_path, dry_run=False)
+    query = " ".join(terms)
+    read = []
+    for path, jev in hits[: args.notes]:
+        try:
+            text = cli.read(Path(path))
+        except (OSError, RuntimeError):
+            continue
+        excerpt = _note_excerpt(text, max_chars=args.max_chars, query=query)
+        cover, anywhere = _ask_line_cover(excerpt, terms)
+        read.append((path, jev, cover, anywhere, excerpt, _ask_verdict(jev, cover, len(terms))))
+    if not read:
+        print("Status: nothing (matching notes could not be read)")
+        return
+    verdicts = {item[5] for item in read}
+    status = "found" if "found" in verdicts else "unchecked" if verdicts == {"unchecked"} else "weak"
+    best = max(read, key=lambda item: (item[5] == "found", item[2], item[1] or 0))
+    jev_text = f"Jev {best[1]:.2f}; " if best[1] is not None else ""
+    print(f"Status: {status} ({jev_text}best line holds "
+          f"{round(best[2] * len(terms))} of {len(terms)} search words)")
+    print("Read (pass to --exclude on a follow-up):")
+    for path, jev, cover, anywhere, _excerpt, verdict in read:
+        score = f"Jev {jev:.2f}, " if jev is not None else ""
+        print(f"  {path} ({verdict}; {score}{anywhere}/{len(terms)} words in excerpt)")
+    for path, _jev, _cover, _anywhere, excerpt, _verdict in read:
+        print(f"\n--- {path} ---\n{excerpt}")
+    # Any note that may be the answer (found, judged relevant by Jev, or not
+    # judged at all) gets checked for later decisions that could replace it.
+    anchors = [item[0] for item in read
+               if item[5] != "weak" or (item[1] is not None and item[1] >= ASK_FOUND_JEV)]
+    later = _ask_later_decisions(cli, [item[0] for item in read], anchors, terms)
+    if later:
+        print("\nLater decisions in this project (check none replaces the answer above):")
+        for stem, text in later:
+            print(f"  {text}  [{stem}]")
+    if status == "found" and later:
+        print("\nNext: use it unless a later decision above replaces it (read that note "
+              "with read-note if unsure); confirm current state in the code or repo.")
+    elif status == "found":
+        print("\nNext: use it as evidence; confirm current state in the code or repo.")
+    elif status == "unchecked":
+        if later:
+            print("\nIf an excerpt answers it, check no later decision above replaces it.")
+        print("\nNext: no relevance check ran (Jev off), so judge the excerpts yourself. "
+              "If they do not settle it, ask again with other words and --exclude the notes above.")
+    else:
+        if later:
+            print("\nIf an excerpt answers it, check no later decision above replaces it.")
+        print("\nNext: if this does not settle it, ask again with other words "
+              "(names from these notes or the code) and --exclude the notes above. "
+              "After two weak follow-ups, ask the user if the gap changes what you build.")
+
+
 def _probability(value: str) -> float:
     number = float(value)
     if not 0 <= number <= 1:
@@ -4226,6 +4439,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser_search.add_argument("--workspace", help="Workspace path override")
     parser_search.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser_search.set_defaults(func=cmd_search)
+
+    parser_ask = subparsers.add_parser(
+        "ask", help="Follow-up recall: search, read matching lines, and say found/weak/nothing",
+    )
+    ask_scope = parser_ask.add_mutually_exclusive_group(required=True)
+    ask_scope.add_argument("--project", help="Project display name")
+    ask_scope.add_argument("--all-projects", action="store_true", help="Ask every project's memory")
+    parser_ask.add_argument("--question", required=True,
+                            help="The specific open question, as a sentence (Jev judges notes against it)")
+    parser_ask.add_argument("--query", help="Search words to use instead of those taken from --question")
+    parser_ask.add_argument("--exclude", action="append", metavar="PATH",
+                            help="Note already read (path or stem); repeat for several")
+    parser_ask.add_argument("--notes", type=_positive_int, default=2, help="Notes to read (default: 2)")
+    parser_ask.add_argument("--max-chars", type=_positive_int, default=2000,
+                            help="Characters per note excerpt (default: 2000)")
+    parser_ask.add_argument("--ranker", choices=("local", "auto", "jev"), help="Override the saved ranker")
+    parser_ask.add_argument("--include-archive", action="store_true", help="Also search archived evidence")
+    parser_ask.add_argument("--workspace", help="Workspace path override")
+    parser_ask.add_argument("--dry-run", action="store_true", help="Print commands only")
+    parser_ask.set_defaults(func=cmd_ask)
 
     parser_search_ranker = subparsers.add_parser(
         "set-search-ranker", help="Save a private search ranking preference (default: local)",
