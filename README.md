@@ -314,6 +314,7 @@ obmem search --project "Name" --query "x" --include-archive # Include archived e
 obmem search --all-projects --query "x"   # Search every project's memory
 obmem read-note --path "..."          # Read up to 6,000 source characters
 obmem read-note --path "..." --query "retry queue" # Focus on matching evidence
+obmem ask --project "Name" --question "Why cap retries at 3?" # Follow-up: read best unseen notes, say found/weak
 obmem read-note --path "..." --offset 6000 # Continue a truncated note
 obmem read-note --path "..." --full    # Explicit complete-note read
 obmem audit --project "Name"          # Check graph hygiene inside one project

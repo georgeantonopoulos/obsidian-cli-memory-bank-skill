@@ -22,7 +22,21 @@ Search returns 3 hits. Read one note first, at most 3 for ordinary recall. Start
 
 Search stays local by default, even if `TYPESAFE_API_KEY` is set. A user can opt in for one search with `--ranker jev`, or save a private preference with `obmem set-search-ranker --ranker auto`. Jev receives query-focused note excerpts; use `--ranker local` when notes must stay local. `auto` falls back to local search if the key or service is unavailable. When Jev ranks, pass the specific question as `--intent`; keyword-only queries give flat scores. `--min-jev 0.3` hides notes Jev judges irrelevant.
 
-Prefer relevant `Current Memory.md` and `Topics/` over indexes and raw runs. Never preload Run Log, all hits, or transcripts. Refine an irrelevant query once, then continue without memory if still empty. Broaden with `--limit 10` or `--include-archive` only when missing historical evidence matters.
+Prefer relevant `Current Memory.md` and `Topics/` over indexes and raw runs. Never preload Run Log, all hits, or transcripts. If the result leaves a specific question open, follow up with `obmem ask` (below); otherwise continue without memory. Broaden with `--limit 10` or `--include-archive` only when missing historical evidence matters.
+
+
+## When context is still unclear
+
+After the first recall, if one fact that would change what you build is still missing or ambiguous, write it as one specific question and ask memory:
+
+```bash
+obmem ask --project "ProjectName" --question "Should the read cache store half or full float?" \
+  --exclude "Project Memory/project-name/Decisions.md"
+```
+
+`ask` searches, reads the 2 best unseen notes around their matching lines, and ends with a status. `found`: use it as evidence and confirm current state in the code. `weak`: ask once more with different words (`--query` with names, files or errors from these notes or the code), passing every note already read to `--exclude`. `unchecked`: Jev did not run, so judge the excerpts yourself. `nothing`: try other words once. Stop after two follow-ups per question.
+
+If memory still does not settle it and the gap changes the result, ask the user: one question at a time, multiple choice where possible, recommended option first, saying what you searched. Do not ask what the code, repo or memory can answer, or about small reversible choices: decide those and say so. Record each answer as a decision (`record-run --decisions`) so the next session finds it instead of asking.
 
 ## Capture
 

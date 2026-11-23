@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **`obmem ask`: follow-up questions to memory.** When the first recall leaves
+  a specific question open, `obmem ask --project X --question "..."` searches,
+  reads the two best notes not already read (`--exclude`) around their
+  matching lines, and ends with a status: `found`, `weak`, `nothing`, or
+  `unchecked` when Jev did not run. Index pages (MOC, Run Log, compactions)
+  are read last. The skill now says to follow up at most twice, then ask the
+  user one multiple-choice question at a time and record the answer as a
+  decision. On the local recall set with Jev on, `found` matched the expected
+  decision line 38 of 40 times on direct questions; on vague questions it says
+  `weak` for 10 of 15, prompting a second search. Without Jev, word overlap
+  alone said "found" wrongly 6 of 16 times, so it reports `unchecked`.
+
 - **Wrapper prompts of your own tools are configurable.** Prompts that start
   with a label your own tooling adds (for example `[Nightly: ...]`) can be
   listed in `~/.config/obmem/wrapper-prompts.txt` (or the path in
