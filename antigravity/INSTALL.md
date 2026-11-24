@@ -90,6 +90,12 @@ All shared environment variables and optional config files work identically acro
   - `~/.config/obmem/capture-ignore.txt` (`OBMEM_CAPTURE_IGNORE_FILE`): file globs whose edits alone should not trigger auto-capture.
   - `~/.config/obmem/wrapper-prompts.txt` (`OBMEM_WRAPPER_PROMPTS_FILE`): leading regexes for tool-generated prompts that should be titled from the reply.
 
+### Troubleshooting: Sandboxed terminals
+
+Lifecycle hooks run directly on the host and do not hit terminal sandbox limits. When an agent invokes `obmem` via a sandboxed `run_command`, however, the sandbox blocks access to files outside the workspace (your Obsidian vault, `state/vault_config.json`, and—for editable `pipx` installs—the source checkout). If the current workspace also contains a `scripts/` folder, Python may report `ModuleNotFoundError: No module named 'scripts.obsidian_memory'` instead of a permission error.
+
+The bundled Antigravity `SKILL.md` instructs the agent to retry standalone `obmem` commands outside the sandbox (`BypassSandbox: true`) when this happens, so you can approve `obmem` once cleanly.
+
 ## 4) First-time vault setup
 
 ```bash
