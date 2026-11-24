@@ -1872,6 +1872,37 @@ def _section(body: str, heading: str) -> str:
     return match.group("body").strip()
 
 
+_UPDATE_SECTION_RE = re.compile(r"^## Update \d{1,2}:\d{2}\s*$\n(?P<body>.*?)(?=^## |\Z)",
+                                re.MULTILINE | re.DOTALL)
+
+
+def _run_updates(body: str) -> List[Dict[str, str]]:
+    """The ``## Update HH:MM`` sections a merged save adds, oldest first.
+
+    Each holds the save's summary, then its actions, then "Decisions:" and
+    "Open questions:" paragraphs (see ``_merge_into_run``)."""
+    updates: List[Dict[str, str]] = []
+    for match in _UPDATE_SECTION_RE.finditer(body):
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", match.group("body")) if p.strip()]
+        if not paragraphs:
+            continue
+        update = {"summary": paragraphs[0], "actions": "", "decisions": "", "questions": ""}
+        for paragraph in paragraphs[1:]:
+            if paragraph.startswith("Decisions:"):
+                update["decisions"] = paragraph[len("Decisions:"):].strip()
+            elif paragraph.startswith("Open questions:"):
+                update["questions"] = paragraph[len("Open questions:"):].strip()
+            else:
+                update["actions"] = (update["actions"] + "\n" + paragraph).strip()
+        updates.append(update)
+    return updates
+
+
+def _latest_summary(body: str) -> str:
+    updates = _run_updates(body)
+    return updates[-1]["summary"] if updates else _section(body, "Summary")
+
+
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;])\s+")
 _SENTENCE_ABBREVIATIONS = {"e.g.", "i.e.", "etc.", "vs.", "approx.", "incl.", "cf.", "no.", "fig.", "mr.", "dr."}
 # Markdown that carries no meaning once a reply is flattened into sentences:
@@ -2152,6 +2183,13 @@ def _parse_run_memory(
     actions = _section(body, "Actions Taken")
     decisions = _section(body, "Decisions")
     questions = _section(body, "Open Questions")
+    # Merged saves: the latest update states where the work ended up.
+    updates = _run_updates(body)
+    if updates:
+        summary = updates[-1]["summary"]
+        actions = "\n".join(filter(None, [actions] + [u["actions"] for u in updates]))
+        decisions = "\n".join(filter(None, [decisions] + [u["decisions"] for u in updates]))
+        questions = "\n".join(filter(None, [questions] + [u["questions"] for u in updates]))
     combined = " ".join([title, prompt, summary, actions, decisions, questions])
     return RunMemory(
         path=relative_path,
@@ -3210,7 +3248,8 @@ def _merge_target(runs_dir: Path, session: str, summary: str,
         front = text.split("\n---", 1)[0] if text.startswith("---") else ""
         found = _FRONT_SESSION_RE.search(front)
         note_session = found.group(1).strip() if found else ""
-        old_summary = " ".join(_section(text, "Summary").split())
+        # A note already merged into: its newest update says whether the work is still open.
+        old_summary = " ".join(_latest_summary(text).split())
         if session and note_session == session and (new_pending or _is_pending(old_summary)):
             return note, "same session, work still in progress"
         if new_summary and old_summary and difflib.SequenceMatcher(

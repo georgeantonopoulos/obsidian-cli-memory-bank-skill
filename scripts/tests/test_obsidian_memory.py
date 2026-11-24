@@ -149,6 +149,25 @@ class ObsidianMemoryTests(unittest.TestCase):
             log = (vault / "Project Memory/demo/Run Log.md").read_text()
             self.assertEqual(log.count(f"{runs[0].stem}]]"), 1)
 
+    def test_finished_update_closes_the_note_and_feeds_compaction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            self._record(vault, "--title", "Fix export", "--prompt", "p",
+                         "--summary", "Export fix not committed yet.", "--actions", "Edited export.")
+            self._record(vault, "--title", "Fix export done", "--prompt", "p",
+                         "--summary", "Export fix shipped successfully.", "--actions", "Pushed.",
+                         "--decisions", "Keep measured counts.")
+            # Unrelated finished work after the update: the export note is closed now.
+            self._record(vault, "--title", "Passkeys", "--prompt", "p",
+                         "--summary", "Login page now supports passkeys.", "--actions", "x")
+            runs = sorted((vault / "Project Memory/demo/Runs").glob("*.md"))
+            self.assertEqual(len(runs), 2)
+            export = next(r for r in runs if "fix-export" in r.name)
+            memory = obsidian_memory._parse_run_memory(vault, export.relative_to(vault))
+            self.assertEqual(memory.summary, "Export fix shipped successfully.")
+            self.assertIn("Pushed.", memory.actions)
+            self.assertIn("Keep measured counts.", memory.decisions)
+
     def test_pending_save_detection_ignores_finished_work(self) -> None:
         for text in ("Fix is not yet committed.", "Suite still running; 3 failures so far.",
                      "Changes haven't been pushed.", "Release untested on Intel."):
