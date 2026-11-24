@@ -115,6 +115,78 @@ class ObsidianMemoryTests(unittest.TestCase):
             log = (vault / "Project Memory/demo/Run Log.md").read_text()
             self.assertIn("`[[nodes]]`", log)
 
+    def _record(self, vault: Path, *extra: str, session: str = "s1") -> str:
+        args = build_parser().parse_args(["record-run", "--project", "Demo", "--no-auto-relate", *extra])
+        store = MagicMock()
+        store.get_audit_every_runs.return_value = 0
+        out = io.StringIO()
+        with patch("scripts.obsidian_memory.resolve_vault_or_exit", return_value=vault), \
+                patch("scripts.obsidian_memory.ConfigStore", return_value=store), \
+                patch.dict(os.environ, {"OBMEM_SESSION_ID": session}), \
+                contextlib.redirect_stdout(out):
+            cmd_record_run(args)
+        return out.getvalue()
+
+    def test_record_run_merges_a_pending_save_into_the_sessions_earlier_note(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            self._record(vault, "--title", "Fix export", "--prompt", "p",
+                         "--summary", "Fix is in but not committed yet; the suite is running.",
+                         "--actions", "Edited export.")
+            output = self._record(vault, "--title", "Fix export again", "--prompt", "p",
+                                  "--summary", "Committed abc123; all 300 tests pass.",
+                                  "--actions", "Pushed.", "--decisions", "Keep measured counts.")
+            runs = list((vault / "Project Memory/demo/Runs").glob("*.md"))
+            self.assertEqual(len(runs), 1)
+            self.assertIn("Recorded run note: Project Memory/demo/Runs/", output)
+            self.assertIn("Merged into the earlier note", output)
+            text = runs[0].read_text()
+            self.assertIn("# Fix export", text)
+            self.assertIn("## Update ", text)
+            self.assertIn("Committed abc123", text)
+            decisions = (vault / "Project Memory/demo/Decisions.md").read_text()
+            self.assertIn(runs[0].stem, decisions)
+            log = (vault / "Project Memory/demo/Run Log.md").read_text()
+            self.assertEqual(log.count(f"{runs[0].stem}]]"), 1)
+
+    def test_record_run_keeps_separate_notes_for_finished_work_or_other_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            self._record(vault, "--title", "A", "--prompt", "p",
+                         "--summary", "Export progress now uses measured frame counts.", "--actions", "x")
+            self._record(vault, "--title", "B", "--prompt", "p",
+                         "--summary", "Login page accepts passkeys.", "--actions", "x")
+            # Pending, but another session's work: its own note.
+            self._record(vault, "--title", "C", "--prompt", "p",
+                         "--summary", "Build not run yet.", "--actions", "x", session="s2")
+            # Pending in the same session, but the caller asked for a new note.
+            self._record(vault, "--title", "D", "--prompt", "p",
+                         "--summary", "Still waiting for CI.", "--actions", "x", "--no-merge")
+            runs = list((vault / "Project Memory/demo/Runs").glob("*.md"))
+            self.assertEqual(len(runs), 4)
+
+    def test_record_run_merges_a_near_copy_from_another_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            self._record(vault, "--title", "A", "--prompt", "p",
+                         "--summary", "Export progress now uses measured frame counts.", "--actions", "x")
+            self._record(vault, "--title", "A2", "--prompt", "p",
+                         "--summary", "Export progress now uses the measured frame counts.",
+                         "--actions", "x", session="s9")
+            runs = list((vault / "Project Memory/demo/Runs").glob("*.md"))
+            self.assertEqual(len(runs), 1)
+
+    def test_record_run_ignores_saves_older_than_the_merge_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            old = vault / "Project Memory/demo/Runs/2020-01-01-0000-old.md"
+            old.parent.mkdir(parents=True)
+            old.write_text('---\nsession: "s1"\n---\n# Old\n\n## Summary\nNot committed yet.\n')
+            self._record(vault, "--title", "New", "--prompt", "p",
+                         "--summary", "Not committed yet.", "--actions", "x")
+            runs = list((vault / "Project Memory/demo/Runs").glob("*.md"))
+            self.assertEqual(len(runs), 2)
+
     def test_record_run_keeps_links_obsidian_resolves(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
@@ -739,6 +811,31 @@ class ObsidianMemoryTests(unittest.TestCase):
                 include_archive=True,
             )
             self.assertIn("Archive/Runs/old.md", archive_output)
+
+    def test_search_skips_run_notes_titled_after_a_wrapper_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            notes = {
+                "Runs/a-snapshot.md": "# Pre-compaction snapshot: demo\n\nneedle\n",
+                "Runs/b-continued.md": "# This session is being continued from a previous conversation that ran out of...\n\nneedle\n",
+                "Runs/c-task.md": "# Background task: Background command \"sleep\"\n\nneedle\n",
+                "Runs/d-handback.md": "# Message from feature-dev:code-reviewer: [Subagent hand-back] The text\n\nneedle\n",
+                "Runs/e-gary.md": "# Message from Gary: fix the needle export\n\nneedle\n",
+                "Runs/f-work.md": "# Fix needle export\n\nneedle\n",
+                "Topics/Pre-compaction.md": "# Pre-compaction snapshot notes\n\nneedle\n",
+            }
+            for rel, text in notes.items():
+                path = vault / "Project Memory" / "demo" / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            cli = ObsidianCLI(vault_path=vault, dry_run=False)
+            output = cli.search_files('needle path:"Project Memory/demo"', limit=10)
+            for skipped in ("a-snapshot", "b-continued", "c-task", "d-handback"):
+                self.assertNotIn(skipped, output)
+            # A relayed message from a person carries a real task; only notes
+            # outside Runs are never judged by title.
+            for kept in ("e-gary", "f-work", "Topics/Pre-compaction.md"):
+                self.assertIn(kept, output)
 
     def test_search_across_all_projects_skips_each_archive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

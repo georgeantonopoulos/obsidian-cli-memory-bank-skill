@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
+    is_answer_prompt,
     is_antigravity_payload,
     is_progress_reply,
     is_wrapper_prompt,
@@ -40,6 +41,20 @@ from obsidian_hook_common import (  # noqa: E402
 def _log_mode() -> str:
     mode = os.environ.get("OBMEM_STOP_LOG", "edits").strip().lower()
     return mode if mode in ("edits", "all", "off") else "edits"
+
+
+# Antigravity turns often answer, plan or review without editing a file, and
+# Antigravity agents rarely record those themselves, so a reply this long is
+# kept even with no edits. Claude Code agents record such turns by hand.
+_SUBSTANTIAL_REPLY_CHARS = 400
+
+
+def _substantial(payload: dict, turn: dict) -> bool:
+    reply = payload.get("last_assistant_message") or turn.get("assistant") or ""
+    if not isinstance(reply, str):
+        return False
+    text = " ".join(strip_reminders(reply).split())
+    return len(text) >= _SUBSTANTIAL_REPLY_CHARS and not is_progress_reply(text)
 
 
 def main() -> int:
@@ -68,7 +83,8 @@ def main() -> int:
         "prompt": "", "assistant": "", "tools": [], "edited_files": [],
         "recorded": False, "start_id": "",
     }
-    if mode == "edits" and not turn["edited_files"]:
+    if mode == "edits" and not turn["edited_files"] and not (
+            antigravity and _substantial(payload, turn)):
         return _allow_stop()
     # Edits only to files the user listed as their own record: a note would copy them.
     if only_ignored_edits(turn["edited_files"]):
@@ -94,9 +110,10 @@ def main() -> int:
     if is_progress_reply(summary):
         return _allow_stop()
     # A typed prompt names the task; a wrapper (session message, task notice,
-    # continued session) does not, so the reply's opening sentence does instead.
+    # continued session) or a bare answer ("yes, go ahead") does not, so the
+    # reply's opening sentence does instead.
     title = prompt
-    if not prompt or is_wrapper_prompt(prompt):
+    if not prompt or is_wrapper_prompt(prompt) or is_answer_prompt(prompt):
         title = reply_title(summary) or prompt
     edited = turn["edited_files"]
     if antigravity:

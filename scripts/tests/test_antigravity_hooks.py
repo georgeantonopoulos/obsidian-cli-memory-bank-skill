@@ -368,6 +368,36 @@ class AntigravityStopHookTests(unittest.TestCase):
         mock_rec2.assert_not_called()
         self.assertEqual(json.loads(out2.getvalue()), {"decision": "allow"})
 
+    def _stop_no_edits(self, prompt: str, reply: str):
+        transcript = _write_jsonl([
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+             "content": f"<USER_REQUEST>\n{prompt}\n</USER_REQUEST>"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "content": reply},
+        ])
+        self.addCleanup(os.unlink, transcript)
+        payload = {"conversationId": f"conv-{len(reply)}-{len(prompt)}", "workspacePaths": ["/tmp/demo"],
+                   "transcriptPath": transcript, "hookEventName": "Stop",
+                   "terminationReason": "NO_TOOL_CALL"}
+        ok = subprocess.CompletedProcess(["obmem"], 0, "Recorded run note: x\n", "")
+        with patch.object(STOP, "active_context", return_value=("/tmp/demo", "demo")), \
+             patch.object(STOP, "record_run", return_value=ok) as mock_rec, \
+             patch("sys.stdin", io.StringIO(json.dumps(payload))), \
+             patch("sys.stdout", new_callable=io.StringIO) as out, \
+             patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(STOP.main(), 0)
+        self.assertEqual(json.loads(out.getvalue()), {"decision": "allow"})
+        return mock_rec
+
+    def test_logs_a_substantial_reply_without_edits(self) -> None:
+        reply = ("The review found three problems in the export path. " * 10).strip()
+        mock_rec = self._stop_no_edits("1. bring main up to speed 2. yes sounds good", reply)
+        mock_rec.assert_called_once()
+        self.assertEqual(mock_rec.call_args.kwargs["title"],
+                         "The review found three problems in the export path.")
+
+    def test_skips_a_short_reply_without_edits(self) -> None:
+        self._stop_no_edits("what does retry.py do", "It retries failed uploads three times.").assert_not_called()
+
     def test_skips_canceled_and_errored_stops(self) -> None:
         for reason in ("USER_CANCELED", "ERROR"):
             payload = {

@@ -82,6 +82,9 @@ obmem record-run \
   --actions "Updated queue item state, manager logic, and UI actions." \
   --decisions "Retry count defaults to 2 for safety." \
   --tags "queue,retry"
+# A progress save ("not yet committed", "still running") or a near-copy of a save from
+# the last 3 hours is added to that earlier note as an "## Update" section instead of
+# a new note. Pass --no-merge to force a separate note.
 
 # 5. Search for prior context
 obmem search --project "My Project" --query "retry queue"

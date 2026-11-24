@@ -63,6 +63,21 @@ _STOP_WORDS = frozenset(
 _WORKFLOW_WORDS = frozenset(
     "pr prs approve approved approval proceed go-ahead yourself one-line continue".split()
 )
+# Words from task notices and subagent reports ("Background command completed",
+# "[Subagent hand-back]"): inside one they describe how the text arrived, and
+# every saved notice carries them, so they match those notices instead of the
+# work. A typed prompt keeps them: "fix background removal" is about a keyer.
+_NOTICE_WORDS = frozenset(
+    "background completed subagent subagents hand-back handback".split()
+)
+_NOTICE_RE = re.compile(
+    r"Background (?:command|task)\b|\[Subagent hand-back\]|<task-notification\b"
+    r"|\bcompleted \(exit code", re.IGNORECASE)
+# Machine ids ("kwdovhnz0m8aaaac8sw0zg", "toolu01abc"): long runs mixing letters
+# and digits that no note is about. Short names with a digit (oklch2, v4) stay.
+_ID_TOKEN_RE = re.compile(r"^(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{10,}$", re.IGNORECASE)
+# A size, rate or duration glued to its number: 16gb, 30fps, 200ms, 4k.
+_MEASURE_RE = re.compile(r"^\d+(?:[.,]\d+)?[a-z]{1,3}$", re.IGNORECASE)
 
 _FILE_PATH_RE = re.compile(r"@?(?:[A-Za-z]:)?(?:[/\\][\w.\-]+){2,}")
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -154,22 +169,22 @@ _WRAPPER_RES = (
     re.compile(r"\[[A-Z][\w-]*(?: [\w-]+)?\s*:"),
     re.compile(r"</?[A-Za-z][\w-]*(?:\s[^<>]*)?/?>"),
 )
-# Prices, versions and codes: "$0", "£4.99", "1.5", "30%", "404". Lone small
-# counts ("fix 2 bugs") say nothing and are left out.
+# Numbers in the prompt: "$0", "£4.99", "1.5", "30%", "404", "300".
 _NUMBER_TOKEN_RE = re.compile(r"(?<![\w.])[$£€]?\d+(?:[.,]\d+)*%?(?![\w.])")
 
 
-_YEAR_RE = re.compile(r"^(?:19|20)\d\d$")
 # At most this many numbers per search, so a pasted report's figures can't fill it.
 _MAX_NUMBERS = 2
 
 
 def _specific_number(token: str) -> bool:
-    """Prices, versions and codes; not percentages or years, which most reports
-    and notes are full of and which match nothing in particular."""
-    if token.endswith("%") or _YEAR_RE.match(token):
+    """Versions and prices ("2.4.1", "$0", "£4.99") name one thing. Bare whole
+    numbers do not: counts, PR and line numbers, years and codes ("300 tests",
+    "PR 32", "404") are in many notes and pulled in whichever one shared the
+    number, so they are left out; so are percentages."""
+    if token.endswith("%"):
         return False
-    return token[0] in "$£€" or "." in token or "," in token or len(token) >= 3
+    return token[0] in "$£€" or "." in token
 
 
 def _ignore_file() -> Path:
@@ -267,6 +282,8 @@ def _sanitize_query(prompt: str, max_words: int = 5, project: str = "") -> str:
     own_names = {project.lower(), re.sub(r"[^a-z0-9]+", "-", project.lower()).strip("-")} if project else set()
     ignored_names, ignored_words, ignored_patterns = _query_ignore()
     delivery_words = _MESSAGE_WORDS if _RELAYED_RE.search(text) else frozenset()
+    if _RELAYED_RE.search(text) or _NOTICE_RE.search(text):
+        delivery_words = delivery_words | _NOTICE_WORDS
     text = _strip_wrappers(text, ignored_patterns)
     for pattern in (_URL_RE, _FILE_PATH_RE, _DATE_STAMP_RE):
         text = pattern.sub(" ", text)
@@ -291,13 +308,13 @@ def _sanitize_query(prompt: str, max_words: int = 5, project: str = "") -> str:
     ranked: list[tuple[int, int, int, str]] = []
     # The project's own name and listed people's names, in prompt order.
     dropped_names: list[str] = []
-    # Specific numbers are the most selective terms there are: rank them first.
+    # Versions and prices rank with the other named things.
     for offset, number in numbers:
-        if sum(1 for rank, *_ in ranked if rank == -1) >= _MAX_NUMBERS:
+        if len(ranked) >= _MAX_NUMBERS:
             break
         if number not in seen and _specific_number(number):
             seen.add(number)
-            ranked.append((-1, -len(number), offset, number))
+            ranked.append((0, -len(number), offset, number))
     for position, token in enumerate(text.split()):
         word = token.lower().strip("-")
         if word in own_names:
@@ -305,7 +322,9 @@ def _sanitize_query(prompt: str, max_words: int = 5, project: str = "") -> str:
                 dropped_names.append(word)
             continue
         if (len(word) < 2 or word in seen or word in _STOP_WORDS or word in _REQUEST_VERBS
-                or word in _WORKFLOW_WORDS or word in delivery_words or word in ignored_words):
+                or word in _WORKFLOW_WORDS or word in delivery_words
+                or word in ignored_words or _ID_TOKEN_RE.match(word) or _MEASURE_RE.match(word)
+                or word.isdigit()):
             continue
         # "tester" after "testers" (or the reverse) adds nothing.
         if word + "s" in seen or (word.endswith("s") and word[:-1] in seen):
@@ -358,6 +377,75 @@ def _is_recency_question(prompt: str) -> bool:
     # "anything from yesterday?" has no activity word but is short and asks.
     short_question = prompt.rstrip().endswith("?") and len(prompt.split()) <= 6
     return short_question or bool(_ACTIVITY_RE.search(prompt))
+
+
+# "What should I work on?", "review the app": the answer is the project's state,
+# not notes that happen to share a word with the question.
+_REVIEW_RES = (
+    re.compile(r"\bwhat(?:'s| is| are| should| could| do| else)?\b(?:\s+\w+){0,4}?\s+"
+               r"(?:work(?:ing)? on|do next|tackle|focus on|pick up)\b", re.IGNORECASE),
+    # "left"/"next" only as the question's last word: "what is the left margin?" is a task.
+    re.compile(r"\bwhat(?:'s| is| else is)?(?:\s+\w+){0,2}?\s+(?:left|remaining|outstanding|next)"
+               r"(?:\s+(?:to do|for (?:us|me|the \w+)))?\W*$", re.IGNORECASE),
+    re.compile(r"\b(?:review|audit|assess|look over|go over)\b(?:\s+\w+){0,3}?\s+"
+               r"(?:app|project|codebase|repo|state|status|progress|roadmap|backlog)\b", re.IGNORECASE),
+    re.compile(r"\bwhere (?:are we|do we stand|did we (?:leave|stop)|were we)\b", re.IGNORECASE),
+    re.compile(r"\b(?:priorities|next steps?|open questions|to-?do list)\b", re.IGNORECASE),
+)
+# Longer prompts are tasks that happen to contain these words.
+_REVIEW_MAX_WORDS = 15
+_OVERVIEW_QUESTIONS = 8
+_OVERVIEW_RUNS = 5
+_OVERVIEW_MEMORY_CHARS = 2000
+
+
+def _is_review_question(prompt: str) -> bool:
+    """A broad question about the project's state, not a task in it."""
+    if len(prompt.split()) > _REVIEW_MAX_WORDS:
+        return False
+    return any(pattern.search(prompt) for pattern in _REVIEW_RES)
+
+
+def _project_overview(vault: Path, project: str) -> str:
+    """The project's summary, newest open questions and newest sessions, or ""
+    when the project has no memory folder."""
+    root = vault / "Project Memory"
+    key = re.sub(r"[^a-z0-9]+", "-", project.lower()).strip("-")
+    folder = next((d for d in sorted(root.iterdir()) if d.is_dir()
+                   and re.sub(r"[^a-z0-9]+", "-", d.name.lower()).strip("-") == key), None) \
+        if root.is_dir() else None
+    if folder is None:
+        return ""
+    parts: list[str] = []
+    try:
+        memory = _clean_excerpt((folder / "Current Memory.md").read_text(encoding="utf-8"),
+                                _OVERVIEW_MEMORY_CHARS)
+    except (OSError, ValueError):
+        memory = ""
+    if memory:
+        parts.append(f"Current Memory.md:\n{redact_secrets(memory)}")
+    try:
+        lines = (folder / "Open Questions.md").read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        lines = []
+    questions = [line for line in lines if line.startswith("- [[")][-_OVERVIEW_QUESTIONS:]
+    if questions:
+        parts.append("Open Questions.md, newest last:\n" + redact_secrets("\n".join(questions)))
+    runs = sorted((path for path in (folder / "Runs").glob("*.md")
+                   if _RUN_STAMP_RE.match(path.name) and not _MEMORY_COPY_RE.search(path.name)),
+                  key=lambda path: path.name, reverse=True)
+    titles: list[str] = []
+    for path in runs:
+        if len(titles) >= _OVERVIEW_RUNS:
+            break
+        title = truncate(redact_secrets(_note_title(path) or path.stem), 90)
+        if title not in titles:
+            titles.append(title)
+    if titles:
+        parts.append("Newest sessions:\n" + "\n".join(f"  {title}" for title in titles))
+    if not memory and not questions:
+        return ""
+    return "\n\n".join(parts)
 
 
 def _recent_sessions(vault: Path, limit: int = _RECENT_LIMIT) -> list[tuple[str, str, str]]:
@@ -707,8 +795,9 @@ def main() -> int:
 
     # Short acknowledgements ("ok", "tool loaded") don't warrant a memory lookup.
     recency = _is_recency_question(prompt)
-    if not recency and (len(prompt.split()) < _MIN_PROMPT_WORDS
-                        or len(_sanitize_query(prompt).split()) < _MIN_KEYWORDS):
+    review = not recency and _is_review_question(prompt)
+    if not (recency or review) and (len(prompt.split()) < _MIN_PROMPT_WORDS
+                                    or len(_sanitize_query(prompt).split()) < _MIN_KEYWORDS):
         return _noop()
 
     context = active_context(payload)
@@ -716,6 +805,35 @@ def main() -> int:
         return _noop()
     workspace, project = context
     query = _sanitize_query(prompt, project=project)
+
+    if review:
+        vault = _vault_path(workspace)
+        try:
+            overview = _project_overview(vault, project) if vault else ""
+        except Exception:  # never break a prompt; fall through to the keyword search
+            overview = ""
+        if overview:
+            notice = f"Memory: {project} summary and open questions"
+            review_context = (
+                "[obsidian-memory] Question about the project's state, so memory shows the "
+                f"project's summary instead of keyword matches (project: {project}).\n\n"
+                + overview
+                + "\n\nThe summary can be older than the newest sessions; check the code and git for "
+                "current state. Read more with obmem search or read-note.\n"
+                + capture_directive(project)
+            )
+            if antigravity:
+                print(json.dumps(antigravity_inject_output(review_context, user_markdown=notice)))
+            else:
+                print(json.dumps({
+                    "systemMessage": notice,
+                    "hookSpecificOutput": {
+                        "hookEventName": "UserPromptSubmit",
+                        "additionalContext": review_context,
+                    },
+                }))
+            return 0
+
     if not recency and len(query.split()) < _MIN_KEYWORDS:
         return _noop()
 
