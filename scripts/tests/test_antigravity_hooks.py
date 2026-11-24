@@ -272,6 +272,23 @@ class AntigravityPreInvocationTests(unittest.TestCase):
         mock_search.assert_not_called()
         self.assertEqual(json.loads(out.getvalue()), {})
 
+    def test_repeated_prompt_without_transcript_is_searched_again(self) -> None:
+        # No transcript turn marker: a later turn repeating the same question must
+        # still get recall (prompt text alone can't tell turns apart).
+        payload = {
+            "conversationId": "conv-repeat",
+            "workspacePaths": ["/tmp/demo"],
+            "hookEventName": "PreInvocation",
+            "invocationNum": 1,
+            "lastUserInput": "What did we decide about export retries?",
+        }
+        hit_output = "  Project Memory/demo/Decisions.md (score 10; Jev 0.85; best)"
+        excerpt = "Excerpts:\n--- Project Memory/demo/Decisions.md ---\n# Decisions\nCap retries at 3."
+        first = self._run_pre(payload, hit_output, excerpt)
+        second = self._run_pre(payload, hit_output, excerpt)
+        self.assertIn("injectSteps", first)
+        self.assertIn("injectSteps", second)
+
     def test_no_hits_returns_empty_json(self) -> None:
         payload = {
             "conversationId": "conv-empty",

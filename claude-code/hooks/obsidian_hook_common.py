@@ -746,7 +746,12 @@ def _last_turn_antigravity(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def latest_user_step_key(transcript_path: Optional[str], prompt: str) -> str:
-    """Stable identifier for the current user turn (used to deduplicate PreInvocation calls)."""
+    """Stable identifier for the current user turn (used to deduplicate PreInvocation calls).
+
+    Returns "" when the transcript does not identify the turn: a key built from the
+    prompt text alone would also match a later turn that repeats the same question,
+    and that turn's recall would be wrongly skipped.
+    """
     digest = hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12]
     if transcript_path:
         entries = _load_transcript(transcript_path)
@@ -755,7 +760,7 @@ def latest_user_step_key(transcript_path: Optional[str], prompt: str) -> str:
             if entry.get("type") == "USER_INPUT":
                 step_idx = entry.get("step_index", index)
                 return f"step-{step_idx}-{digest}"
-    return f"prompt-{digest}"
+    return ""
 
 
 def last_turn(transcript_path: str) -> Dict[str, Any]:
