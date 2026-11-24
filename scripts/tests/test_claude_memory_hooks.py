@@ -1163,10 +1163,13 @@ class StopHookTests(unittest.TestCase):
 
     def test_is_answer_prompt_shapes(self) -> None:
         for prompt in ("yes", "No, keep it", "ok do that", "both", "1. yes 2. no",
-                       "a) go ahead b) skip the docs"):
+                       "a) go ahead b) skip the docs", "2", "b)", "Yes, sounds good."):
             self.assertTrue(COMMON.is_answer_prompt(prompt), prompt)
         for prompt in ("fix the export hook", "1. fix the export hook 2. add a test for it",
-                       "Review the shader cache and report", "now ship the 0.3.3 release"):
+                       "Review the shader cache and report", "now ship the 0.3.3 release",
+                       "fix the bug", "run the tests", "Right now login is broken, fix it",
+                       "correct the typo in README", "fine tune the model on X",
+                       "no tests run in CI, add them", "all tests failing in CI, please fix"):
             self.assertFalse(COMMON.is_answer_prompt(prompt), prompt)
 
     def test_too_short_reply_keeps_the_wrapper_title(self) -> None:

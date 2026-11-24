@@ -210,10 +210,13 @@ def is_wrapper_prompt(prompt: str) -> bool:
 _ACK_WORDS = (r"(?:yes|yeah|yep|yup|no|nope|ok(?:ay)?|sure|fine|agreed|correct|right|exactly|"
               r"sounds good|go ahead|go for it|do it|do that|please do|all of them|both|neither|"
               r"option [a-d1-9]|all \w+|thanks|thank you)")
-_ACK_START_RE = re.compile(rf"^{_ACK_WORDS}\b", re.IGNORECASE)
+# The acknowledgement must stand alone: end the prompt or clause, or run into
+# another one ("ok do that"). "no tests run in CI" or "correct the typo" are tasks.
+_ACK_START_RE = re.compile(rf"^{_ACK_WORDS}(?:[\s,;:.!-]*{_ACK_WORDS})*\s*(?:[,;:.!?)-]|$)",
+                           re.IGNORECASE)
+_CHOICE_RE = re.compile(r"^(?:\d{1,2}|[a-d])[.)]?$", re.IGNORECASE)
 _LIST_ITEM_RE = re.compile(r"(?:^|\s)(?:\d{1,2}|[a-dA-D])[.)]\s+(.*?)(?=\s+(?:\d{1,2}|[a-dA-D])[.)]\s|$)",
                            re.DOTALL)
-_ANSWER_MAX_WORDS = 3
 
 
 def is_answer_prompt(prompt: str) -> bool:
@@ -221,7 +224,7 @@ def is_answer_prompt(prompt: str) -> bool:
     text = " ".join(prompt.split())
     if not text:
         return False
-    if len(text.split()) <= _ANSWER_MAX_WORDS or _ACK_START_RE.match(text):
+    if _CHOICE_RE.match(text) or _ACK_START_RE.match(text):
         return True
     # Numbered answers to numbered questions: one item at least is a yes/no.
     if re.match(r"(?:\d{1,2}|[a-dA-D])[.)]\s", text):

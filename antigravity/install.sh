@@ -71,13 +71,16 @@ make_sandbox_safe() {
   local venvs venv_dir
   venvs="$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null || true)"
   venv_dir="${venvs}/obsidian-cli-memory-bank"
-  if [[ -n "${venvs}" && -d "${venv_dir}" ]] \
-    && grep -rqs '"editable": *true' "${venv_dir}"/lib/python*/site-packages/obsidian_cli_memory_bank-*.dist-info/direct_url.json; then
+  if [[ -z "${venvs}" || ! -d "${venv_dir}" ]]; then
+    echo "--sandbox-safe: obmem is not installed with pipx; install it with pipx first." >&2
+    return 1
+  fi
+  if grep -rqs '"editable": *true' "${venv_dir}"/lib/python*/site-packages/obsidian_cli_memory_bank-*.dist-info/direct_url.json; then
     echo "obmem is an editable install; reinstalling it as a regular install from ${REPO_ROOT}"
     pipx install --force "${REPO_ROOT}"
     echo "Note: re-run with --sandbox-safe after pulling updates (a regular install does not follow the checkout)."
   else
-    echo "obmem is already a regular install (or not installed via pipx); leaving it as is."
+    echo "obmem is already a regular install; leaving it as is."
   fi
   if [[ -f "${user_state}" ]]; then
     echo "Config already at ${user_state}"
@@ -92,7 +95,8 @@ make_sandbox_safe() {
 }
 
 if [[ "${SANDBOX_SAFE}" == "true" ]]; then
-  make_sandbox_safe
+  # A failure here must not stop the plugin install below.
+  make_sandbox_safe || echo "Skipped the sandbox-safe step; the plugin install continues." >&2
 fi
 
 TARGET_DIR="${TARGET_BASE}/obsidian-cli-memory-bank"

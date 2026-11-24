@@ -3156,10 +3156,12 @@ def _run_extra(args: argparse.Namespace) -> Dict[str, str]:
 _MERGE_WINDOW_SECONDS = 3 * 3600
 _MERGE_SIMILARITY = 0.8
 _PENDING_LEAD_RE = re.compile(
-    r"\b(?:not (?:yet|released|committed|pushed|merged|tested|built|run|verified|done|finished)"
-    r"|(?:still|is|are) (?:running|waiting|in progress|pending)"
-    r"|waiting (?:for|on)|in progress|untested"
-    r"|(?:haven|hasn)['’]?t|ha(?:ve|s) not)\b",
+    r"\b(?:not yet|yet to be"
+    r"|(?:not|isn['’]t|aren['’]t|haven['’]t|hasn['’]t) (?:yet )?(?:been )?"
+    r"(?:released|committed|pushed|merged|tested|built|verified|finished)"
+    r"|still (?:running|waiting|pending|building|testing|in progress)"
+    r"|(?:is|are|am|now) (?:waiting (?:for|on)|in progress|pending)"
+    r"|untested)\b",
     re.IGNORECASE)
 _RUN_STAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}-\d{4})-")
 

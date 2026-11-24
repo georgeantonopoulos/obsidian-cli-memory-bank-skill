@@ -9,7 +9,7 @@ INSTALL = REPO / "antigravity" / "install.sh"
 
 
 class SandboxSafeInstallTests(unittest.TestCase):
-    def _run(self, editable: bool, user_config: bool = False):
+    def _run(self, editable: bool, user_config: bool = False, with_pipx: bool = True):
         tmp = Path(tempfile.mkdtemp())
         home = tmp / "home"
         venvs = tmp / "venvs"
@@ -32,6 +32,8 @@ class SandboxSafeInstallTests(unittest.TestCase):
             f'echo "$@" >> "{log}"\n'
         )
         stub.chmod(0o755)
+        if not with_pipx:
+            stub.unlink()
         # A fake repo state file, so the test never reads George's real config.
         fake_repo = tmp / "repo"
         (fake_repo / "antigravity").mkdir(parents=True)
@@ -45,6 +47,7 @@ class SandboxSafeInstallTests(unittest.TestCase):
             capture_output=True, text=True, env=env,
         )
         calls = log.read_text() if log.exists() else ""
+        self.plugin = tmp / "ws" / ".agents" / "plugins" / "obsidian-cli-memory-bank"
         return result, calls, user_state, fake_repo
 
     def test_editable_install_is_reinstalled_and_config_copied(self):
@@ -59,6 +62,13 @@ class SandboxSafeInstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("install", calls)
         self.assertEqual(user_state.read_text(), '{"mine": 1}')
+
+    def test_missing_pipx_still_installs_the_plugin(self):
+        result, calls, user_state, _ = self._run(editable=True, with_pipx=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pipx not found", result.stderr)
+        self.assertTrue(self.plugin.is_symlink())
+        self.assertFalse(user_state.exists())
 
 
 if __name__ == "__main__":

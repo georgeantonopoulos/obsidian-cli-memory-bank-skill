@@ -149,6 +149,15 @@ class ObsidianMemoryTests(unittest.TestCase):
             log = (vault / "Project Memory/demo/Run Log.md").read_text()
             self.assertEqual(log.count(f"{runs[0].stem}]]"), 1)
 
+    def test_pending_save_detection_ignores_finished_work(self) -> None:
+        for text in ("Fix is not yet committed.", "Suite still running; 3 failures so far.",
+                     "Changes haven't been pushed.", "Release untested on Intel."):
+            self.assertTrue(obsidian_memory._is_pending(text), text)
+        for text in ("Fixed the bug where the server is running twice.",
+                     "The build does not run on Windows. Fixed.",
+                     "Progress bar now shows the in progress state correctly."):
+            self.assertFalse(obsidian_memory._is_pending(text), text)
+
     def test_record_run_keeps_separate_notes_for_finished_work_or_other_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
