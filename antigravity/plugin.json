@@ -1,0 +1,14 @@
+{
+  "name": "obsidian-cli-memory-bank",
+  "displayName": "Obsidian CLI Memory Bank",
+  "description": "Persistent, local-first project memory in Obsidian via obmem CLI with SessionStart health checks, PreInvocation recall, and Stop auto-capture hooks.",
+  "version": "0.2.0",
+  "author": "George Antonopoulos",
+  "homepage": "https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill",
+  "repository": "https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill",
+  "suggestedPrompts": [
+    "What did we work on lately in this project?",
+    "Check Obsidian memory for prior decisions before making this change",
+    "Record a summary and decisions from this session to Obsidian memory"
+  ]
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared helpers for the Claude Code Obsidian memory hooks.
+"""Shared helpers for Obsidian memory lifecycle hooks (Claude Code and Antigravity).
 
 Install this file next to the obsidian_*_hook.py scripts. Each hook imports it
 from its own directory, so copies and symlinks both work.
@@ -11,6 +11,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import shutil
 import time
 import re
 import subprocess
@@ -18,7 +19,62 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+ANTIGRAVITY_EDIT_TOOLS = frozenset({
+    "write_file",
+    "edit_file",
+    "replace_file_content",
+    "multi_replace_file_content",
+    "write_to_file",
+})
+_ANTIGRAVITY_PAYLOAD_KEYS = frozenset({
+    "conversationId",
+    "workspacePaths",
+    "transcriptPath",
+    "artifactDirectoryPath",
+    "hookEventName",
+    "lastUserInput",
+    "invocationNum",
+    "terminationReason",
+})
 _DISABLED_VALUES = frozenset({"0", "off", "false", "no"})
+
+
+def obmem_bin() -> str:
+    """Return 'obmem' when on PATH, else check common pipx/Homebrew paths for GUI runtimes."""
+    if shutil.which("obmem"):
+        return "obmem"
+    for candidate in (
+        Path.home() / ".local" / "bin" / "obmem",
+        Path("/opt/homebrew/bin/obmem"),
+        Path("/usr/local/bin/obmem"),
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return "obmem"
+
+
+def is_antigravity_payload(payload: Dict[str, Any]) -> bool:
+    """True when the hook payload uses Antigravity's camelCase hooks.json schema."""
+    return any(key in payload for key in _ANTIGRAVITY_PAYLOAD_KEYS)
+
+
+def session_id_from(payload: Dict[str, Any]) -> str:
+    """Session or conversation identifier from either Claude Code or Antigravity payloads."""
+    return str(payload.get("session_id") or payload.get("conversationId") or "")
+
+
+def transcript_path_from(payload: Dict[str, Any]) -> Optional[str]:
+    """Transcript JSONL path from either Claude Code or Antigravity payloads."""
+    path = payload.get("transcript_path") or payload.get("transcriptPath")
+    return path if isinstance(path, str) and path.strip() else None
+
+
+def antigravity_inject_output(system_message: str, user_markdown: str = "") -> Dict[str, Any]:
+    """Build an Antigravity SessionStart or PreInvocation JSON response."""
+    msg: Dict[str, Any] = {"systemMessage": system_message}
+    if user_markdown:
+        msg["metadata"] = {"user_markdown": user_markdown}
+    return {"injectSteps": [{"systemMessage": msg}]}
 
 
 def capture_directive(project: str) -> str:
@@ -297,15 +353,23 @@ def _git_toplevel(path: str) -> Optional[str]:
 
 
 def project_root(payload: Dict[str, Any]) -> str:
-    """Stable project root: the directory Claude was launched in, not the current cwd.
+    """Stable project root: the directory the agent was launched in, not a nested cwd.
 
-    The cwd moves when Claude cds into a subfolder, which used to file notes under
-    a different project. Prefer CLAUDE_PROJECT_DIR, then the git toplevel of cwd.
+    The cwd moves when an agent cds into a subfolder, which used to file notes under
+    a different project. Prefer CLAUDE_PROJECT_DIR, then Antigravity workspacePaths,
+    then the git toplevel of cwd.
     """
     env_root = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
     if env_root and Path(env_root).is_dir():
         return str(Path(env_root).resolve())
-    cwd = str(Path(payload.get("cwd") or payload.get("workspace") or ".").resolve())
+    raw_workspace = payload.get("cwd") or payload.get("workspace")
+    ws_paths = payload.get("workspacePaths")
+    if isinstance(ws_paths, list):
+        for item in ws_paths:
+            if isinstance(item, str) and item.strip():
+                raw_workspace = item.strip()
+                break
+    cwd = str(Path(raw_workspace or ".").resolve())
     return _git_toplevel(cwd) or cwd
 
 
@@ -323,7 +387,7 @@ def hooks_disabled(root: str) -> bool:
 def vault_mapped(workspace: str) -> bool:
     try:
         check = subprocess.run(
-            ["obmem", "show-vault", "--workspace", workspace],
+            [obmem_bin(), "show-vault", "--workspace", workspace],
             text=True, capture_output=True, check=False, timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
@@ -568,13 +632,147 @@ def _after_finished_reply(entries: List[Dict[str, Any]], index: int) -> bool:
     return True
 
 
+_USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL)
+_AGY_META_BLOCK_RE = re.compile(
+    r"<(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>.*?</(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>",
+    re.DOTALL,
+)
+_EXIT_NONZERO_RE = re.compile(r"Command exited with code (?!0\b)\d+")
+
+
+def extract_user_request(text: str) -> str:
+    """Unwrap Antigravity's <USER_REQUEST> envelope and drop metadata blocks."""
+    if not text:
+        return ""
+    match = _USER_REQUEST_RE.search(text)
+    if match:
+        return match.group(1).strip()
+    return _AGY_META_BLOCK_RE.sub("", text).strip()
+
+
+def _unwrap_tool_arg(value: Any) -> str:
+    """Decode protojson string-encoded tool arguments from Antigravity transcripts."""
+    if not isinstance(value, str):
+        return ""
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == '"' and stripped[-1] == '"':
+        try:
+            decoded = json.loads(stripped)
+            if isinstance(decoded, str):
+                return decoded
+        except json.JSONDecodeError:
+            pass
+    return stripped
+
+
+def _is_antigravity_transcript(entries: List[Dict[str, Any]]) -> bool:
+    return any(
+        "step_index" in entry or entry.get("type") in ("USER_INPUT", "PLANNER_RESPONSE")
+        for entry in entries
+    )
+
+
+def _last_turn_antigravity(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Summarise the latest turn from an Antigravity transcript.jsonl file."""
+    start = None
+    prompt = ""
+    for index in range(len(entries) - 1, -1, -1):
+        entry = entries[index]
+        if entry.get("type") != "USER_INPUT":
+            continue
+        source = str(entry.get("source") or "")
+        if source and source not in ("USER_EXPLICIT", "USER"):
+            continue
+        text = extract_user_request(str(entry.get("content") or ""))
+        if text:
+            start = index
+            prompt = text
+            break
+    if start is None:
+        return {"prompt": "", "assistant": "", "tools": [], "edited_files": [],
+                "recorded": False, "start_id": ""}
+    tools: List[str] = []
+    edited: List[str] = []
+    assistant_text = ""
+    recorded = False
+    saw_record_run = False
+    for entry in entries[start + 1:]:
+        step_type = entry.get("type")
+        if step_type == "PLANNER_RESPONSE":
+            content = entry.get("content")
+            if isinstance(content, str) and content.strip():
+                assistant_text = content.strip()
+            tool_calls = entry.get("tool_calls")
+            for call in tool_calls if isinstance(tool_calls, list) else []:
+                if not isinstance(call, dict):
+                    continue
+                name = str(call.get("name") or "")
+                if not name:
+                    continue
+                tools.append(name)
+                args = call.get("args") if isinstance(call.get("args"), dict) else {}
+                if name in ANTIGRAVITY_EDIT_TOOLS or name in EDIT_TOOLS:
+                    raw_path = (
+                        args.get("Path")
+                        or args.get("TargetFile")
+                        or args.get("file_path")
+                        or args.get("path")
+                        or args.get("notebook_path")
+                    )
+                    file_path = _unwrap_tool_arg(raw_path)
+                    if file_path and file_path not in edited:
+                        edited.append(file_path)
+                if name == "run_command":
+                    cmd_line = _unwrap_tool_arg(args.get("CommandLine") or args.get("command") or "")
+                    if _RECORD_RUN_RE.search(cmd_line):
+                        saw_record_run = True
+        elif step_type == "GENERIC" and saw_record_run:
+            content = entry.get("content")
+            if (isinstance(content, str)
+                    and not _EXIT_NONZERO_RE.search(content)
+                    and any(marker in content for marker in _RECORDED_MARKERS)):
+                recorded = True
+    first = entries[start]
+    step_idx = first.get("step_index")
+    start_id = f"step-{step_idx}" if step_idx is not None else f"line-{start}"
+    return {
+        "prompt": prompt,
+        "assistant": assistant_text,
+        "tools": tools,
+        "edited_files": edited,
+        "recorded": recorded,
+        "start_id": start_id,
+    }
+
+
+def latest_user_step_key(transcript_path: Optional[str], prompt: str) -> str:
+    """Stable identifier for the current user turn (used to deduplicate PreInvocation calls).
+
+    Returns "" when the transcript does not identify the turn: a key built from the
+    prompt text alone would also match a later turn that repeats the same question,
+    and that turn's recall would be wrongly skipped.
+    """
+    digest = hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12]
+    if transcript_path:
+        entries = _load_transcript(transcript_path)
+        for index in range(len(entries) - 1, -1, -1):
+            entry = entries[index]
+            if entry.get("type") == "USER_INPUT":
+                step_idx = entry.get("step_index", index)
+                return f"step-{step_idx}-{digest}"
+    return ""
+
+
 def last_turn(transcript_path: str) -> Dict[str, Any]:
     """Summarise the latest turn: prompt, final assistant text, edited files.
 
+    Supports both Claude Code and Antigravity JSONL transcript formats.
     ``recorded`` is True when the turn already ran ``obmem record-run`` itself;
     ``start_id`` identifies the entry that started the turn.
     """
     entries = _load_transcript(transcript_path)
+    if _is_antigravity_transcript(entries):
+        return _last_turn_antigravity(entries)
     start = None
     prompt = ""
     for index in range(len(entries) - 1, -1, -1):
@@ -727,10 +925,49 @@ def mark_turn_logged(session_id: str, start_id: str) -> None:
         pass
 
 
+def _preinvocation_dir() -> Path:
+    override = os.environ.get("OBMEM_PREINVOCATION_STATE", "").strip()
+    return Path(override) if override else Path.home() / ".cache" / "obmem" / "preinvocation-seen"
+
+
+def _preinvocation_file(session_id: str) -> Path:
+    return _preinvocation_dir() / (hashlib.sha1(session_id.encode("utf-8")).hexdigest() + ".txt")
+
+
+def prompt_already_searched(session_id: str, turn_key: str) -> bool:
+    """True if PreInvocation already ran memory recall for this user turn."""
+    if not session_id or not turn_key:
+        return False
+    try:
+        return _preinvocation_file(session_id).read_text(encoding="utf-8").strip() == turn_key
+    except (OSError, ValueError):
+        return False
+
+
+def mark_prompt_searched(session_id: str, turn_key: str) -> None:
+    if not session_id or not turn_key:
+        return
+    try:
+        target = _preinvocation_file(session_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(turn_key, encoding="utf-8")
+        tmp.replace(target)
+        cutoff = time.time() - _SEEN_MAX_AGE
+        for old in target.parent.glob("*.txt"):
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def record_run(workspace: str, project: str, *, title: str, prompt: str, summary: str,
                actions: str, tags: str, session: str = "") -> subprocess.CompletedProcess:
     cmd = [
-        "obmem", "record-run",
+        obmem_bin(), "record-run",
         "--project", project,
         "--title", truncate(redact_secrets(title), 80),
         "--prompt", truncate(redact_secrets(prompt), 3000),

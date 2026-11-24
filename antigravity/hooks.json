@@ -1,0 +1,25 @@
+{
+  "obsidian-memory": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "python3 ./hooks/run_hook.py sessionstart",
+        "timeout": 30
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python3 ./hooks/run_hook.py preprompt",
+        "timeout": 25
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 ./hooks/run_hook.py poststop",
+        "timeout": 30
+      }
+    ]
+  }
+}
