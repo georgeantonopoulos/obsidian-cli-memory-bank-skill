@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Antigravity hook adapter for Obsidian memory logging.
+"""Legacy best-effort Antigravity turn-event adapter for Obsidian memory logging.
 
-Important:
-- Antigravity does not currently expose a stable public hook payload spec
-  comparable to Claude/Cursor docs.
-- This adapter is best-effort and should be used only when your runtime
-  actually emits JSON turn events.
-- Default recommendation in Antigravity is rules/skills + manual record-run.
+For native Antigravity installations with `hooks.json` and plugin support, use the
+bundled plugin under `antigravity/` (see `antigravity/INSTALL.md`), which wires
+`SessionStart`, `PreInvocation`, and `Stop` directly to the shared lifecycle hooks.
+
+This script remains available for custom JSON event runners and backward compatibility.
 """
 
 from __future__ import annotations

@@ -143,14 +143,14 @@ discovery searches stay local.
 
 The skill works anywhere an agent can run shell commands. For runtimes with lifecycle hooks, adapter scripts automate the memory operations at the right moments:
 
-| Lifecycle Point | What Happens | Claude Code | Codex |
-|----------------|-------------|-------------|-------|
-| Session start | Health-check vault connectivity | `SessionStart` | — |
-| Before response | Search vault for relevant context | `UserPromptSubmit` | — |
-| After response | Log a structured run note | `Stop` | `agent-turn-complete` |
-| Before compaction | Mark the session as compacted | `PreCompact` | — |
-| After compaction | Save the compaction summary as a run note | `SessionStart` (`compact`) | — |
-| After memory write | Mirror `MEMORY.md` to vault | `PostToolUse` | — |
+| Lifecycle Point | What Happens | Claude Code | Antigravity | Codex |
+|----------------|-------------|-------------|-------------|-------|
+| Session start | Health-check vault connectivity | `SessionStart` | `SessionStart` | — |
+| Before response | Search vault for relevant context | `UserPromptSubmit` | `PreInvocation` | — |
+| After response | Log a structured run note | `Stop` | `Stop` | `agent-turn-complete` |
+| Before compaction | Mark the session as compacted | `PreCompact` | — | — |
+| After compaction | Save the compaction summary as a run note | `SessionStart` (`compact`) | — | — |
+| After memory write | Mirror `MEMORY.md` to vault | `PostToolUse` | — | — |
 
 ### Claude Code
 
@@ -251,18 +251,30 @@ If your payload lacks a workspace path, set `CURSOR_WORKSPACE` or `CURSOR_PROJEC
 
 ### Antigravity
 
-No stable public hook spec exists for Antigravity yet. Use direct CLI calls:
+Full integration packaged as a native Antigravity plugin (`plugin.json` + `hooks.json` + `skills/obsidian-cli-memory-bank/SKILL.md`). See [`antigravity/INSTALL.md`](antigravity/INSTALL.md) for all installation options (global, self-contained copy, workspace `.agents/plugins/`, or skill-only).
 
 ```bash
-obmem record-run --project "Your Project" --title "Task summary" --summary "What changed and why"
+# 1. Install CLI (if not done above)
+pipx install git+https://github.com/georgeantonopoulos/obsidian-cli-memory-bank-skill.git
+
+# 2. Install the Antigravity plugin (symlinks to ~/.gemini/config/plugins/obsidian-cli-memory-bank)
+chmod +x antigravity/install.sh antigravity/hooks/run_hook.py
+./antigravity/install.sh
 ```
 
-If your setup emits machine-readable turn events (e.g. via an embedded extension hook flow), the adapter script handles nested payloads:
+Use `./antigravity/install.sh --copy` for a self-contained copy, or `--workspace /path/to/repo` for a project-scoped `.agents/plugins/` install.
 
-```bash
-python3 /path/to/obsidian-cli-memory-bank-skill/scripts/antigravity_notify_hook.py \
-  --skill-repo /path/to/obsidian-cli-memory-bank-skill
-```
+**Hooks provided (`antigravity/hooks.json`):**
+
+| Event | Purpose |
+|-------|---------|
+| `SessionStart` | Validates vault connectivity once per session and injects recall/capture guidance |
+| `PreInvocation` | Searches Obsidian once per new user turn (deduplicated across tool-loop calls) and injects excerpts with an inline `Memory:` notice |
+| `Stop` | Parses Antigravity's `transcript.jsonl` on normal completion and logs edited turns (`antigravity,auto-log`) without blocking stop |
+
+All hooks silently no-op when no vault is mapped for the current workspace and honor the same optional config files (`query-ignore.txt`, `capture-ignore.txt`, `wrapper-prompts.txt`) and env vars (`OBMEM_HOOKS`, `OBMEM_STOP_LOG`, `OBMEM_JEV_MIN`) as Claude Code.
+
+Direct CLI calls work without hooks, and the legacy custom JSON runner adapter (`scripts/antigravity_notify_hook.py`) remains available for backward compatibility.
 
 ### Other Runtimes
 
@@ -276,19 +288,27 @@ For any agent that can run shell commands:
 
 ```
 ├── SKILL.md                          # Universal skill instructions (all runtimes)
+├── antigravity/
+│   ├── plugin.json                   # Native Antigravity plugin manifest
+│   ├── hooks.json                    # Antigravity lifecycle hooks (SessionStart, PreInvocation, Stop)
+│   ├── INSTALL.md                    # Antigravity setup guide
+│   ├── install.sh                    # Global or workspace plugin installer
+│   ├── hooks/run_hook.py             # Launcher dispatching to shared hook scripts
+│   └── skills/obsidian-cli-memory-bank/
+│       └── SKILL.md                  # Antigravity-aware skill
 ├── claude-code/
 │   ├── SKILL.md                      # Claude Code-native skill (uses obmem CLI)
 │   ├── INSTALL.md                    # Claude Code setup guide
-│   └── hooks/                        # 5 lifecycle hook scripts
+│   └── hooks/                        # Shared lifecycle hook scripts (Claude Code + Antigravity)
 ├── scripts/
 │   ├── obsidian_memory.py            # Core CLI (also available as obmem via pipx)
 │   ├── hook_common.py                # Shared hook runtime helpers
 │   ├── codex_notify_hook.py          # Codex adapter
 │   ├── claude_notify_hook.py         # Claude Code adapter (package-based alternative)
 │   ├── cursor_notify_hook.py         # Cursor webhook adapter
-│   ├── antigravity_notify_hook.py    # Antigravity adapter (best-effort)
+│   ├── antigravity_notify_hook.py    # Legacy Antigravity JSON runner adapter
 │   ├── install_codex_notify_hook.sh  # Codex hook installer
-│   └── tests/                        # Unit tests for all adapters
+│   └── tests/                        # Unit tests for all adapters and hooks
 ├── references/
 │   └── obsidian-cli-patterns.md      # Obsidian CLI command reference
 └── agents/

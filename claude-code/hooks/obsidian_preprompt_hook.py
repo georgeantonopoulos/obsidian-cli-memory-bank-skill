@@ -23,10 +23,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
+    antigravity_inject_output,
     compacted_at,
     capture_directive,
+    extract_user_request,
+    is_antigravity_payload,
+    latest_user_step_key,
+    mark_prompt_searched,
+    obmem_bin,
+    prompt_already_searched,
     read_payload,
     redact_secrets,
+    session_id_from,
+    transcript_path_from,
     truncate,
 )
 
@@ -403,7 +412,7 @@ def _note_title(path: Path) -> str:
 
 def _vault_path(workspace: str) -> Path | None:
     try:
-        result = subprocess.run(["obmem", "show-vault", "--workspace", workspace],
+        result = subprocess.run([obmem_bin(), "show-vault", "--workspace", workspace],
                                 text=True, capture_output=True, check=False, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -570,7 +579,7 @@ def _note_excerpts(selected_hits: str, workspace: str, query: str = "", other: s
             # The whole note, so the lines matching the search can be found
             # anywhere in it; what is pasted in stays within its limit.
             result = subprocess.run(
-                ["obmem", "read-note", "--path", path, "--full", "--workspace", workspace],
+                [obmem_bin(), "read-note", "--path", path, "--full", "--workspace", workspace],
                 text=True, capture_output=True, check=False, timeout=10,
             )
         except (OSError, subprocess.SubprocessError):
@@ -618,7 +627,7 @@ def _search(project: str | None, query: str, intent: str, workspace: str, env: d
     scope = ["--all-projects"] if project is None else ["--project", project]
     try:
         result = subprocess.run(
-            ["obmem", "search", *scope, "--query", query,
+            [obmem_bin(), "search", *scope, "--query", query,
              "--intent", intent, "--min-jev", f"{_jev_min():.2f}",
              "--limit", str(_CANDIDATE_LIMIT), "--workspace", workspace],
             text=True, capture_output=True, check=False, timeout=20, env=env,
@@ -670,29 +679,45 @@ def main() -> int:
     payload = read_payload(sys.stdin.read())
     if payload is None:
         return 0
+    antigravity = is_antigravity_payload(payload)
+
+    def _noop() -> int:
+        if antigravity:
+            print("{}")
+        return 0
 
     prompt = ""
-    for key in ("prompt", "user_prompt", "message", "input"):
+    for key in ("prompt", "user_prompt", "lastUserInput", "message", "input"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             prompt = value.strip()
             break
+    if antigravity:
+        prompt = extract_user_request(prompt)
     if not prompt or _is_machine_prompt(prompt):
-        return 0
+        return _noop()
+
+    session_id = session_id_from(payload)
+    if antigravity:
+        # PreInvocation fires before every model call in a turn; only search once per user prompt.
+        turn_key = latest_user_step_key(transcript_path_from(payload), prompt)
+        if prompt_already_searched(session_id, turn_key):
+            return _noop()
+        mark_prompt_searched(session_id, turn_key)
 
     # Short acknowledgements ("ok", "tool loaded") don't warrant a memory lookup.
     recency = _is_recency_question(prompt)
     if not recency and (len(prompt.split()) < _MIN_PROMPT_WORDS
                         or len(_sanitize_query(prompt).split()) < _MIN_KEYWORDS):
-        return 0
+        return _noop()
 
     context = active_context(payload)
     if context is None:
-        return 0
+        return _noop()
     workspace, project = context
     query = _sanitize_query(prompt, project=project)
     if not recency and len(query.split()) < _MIN_KEYWORDS:
-        return 0
+        return _noop()
 
     if recency:
         vault = _vault_path(workspace)
@@ -704,17 +729,24 @@ def main() -> int:
             projects = _recent_projects(vault)
             listing = "\n".join(f"  {when} | {proj} | {title}" for when, proj, title in sessions)
             by_project = ", ".join(f"{proj} ({day})" for day, proj in projects)
-            print(json.dumps({
-                "systemMessage": f"Memory: listed recent work across {len(projects)} projects",
-                "hookSpecificOutput": {
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": "[obsidian-memory] Recency question, so memory is ranked by date, not keywords.\n"
-                                         f"Projects by latest session: {by_project}\n"
-                                         "Newest sessions (date | project | title):\n" + listing
-                                         + "\nRead one with obmem search --project <project> or read-note.\n"
-                                         + capture_directive(project),
-                },
-            }))
+            notice = f"Memory: listed recent work across {len(projects)} projects"
+            recency_context = (
+                "[obsidian-memory] Recency question, so memory is ranked by date, not keywords.\n"
+                f"Projects by latest session: {by_project}\n"
+                "Newest sessions (date | project | title):\n" + listing
+                + "\nRead one with obmem search --project <project> or read-note.\n"
+                + capture_directive(project)
+            )
+            if antigravity:
+                print(json.dumps(antigravity_inject_output(recency_context, user_markdown=notice)))
+            else:
+                print(json.dumps({
+                    "systemMessage": notice,
+                    "hookSpecificOutput": {
+                        "hookEventName": "UserPromptSubmit",
+                        "additionalContext": recency_context,
+                    },
+                }))
             return 0
 
     # Jev (when the private ranker preference enables it) judges relevance against
@@ -723,7 +755,6 @@ def main() -> int:
     # The search leaves out notes this session still holds, before it cuts the
     # list to the candidate limit (an older obmem ignores these; the filter
     # below still applies then).
-    session_id = str(payload.get("session_id") or "")
     since = compacted_at(session_id)
     search_env = {**os.environ, "OBMEM_EXCLUDE_SESSION": session_id,
                   "OBMEM_EXCLUDE_SINCE": str(since)} if session_id else None
@@ -740,7 +771,7 @@ def main() -> int:
     other = _other_project_hit(everywhere, project)
     # Jev judged every candidate irrelevant: stay quiet rather than suggest a search.
     if not other and _JEV_GATED_RE.search(output):
-        return 0
+        return _noop()
     selected_hits = _select_search_hits(output)
     if other in selected_hits.splitlines():
         other = ""
@@ -756,14 +787,22 @@ def main() -> int:
         excerpts = _note_excerpts(selected_hits, workspace, query, other)
         context = (f"{header}\n{listed}" + (f"\n\n{excerpts}" if excerpts else "")
                    + f"\n\n{capture_directive(project)}")
-        # JSON output lets Claude Code show a one-line notice while the notes go to the agent.
-        print(json.dumps({
-            "systemMessage": _visible_notice(listed, excerpts),
-            "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context},
-        }))
+        notice = _visible_notice(listed, excerpts)
+        if antigravity:
+            print(json.dumps(antigravity_inject_output(context, user_markdown=notice)))
+        else:
+            # JSON output lets Claude Code show a one-line notice while the notes go to the agent.
+            print(json.dumps({
+                "systemMessage": notice,
+                "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context},
+            }))
     else:
-        # Nothing fits: add nothing but the capture reminder.
-        print(capture_directive(project))
+        # Nothing fits: stay quiet in Antigravity (SessionStart already injected capture rules),
+        # or add the capture reminder in Claude Code.
+        if antigravity:
+            print("{}")
+        else:
+            print(capture_directive(project))
     return 0
 
 

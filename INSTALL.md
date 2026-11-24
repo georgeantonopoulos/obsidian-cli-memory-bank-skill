@@ -76,6 +76,16 @@ export CURSOR_WEBHOOK_SECRET="your-shared-secret"
 # pass signature in CURSOR_WEBHOOK_SIGNATURE or payload.signature
 ```
 
+### Antigravity (native plugin + hooks)
+
+```bash
+cd /absolute/path/to/obsidian-cli-memory-bank-skill
+chmod +x antigravity/install.sh antigravity/hooks/run_hook.py
+./antigravity/install.sh
+```
+
+Use `--copy` for a self-contained copy or `--workspace /path/to/repo` for a workspace-scoped plugin. See [`antigravity/INSTALL.md`](antigravity/INSTALL.md) for details.
+
 ### Codex (optional helper installer)
 
 ```bash

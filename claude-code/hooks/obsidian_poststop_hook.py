@@ -11,6 +11,7 @@ Requires: obmem CLI installed via pipx, and obsidian_hook_common.py next to this
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
+    is_antigravity_payload,
     is_progress_reply,
     is_wrapper_prompt,
     last_turn,
@@ -27,7 +29,9 @@ from obsidian_hook_common import (  # noqa: E402
     read_payload,
     record_run,
     reply_title,
+    session_id_from,
     strip_reminders,
+    transcript_path_from,
     truncate,
     turn_already_logged,
 )
@@ -40,33 +44,46 @@ def _log_mode() -> str:
 
 def main() -> int:
     payload = read_payload(sys.stdin.read())
-    if payload is None or payload.get("stop_hook_active"):
+    if payload is None:
         return 0
-    mode = _log_mode()
-    if mode == "off":
+    antigravity = is_antigravity_payload(payload)
+
+    def _allow_stop() -> int:
+        if antigravity:
+            print(json.dumps({"decision": "allow"}))
         return 0
 
-    transcript_path = payload.get("transcript_path")
+    if payload.get("stop_hook_active"):
+        return _allow_stop()
+    if antigravity:
+        reason = str(payload.get("terminationReason") or "")
+        if reason and reason != "NO_TOOL_CALL":
+            return _allow_stop()
+    mode = _log_mode()
+    if mode == "off":
+        return _allow_stop()
+
+    transcript_path = transcript_path_from(payload)
     turn = last_turn(transcript_path) if isinstance(transcript_path, str) else {
         "prompt": "", "assistant": "", "tools": [], "edited_files": [],
         "recorded": False, "start_id": "",
     }
     if mode == "edits" and not turn["edited_files"]:
-        return 0
+        return _allow_stop()
     # Edits only to files the user listed as their own record: a note would copy them.
     if only_ignored_edits(turn["edited_files"]):
-        return 0
-    # Claude already wrote a note for this turn; a second, thinner one is noise.
+        return _allow_stop()
+    # The agent already wrote a note for this turn; a second, thinner one is noise.
     if turn.get("recorded"):
-        return 0
-    session_id = str(payload.get("session_id") or "")
+        return _allow_stop()
+    session_id = session_id_from(payload)
     start_id = str(turn.get("start_id") or "")
     if turn_already_logged(session_id, start_id):
-        return 0
+        return _allow_stop()
 
     context = active_context(payload)
     if context is None:
-        return 0
+        return _allow_stop()
     workspace, project = context
 
     prompt = " ".join(strip_reminders(turn["prompt"]).split())
@@ -75,14 +92,21 @@ def main() -> int:
         summary = ""
     # "Waiting on the review" is not memory; the turn that finishes the work is.
     if is_progress_reply(summary):
-        return 0
+        return _allow_stop()
     # A typed prompt names the task; a wrapper (session message, task notice,
     # continued session) does not, so the reply's opening sentence does instead.
     title = prompt
     if not prompt or is_wrapper_prompt(prompt):
         title = reply_title(summary) or prompt
     edited = turn["edited_files"]
-    actions = "Auto-captured from Claude Code Stop event."
+    if antigravity:
+        actions = "Auto-captured from Antigravity Stop event."
+        tags = "antigravity,auto-log"
+        fallback_title = f"Antigravity session in {project}"
+    else:
+        actions = "Auto-captured from Claude Code Stop event."
+        tags = "claude,auto-log"
+        fallback_title = f"Claude Code session in {project}"
     if edited:
         actions += " Files changed: " + ", ".join(edited[:12])
         if len(edited) > 12:
@@ -90,11 +114,11 @@ def main() -> int:
 
     result = record_run(
         workspace, project,
-        title=title or f"Claude Code session in {project}",
+        title=title or fallback_title,
         prompt=prompt or "No user prompt captured.",
         summary=truncate(summary, 1500) or "No assistant summary captured.",
         actions=actions,
-        tags="claude,auto-log",
+        tags=tags,
         session=session_id,
     )
     if result.returncode == 0:
@@ -102,7 +126,7 @@ def main() -> int:
         print("[obsidian-memory] Logged run note to Obsidian.", file=sys.stderr)
     else:
         print(f"[obsidian-memory] record-run failed (non-blocking): {result.stderr[:200]}", file=sys.stderr)
-    return 0
+    return _allow_stop()
 
 
 if __name__ == "__main__":

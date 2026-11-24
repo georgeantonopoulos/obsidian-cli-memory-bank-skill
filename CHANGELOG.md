@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Native Antigravity plugin and lifecycle hooks.** Added `antigravity/` (`plugin.json`, `hooks.json`, `skills/obsidian-cli-memory-bank/SKILL.md`, `install.sh`, and `INSTALL.md`) and extended the shared hook scripts (`claude-code/hooks/`) to understand Antigravity's camelCase payloads, `transcript.jsonl` format, and JSON hook contracts (`SessionStart`, `PreInvocation`, and `Stop`) without duplicating hook logic or changing Claude Code behavior. `PreInvocation` deduplicates per user turn so memory search runs once per prompt across tool-call loops and surfaces a one-line inline `Memory:` notice via `metadata.user_markdown`; `Stop` auto-captures edited turns (`antigravity,auto-log`) on `NO_TOOL_CALL` completion and always returns `{"decision": "allow"}`. Shared hooks also fall back to `~/.local/bin/obmem` and Homebrew paths when GUI runtimes launch with a minimal `PATH`.
+
 - **`obmem ask`: follow-up questions to memory.** When the first recall leaves
   a specific question open, `obmem ask --project X --question "..."` searches,
   reads the two best notes not already read (`--exclude`) around their

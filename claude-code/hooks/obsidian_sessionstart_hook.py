@@ -26,11 +26,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).parent))
 from obsidian_hook_common import (  # noqa: E402
     active_context,
+    antigravity_inject_output,
     capture_directive,
     claim_summary,
     compact_summary,
     compacted_at,
     digest_compact_summary,
+    is_antigravity_payload,
+    obmem_bin,
     read_payload,
     recent_prompts,
     record_run,
@@ -47,6 +50,11 @@ LOAD_SKILL_DIRECTIVE = (
     "[obsidian-memory] MANDATORY: before your first reply in this session, invoke the "
     "Skill tool with skill \"obsidian-cli-memory-bank\" (once per session, even if the "
     "first task looks self-contained). Then follow its rules for recall and capture."
+)
+ANTIGRAVITY_SKILL_DIRECTIVE = (
+    "[obsidian-memory] Read the `obsidian-cli-memory-bank` skill when prior project decisions, "
+    "fixes, or setup affect the task, and follow its rules for recall (`obmem search` / `obmem ask`) "
+    "and capture."
 )
 
 
@@ -113,15 +121,18 @@ def main() -> int:
     payload = read_payload(sys.stdin.read())
     if payload is None:
         return 0
+    antigravity = is_antigravity_payload(payload)
     # Skips silently when hooks are disabled or no vault is mapped for this project.
     context = active_context(payload)
     if context is None:
+        if antigravity:
+            print("{}")
         return 0
     workspace, project = context
 
     try:
         result = subprocess.run(
-            ["obmem", "doctor", "--workspace", workspace],
+            [obmem_bin(), "doctor", "--workspace", workspace],
             text=True, capture_output=True, check=False, timeout=30,
         )
         returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
@@ -129,15 +140,24 @@ def main() -> int:
         returncode, stdout, stderr = 1, "", str(exc)
 
     if returncode == 0:
-        print(f"[obsidian-memory] Vault healthy for {project}.")
+        status_line = f"[obsidian-memory] Vault healthy for {project}."
+        user_notice = f"Memory: vault healthy for {project}."
     else:
-        # Surface the issue so Claude knows memory hooks may be degraded
+        # Surface the issue so the agent knows memory hooks may be degraded
         detail = (stderr or "").strip()[:300] or (stdout or "").strip()[:300] or "unknown error"
-        print(
+        status_line = (
             f"[obsidian-memory] WARNING: Obsidian vault health check failed for "
             f"{project}. Memory hooks may not work this session. "
             f"Detail: {detail}"
         )
+        user_notice = f"Memory: WARNING — vault health check failed for {project}."
+
+    if antigravity:
+        body = "\n".join([status_line, ANTIGRAVITY_SKILL_DIRECTIVE, capture_directive(project)])
+        print(json.dumps(antigravity_inject_output(body, user_markdown=user_notice)))
+        return 0
+
+    print(status_line)
     print(LOAD_SKILL_DIRECTIVE)
     print(capture_directive(project))
     if payload.get("source") == "compact" and returncode == 0:
