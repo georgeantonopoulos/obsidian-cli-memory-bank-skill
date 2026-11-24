@@ -34,7 +34,7 @@ class SandboxSafeInstallTests(unittest.TestCase):
         stub.chmod(0o755)
         if not with_pipx:
             stub.unlink()
-        # A fake repo state file, so the test never reads George's real config.
+        # A fake repo state file, so the test never reads the user's real config.
         fake_repo = tmp / "repo"
         (fake_repo / "antigravity").mkdir(parents=True)
         (fake_repo / "state").mkdir()

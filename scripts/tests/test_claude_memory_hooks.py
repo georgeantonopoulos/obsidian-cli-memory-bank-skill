@@ -837,11 +837,11 @@ Progress uses measured counts.
 
     def test_counts_ids_and_measures_are_not_keywords(self) -> None:
         words = HOOK._sanitize_query(
-            "PR 32 has 300 tests; run kwdovhnz0m8aaaac8sw0zg on the 16gb box at 30fps for oklch2 export",
+            "PR 32 has 300 tests; run kwdovhnz0m8aaaac8sw0zg on the 16gb box at 30fps for h264 export",
             project="x").split()
         for noise in ("32", "300", "kwdovhnz0m8aaaac8sw0zg", "16gb", "30fps"):
             self.assertNotIn(noise, words)
-        self.assertIn("oklch2", words)
+        self.assertIn("h264", words)
         self.assertIn("export", words)
 
     def test_notice_words_are_dropped_only_inside_a_notice(self) -> None:

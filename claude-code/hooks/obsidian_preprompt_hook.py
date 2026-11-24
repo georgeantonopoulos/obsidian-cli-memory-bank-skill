@@ -74,7 +74,7 @@ _NOTICE_RE = re.compile(
     r"Background (?:command|task)\b|\[Subagent hand-back\]|<task-notification\b"
     r"|\bcompleted \(exit code", re.IGNORECASE)
 # Machine ids ("kwdovhnz0m8aaaac8sw0zg", "toolu01abc"): long runs mixing letters
-# and digits that no note is about. Short names with a digit (oklch2, v4) stay.
+# and digits that no note is about. Short names with a digit (h264, v4) stay.
 _ID_TOKEN_RE = re.compile(r"^(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{10,}$", re.IGNORECASE)
 # A size, rate or duration glued to its number: 16gb, 30fps, 200ms, 4k.
 _MEASURE_RE = re.compile(r"^\d+(?:[.,]\d+)?[a-z]{1,3}$", re.IGNORECASE)
@@ -260,7 +260,7 @@ def _split_identifier(name: str) -> str:
 
 
 def _is_named(token: str, sentence_starts: set[str]) -> bool:
-    """Proper nouns, identifiers, and versions: Jev, TypeSafe, oklch2, ARRI."""
+    """Proper nouns, identifiers, and versions: Jev, TypeSafe, h264, ARRI."""
     if any(c.isdigit() for c in token) or any(c.isupper() for c in token[1:]):
         return True
     return token[:1].isupper() and token not in sentence_starts

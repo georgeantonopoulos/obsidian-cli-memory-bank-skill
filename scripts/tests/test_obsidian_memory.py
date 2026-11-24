@@ -848,7 +848,7 @@ class ObsidianMemoryTests(unittest.TestCase):
                 "Runs/b-continued.md": "# This session is being continued from a previous conversation that ran out of...\n\nneedle\n",
                 "Runs/c-task.md": "# Background task: Background command \"sleep\"\n\nneedle\n",
                 "Runs/d-handback.md": "# Message from feature-dev:code-reviewer: [Subagent hand-back] The text\n\nneedle\n",
-                "Runs/e-gary.md": "# Message from Gary: fix the needle export\n\nneedle\n",
+                "Runs/e-relay.md": "# Message from Reviewer: fix the needle export\n\nneedle\n",
                 "Runs/f-work.md": "# Fix needle export\n\nneedle\n",
                 "Topics/Pre-compaction.md": "# Pre-compaction snapshot notes\n\nneedle\n",
             }
@@ -862,7 +862,7 @@ class ObsidianMemoryTests(unittest.TestCase):
                 self.assertNotIn(skipped, output)
             # A relayed message from a person carries a real task; only notes
             # outside Runs are never judged by title.
-            for kept in ("e-gary", "f-work", "Topics/Pre-compaction.md"):
+            for kept in ("e-relay", "f-work", "Topics/Pre-compaction.md"):
                 self.assertIn(kept, output)
 
     def test_search_across_all_projects_skips_each_archive(self) -> None:
