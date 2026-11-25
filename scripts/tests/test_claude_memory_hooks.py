@@ -338,6 +338,53 @@ class ClaudePrePromptHookTests(unittest.TestCase):
             self.assertEqual(context.count("New thing"), 1)
             self.assertEqual(context.count("Middle"), 1)
 
+    def test_review_questions_are_recognised(self) -> None:
+        for prompt in ("What should I work on next?", "what's left?", "Review this app",
+                       "what are the priorities", "where are we with the project?",
+                       "what do we tackle today", "can you review the state of the project"):
+            self.assertTrue(HOOK._is_review_question(prompt), prompt)
+        for prompt in ("fix the export progress bar", "Why does Export progress jump around?",
+                       "review the PR comments on 58 and fix them " + "word " * 20,
+                       "the left panel is cut off", "what is the left margin of the viewer",
+                       "what happens next when export fails"):
+            self.assertFalse(HOOK._is_review_question(prompt), prompt)
+
+    def test_review_question_shows_the_project_summary_not_keyword_hits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            folder = vault / "Project Memory" / "demo"
+            (folder / "Runs").mkdir(parents=True)
+            (folder / "Current Memory.md").write_text(
+                '---\ntype: "current-memory"\n---\n# Current Memory\n\nParent note: [[x]]\n'
+                "## High-Signal Memory\n- Export uses measured frame counts.\n", encoding="utf-8")
+            (folder / "Open Questions.md").write_text(
+                "# Open Questions\n\n## Open Questions\n- Track unknowns.\n"
+                + "".join(f"- [[Runs/r{i}|r{i}]]: question {i}\n" for i in range(12)), encoding="utf-8")
+            (folder / "Runs" / "2026-06-03-1015-ship.md").write_text("# Ship 0.3.3\n", encoding="utf-8")
+            (folder / "Runs" / "2026-06-01-0900-old.md").write_text("# Old work\n", encoding="utf-8")
+
+            payload = json.dumps({"prompt": "what should I work on next?", "cwd": tmp})
+            with patch("sys.stdin") as stdin, patch.object(HOOK, "active_context", return_value=("/w", "Demo")), \
+                    patch.object(HOOK, "_vault_path", return_value=vault), \
+                    patch.object(HOOK.subprocess, "run") as run, \
+                    patch("sys.stdout", new_callable=__import__("io").StringIO) as stdout:
+                stdin.read.return_value = payload
+                self.assertEqual(HOOK.main(), 0)
+            run.assert_not_called()
+            result = json.loads(stdout.getvalue())
+            self.assertEqual(result["systemMessage"], "Memory: Demo summary and open questions")
+            context = result["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("Export uses measured frame counts.", context)
+            self.assertNotIn("Parent note", context)
+            self.assertIn("question 11", context)
+            self.assertNotIn("question 3:", context)
+            self.assertNotIn("Track unknowns", context)
+            self.assertLess(context.index("Ship 0.3.3"), context.index("Old work"))
+
+    def test_review_question_without_project_memory_falls_back_to_search(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(HOOK._project_overview(Path(tmp), "demo"), "")
+
     def test_jev_gate_keeps_the_hook_quiet(self) -> None:
         gated = "Found 9 hits; none cleared the Jev threshold 0.30 (best 0.04)."
         payload = json.dumps({"prompt": "What is a good moussaka recipe with aubergine?", "cwd": tempfile.gettempdir()})
@@ -782,10 +829,30 @@ Progress uses measured counts.
         for topic in ("message", "session", "agent"):
             self.assertIn(topic, words)
 
-    def test_typed_prompt_keeps_versions_and_error_codes(self) -> None:
+    def test_typed_prompt_keeps_versions_but_not_bare_numbers(self) -> None:
         words = HOOK._sanitize_query("Why does the 2.4.1 build return 404 when exporting thumbnails?").split()
-        self.assertEqual(words[:2], ["2.4.1", "404"])
+        self.assertEqual(words[0], "2.4.1")
+        self.assertNotIn("404", words)
         self.assertIn("thumbnails", words)
+
+    def test_counts_ids_and_measures_are_not_keywords(self) -> None:
+        words = HOOK._sanitize_query(
+            "PR 32 has 300 tests; run kwdovhnz0m8aaaac8sw0zg on the 16gb box at 30fps for h264 export",
+            project="x").split()
+        for noise in ("32", "300", "kwdovhnz0m8aaaac8sw0zg", "16gb", "30fps"):
+            self.assertNotIn(noise, words)
+        self.assertIn("h264", words)
+        self.assertIn("export", words)
+
+    def test_notice_words_are_dropped_only_inside_a_notice(self) -> None:
+        notice = HOOK._sanitize_query(
+            "Background command \"release build\" completed (exit code 0) for the subagent shader cache",
+            project="x").split()
+        for noise in ("background", "completed", "subagent"):
+            self.assertNotIn(noise, notice)
+        self.assertIn("shader", notice)
+        typed = HOOK._sanitize_query("fix background removal once the render completed", project="x").split()
+        self.assertIn("background", typed)
 
     def test_missing_ignore_file_fails_open(self) -> None:
         with patch.dict(os.environ, {"OBMEM_QUERY_IGNORE_FILE": "/nonexistent/obmem-ignore.txt"}):
@@ -1084,6 +1151,26 @@ class StopHookTests(unittest.TestCase):
         kwargs = self._titled(start, "I fixed the export hook and the tests pass.")
         self.assertEqual(kwargs["title"], "fix the export hook")
         self.assertEqual(kwargs["prompt"], "fix the export hook")
+
+    def test_answer_prompts_take_the_replys_opening_sentence(self) -> None:
+        reply = "Main is now level with origin and the hotfix is merged.\n\nDetails follow."
+        for answer in ("yes", "go ahead", "Sounds good, do it",
+                       "1. bring main up to speed with origin 2. yes sounds good"):
+            with self.subTest(answer=answer):
+                start = {"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "message": {"content": answer}}
+                self.assertEqual(self._titled(start, reply)["title"],
+                                 "Main is now level with origin and the hotfix is merged.")
+
+    def test_is_answer_prompt_shapes(self) -> None:
+        for prompt in ("yes", "No, keep it", "ok do that", "both", "1. yes 2. no",
+                       "a) go ahead b) skip the docs", "2", "b)", "Yes, sounds good."):
+            self.assertTrue(COMMON.is_answer_prompt(prompt), prompt)
+        for prompt in ("fix the export hook", "1. fix the export hook 2. add a test for it",
+                       "Review the shader cache and report", "now ship the 0.3.3 release",
+                       "fix the bug", "run the tests", "Right now login is broken, fix it",
+                       "correct the typo in README", "fine tune the model on X",
+                       "no tests run in CI, add them", "all tests failing in CI, please fix"):
+            self.assertFalse(COMMON.is_answer_prompt(prompt), prompt)
 
     def test_too_short_reply_keeps_the_wrapper_title(self) -> None:
         start = {"type": "user", "uuid": "u1", "isMeta": True, "origin": {"kind": "peer", "name": "Reviewer", "body": "status?"},

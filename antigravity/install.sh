@@ -8,6 +8,7 @@ set -euo pipefail
 #   ./antigravity/install.sh --copy               # Copy self-contained plugin globally
 #   ./antigravity/install.sh --workspace /path    # Symlink into <workspace>/.agents/plugins/obsidian-cli-memory-bank
 #   ./antigravity/install.sh --copy --force       # Replace an existing installation
+#   ./antigravity/install.sh --sandbox-safe       # Also make obmem runnable inside Antigravity's terminal sandbox
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -15,6 +16,7 @@ SHARED_HOOKS_DIR="${REPO_ROOT}/claude-code/hooks"
 
 MODE="symlink"
 FORCE="false"
+SANDBOX_SAFE="false"
 TARGET_BASE="${HOME}/.gemini/config/plugins"
 
 while [[ $# -gt 0 ]]; do
@@ -39,8 +41,12 @@ while [[ $# -gt 0 ]]; do
       FORCE="true"
       shift
       ;;
+    --sandbox-safe)
+      SANDBOX_SAFE="true"
+      shift
+      ;;
     -h|--help)
-      sed -n '3,10p' "$0"
+      sed -n '3,11p' "$0"
       exit 0
       ;;
     *)
@@ -50,10 +56,57 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Antigravity's terminal sandbox can read most of the disk but blocks some home folders
+# (an editable pipx install's source checkout and its state/ config among them). A
+# regular (non-editable) install keeps the code inside the pipx venv, and the config
+# copied to ~/.local/state is found there first, so `obmem search` and `read-note`
+# work in the sandbox. Writes (record-run) still need the vault, outside the sandbox.
+make_sandbox_safe() {
+  local user_state="${HOME}/.local/state/obsidian-cli-memory-bank/vault_config.json"
+  local repo_state="${REPO_ROOT}/state/vault_config.json"
+  if ! command -v pipx >/dev/null 2>&1; then
+    echo "--sandbox-safe: pipx not found; install obmem with pipx first." >&2
+    return 1
+  fi
+  local venvs venv_dir
+  venvs="$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null || true)"
+  venv_dir="${venvs}/obsidian-cli-memory-bank"
+  if [[ -z "${venvs}" || ! -d "${venv_dir}" ]]; then
+    echo "--sandbox-safe: obmem is not installed with pipx; install it with pipx first." >&2
+    return 1
+  fi
+  if grep -rqs '"editable": *true' "${venv_dir}"/lib/python*/site-packages/obsidian_cli_memory_bank-*.dist-info/direct_url.json; then
+    echo "obmem is an editable install; reinstalling it as a regular install from ${REPO_ROOT}"
+    pipx install --force "${REPO_ROOT}"
+    echo "Note: re-run with --sandbox-safe after pulling updates (a regular install does not follow the checkout)."
+  else
+    echo "obmem is already a regular install; leaving it as is."
+  fi
+  if [[ -f "${user_state}" ]]; then
+    echo "Config already at ${user_state}"
+  elif [[ -f "${repo_state}" ]]; then
+    mkdir -p "$(dirname "${user_state}")"
+    cp "${repo_state}" "${user_state}"
+    chmod 600 "${user_state}"
+    echo "Copied config to ${user_state}"
+  else
+    echo "No obmem config found yet; run 'obmem set-vault' first, then re-run with --sandbox-safe."
+  fi
+}
+
+if [[ "${SANDBOX_SAFE}" == "true" ]]; then
+  # A failure here must not stop the plugin install below.
+  make_sandbox_safe || echo "Skipped the sandbox-safe step; the plugin install continues." >&2
+fi
+
 TARGET_DIR="${TARGET_BASE}/obsidian-cli-memory-bank"
 mkdir -p "${TARGET_BASE}"
 
 if [[ -e "${TARGET_DIR}" || -L "${TARGET_DIR}" ]]; then
+  if [[ "${SANDBOX_SAFE}" == "true" && "${FORCE}" != "true" ]]; then
+    echo "Plugin already installed at ${TARGET_DIR}; left unchanged."
+    exit 0
+  fi
   if [[ "${FORCE}" != "true" ]]; then
     echo "Target already exists: ${TARGET_DIR}" >&2
     echo "Re-run with --force to replace it." >&2

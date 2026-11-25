@@ -572,6 +572,8 @@ class ObsidianCLI:
                 continue
             if exclude_session and _written_by(text, exclude_session, exclude_since):
                 continue
+            if _is_wrapper_run(relative, text):
+                continue
             # The title is worth more than a passing mention in the body, so it
             # is counted twice rather than given a separate scoring branch.
             title = note.stem
@@ -925,6 +927,27 @@ _BM25_B = 0.75
 # Current Memory or a Topic note, never enough to float an irrelevant one to
 # the top.
 _PRIORITY_BOOST_DIVISOR = 400.0
+
+
+# Run notes named after the message that started the turn rather than its work:
+# a continued-session summary, a task notice, a subagent's hand-back or a
+# pre-compaction save. Their bodies hold whatever the session was doing, so they
+# match almost any search and crowd out the notes that record the work itself.
+_WRAPPER_RUN_TITLE_RE = re.compile(
+    r"^(?:This session is being continued from a previous conversation"
+    r"|Background task\b"
+    r"|Message from [^\n]{0,120}?(?:\[Subagent hand-back\]|subagent)"
+    r"|Pre-compaction snapshot\b)",
+    re.IGNORECASE)
+_RUN_H1_RE = re.compile(r"^# (.+)$", re.MULTILINE)
+
+
+def _is_wrapper_run(relative: str, text: str) -> bool:
+    """A run note titled after a wrapper message (see _WRAPPER_RUN_TITLE_RE)."""
+    if "/Runs/" not in relative:
+        return False
+    title = _RUN_H1_RE.search(text[:4000])
+    return bool(title and _WRAPPER_RUN_TITLE_RE.match(title.group(1).strip()))
 
 
 def _markdown_files(root: Path, vault: Path, *, skip_archive: bool) -> Iterator[Path]:
@@ -1849,6 +1872,37 @@ def _section(body: str, heading: str) -> str:
     return match.group("body").strip()
 
 
+_UPDATE_SECTION_RE = re.compile(r"^## Update \d{1,2}:\d{2}\s*$\n(?P<body>.*?)(?=^## |\Z)",
+                                re.MULTILINE | re.DOTALL)
+
+
+def _run_updates(body: str) -> List[Dict[str, str]]:
+    """The ``## Update HH:MM`` sections a merged save adds, oldest first.
+
+    Each holds the save's summary, then its actions, then "Decisions:" and
+    "Open questions:" paragraphs (see ``_merge_into_run``)."""
+    updates: List[Dict[str, str]] = []
+    for match in _UPDATE_SECTION_RE.finditer(body):
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", match.group("body")) if p.strip()]
+        if not paragraphs:
+            continue
+        update = {"summary": paragraphs[0], "actions": "", "decisions": "", "questions": ""}
+        for paragraph in paragraphs[1:]:
+            if paragraph.startswith("Decisions:"):
+                update["decisions"] = paragraph[len("Decisions:"):].strip()
+            elif paragraph.startswith("Open questions:"):
+                update["questions"] = paragraph[len("Open questions:"):].strip()
+            else:
+                update["actions"] = (update["actions"] + "\n" + paragraph).strip()
+        updates.append(update)
+    return updates
+
+
+def _latest_summary(body: str) -> str:
+    updates = _run_updates(body)
+    return updates[-1]["summary"] if updates else _section(body, "Summary")
+
+
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;])\s+")
 _SENTENCE_ABBREVIATIONS = {"e.g.", "i.e.", "etc.", "vs.", "approx.", "incl.", "cf.", "no.", "fig.", "mr.", "dr."}
 # Markdown that carries no meaning once a reply is flattened into sentences:
@@ -2129,6 +2183,13 @@ def _parse_run_memory(
     actions = _section(body, "Actions Taken")
     decisions = _section(body, "Decisions")
     questions = _section(body, "Open Questions")
+    # Merged saves: the latest update states where the work ended up.
+    updates = _run_updates(body)
+    if updates:
+        summary = updates[-1]["summary"]
+        actions = "\n".join(filter(None, [actions] + [u["actions"] for u in updates]))
+        decisions = "\n".join(filter(None, [decisions] + [u["decisions"] for u in updates]))
+        questions = "\n".join(filter(None, [questions] + [u["questions"] for u in updates]))
     combined = " ".join([title, prompt, summary, actions, decisions, questions])
     return RunMemory(
         path=relative_path,
@@ -3126,6 +3187,97 @@ def _run_extra(args: argparse.Namespace) -> Dict[str, str]:
     return extra
 
 
+# A save made while the work is still going ("suite running", "not committed
+# yet") is superseded within minutes by the next one. Within this window such
+# saves, and near-copies of a recent save, are added to the earlier note as an
+# update instead of becoming notes of their own.
+_MERGE_WINDOW_SECONDS = 3 * 3600
+_MERGE_SIMILARITY = 0.8
+_PENDING_LEAD_RE = re.compile(
+    r"\b(?:not yet|yet to be"
+    r"|(?:not|isn['’]t|aren['’]t|haven['’]t|hasn['’]t) (?:yet )?(?:been )?"
+    r"(?:released|committed|pushed|merged|tested|built|verified|finished)"
+    r"|still (?:running|waiting|pending|building|testing|in progress)"
+    r"|(?:is|are|am|now) (?:waiting (?:for|on)|in progress|pending)"
+    r"|untested)\b",
+    re.IGNORECASE)
+_RUN_STAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}-\d{4})-")
+
+
+def _lead_sentence(text: str) -> str:
+    first = re.split(r"(?<=[.!?])\s+|\n", (text or "").strip(), maxsplit=1)[0]
+    return first[:240]
+
+
+def _is_pending(summary: str) -> bool:
+    return bool(_PENDING_LEAD_RE.search(_lead_sentence(summary)))
+
+
+def _merge_target(runs_dir: Path, session: str, summary: str,
+                  now: Optional[datetime] = None) -> Optional[Tuple[Path, str]]:
+    """The recent run note this save should be added to, with the reason, or None.
+
+    Same session and either save still pending: they describe one piece of work
+    in progress. Any session and nearly the same summary: a repeat save."""
+    import difflib
+
+    now = now or datetime.now()
+    candidates: List[Tuple[datetime, Path]] = []
+    try:
+        entries = list(runs_dir.glob("*.md"))
+    except OSError:
+        return None
+    for note in entries:
+        stamp = _RUN_STAMP_RE.match(note.name)
+        if not stamp:
+            continue
+        try:
+            when = datetime.strptime(stamp.group(1), "%Y-%m-%d-%H%M")
+        except ValueError:
+            continue
+        age = (now - when).total_seconds()
+        if -60 <= age <= _MERGE_WINDOW_SECONDS:
+            candidates.append((when, note))
+    new_summary = " ".join((summary or "").split())
+    new_pending = _is_pending(summary)
+    for _, note in sorted(candidates, reverse=True):
+        try:
+            text = note.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        front = text.split("\n---", 1)[0] if text.startswith("---") else ""
+        found = _FRONT_SESSION_RE.search(front)
+        note_session = found.group(1).strip() if found else ""
+        # A note already merged into: its newest update says whether the work is still open.
+        old_summary = " ".join(_latest_summary(text).split())
+        if session and note_session == session and (new_pending or _is_pending(old_summary)):
+            return note, "same session, work still in progress"
+        if new_summary and old_summary and difflib.SequenceMatcher(
+                None, new_summary.lower(), old_summary.lower()).ratio() >= _MERGE_SIMILARITY:
+            return note, "nearly the same as a recent save"
+    return None
+
+
+def _merge_into_run(note: Path, args: argparse.Namespace) -> bool:
+    """Add this save to ``note`` as a dated update; True if it was written."""
+    stamp = datetime.now().strftime("%H:%M")
+    parts = [f"## Update {stamp}", "", args.summary.strip()]
+    if _has_content(args.actions):
+        parts += ["", args.actions.strip()]
+    if _has_content(args.decisions):
+        parts += ["", f"Decisions: {args.decisions.strip()}"]
+    if _has_content(args.questions):
+        parts += ["", f"Open questions: {args.questions.strip()}"]
+    addition = "\n".join(parts)
+
+    def transform(body: str) -> Tuple[str, int]:
+        updated = re.sub(r'^updated:.*$', f"updated: {escape_yaml(now_iso())}",
+                         body, count=1, flags=re.MULTILINE)
+        return updated.rstrip("\n") + "\n\n" + addition + "\n", 1
+
+    return bool(_rewrite_note(note, transform))
+
+
 def cmd_record_run(args: argparse.Namespace) -> None:
     store = ConfigStore()
     workspace = resolve_workspace_path(args.workspace)
@@ -3140,6 +3292,24 @@ def cmd_record_run(args: argparse.Namespace) -> None:
         value = getattr(args, field, None)
         if isinstance(value, str):
             setattr(args, field, _without_dead_links(value, notes))
+
+    if not getattr(args, "no_merge", False):
+        target = _merge_target(vault_path / paths.runs_dir,
+                               _run_extra(args).get("session", ""), args.summary)
+        if target is not None:
+            found, reason = target
+            note = found.relative_to(vault_path)
+            if cli.dry_run:
+                print(f"[dry-run] would merge into {note.as_posix()} ({reason})")
+                return
+            if _merge_into_run(found, args):
+                if _has_content(args.decisions):
+                    cli.append(paths.decisions, f"- {_wikilink(note)}: {args.decisions.strip()}")
+                if _has_content(args.questions):
+                    cli.append(paths.questions, f"- {_wikilink(note)}: {args.questions.strip()}")
+                print(f"Recorded run note: {note.as_posix()}")
+                print(f"Merged into the earlier note ({reason}); use --no-merge for a new note.")
+                return
 
     run_slug = slugify(args.title) or "run"
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
@@ -4345,6 +4515,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Accepts file stems, short names, or vault-relative paths. "
             "Combines with --auto-relate unless --no-auto-relate is passed."
         ),
+    )
+    parser_run.add_argument(
+        "--no-merge",
+        action="store_true",
+        help="Always write a new run note. By default a save made while the work "
+             "is still in progress, or one nearly the same as a save from the last "
+             "3 hours, is added to that earlier note as an update.",
     )
     parser_run.add_argument(
         "--no-auto-relate",

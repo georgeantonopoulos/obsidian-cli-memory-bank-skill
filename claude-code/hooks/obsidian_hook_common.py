@@ -205,6 +205,34 @@ def is_wrapper_prompt(prompt: str) -> bool:
     return any(pattern.match(start) for pattern in _WRAPPER_PROMPT_RES + user_wrapper_patterns())
 
 
+# A prompt that only answers the agent ("yes", "go ahead", "1. bring main up to
+# speed 2. yes sounds good") names no task, so the reply titles the note.
+_ACK_WORDS = (r"(?:yes|yeah|yep|yup|no|nope|ok(?:ay)?|sure|fine|agreed|correct|right|exactly|"
+              r"sounds good|go ahead|go for it|do it|do that|please do|all of them|both|neither|"
+              r"option [a-d1-9]|all \w+|thanks|thank you)")
+# The acknowledgement must stand alone: end the prompt or clause, or run into
+# another one ("ok do that"). "no tests run in CI" or "correct the typo" are tasks.
+_ACK_START_RE = re.compile(rf"^{_ACK_WORDS}(?:[\s,;:.!-]*{_ACK_WORDS})*\s*(?:[,;:.!?)-]|$)",
+                           re.IGNORECASE)
+_CHOICE_RE = re.compile(r"^(?:\d{1,2}|[a-d])[.)]?$", re.IGNORECASE)
+_LIST_ITEM_RE = re.compile(r"(?:^|\s)(?:\d{1,2}|[a-dA-D])[.)]\s+(.*?)(?=\s+(?:\d{1,2}|[a-dA-D])[.)]\s|$)",
+                           re.DOTALL)
+
+
+def is_answer_prompt(prompt: str) -> bool:
+    """A reply to the agent's question rather than a request of its own."""
+    text = " ".join(prompt.split())
+    if not text:
+        return False
+    if _CHOICE_RE.match(text) or _ACK_START_RE.match(text):
+        return True
+    # Numbered answers to numbered questions: one item at least is a yes/no.
+    if re.match(r"(?:\d{1,2}|[a-dA-D])[.)]\s", text):
+        items = [item.strip() for item in _LIST_ITEM_RE.findall(text)]
+        return len(items) >= 2 and any(_ACK_START_RE.match(item) for item in items)
+    return False
+
+
 def strip_reminders(text: str) -> str:
     """Drop system reminders and the tags around pasted text."""
     return _PASTE_TAG_RE.sub(" ", _REMINDER_RE.sub(" ", text))

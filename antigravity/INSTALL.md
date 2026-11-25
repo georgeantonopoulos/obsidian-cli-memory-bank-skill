@@ -71,7 +71,7 @@ The plugin's `hooks.json` registers three lifecycle hooks that reuse the same sh
 |-------|--------|---------|
 | `SessionStart` | `run_hook.py sessionstart` | Validates vault connectivity via `obmem doctor` once per session and injects the recall/capture directive. |
 | `PreInvocation` | `run_hook.py preprompt` | Searches Obsidian **once per new user turn** (deduplicated across tool-loop invocations) and injects top note excerpts with a one-line inline `Memory:` notice (`metadata.user_markdown`). Also checks all projects and includes one cross-project note when it outranks the current project. |
-| `Stop` | `run_hook.py poststop` | Parses Antigravity's `transcript.jsonl` on normal turn completion (`NO_TOOL_CALL`) and logs a run note for turns that edited files (`write_file`, `edit_file`, `replace_file_content`, `multi_replace_file_content`, `write_to_file`). Skips turns where the agent already ran `obmem record-run`. Always returns `{"decision": "allow"}` so it never blocks stops. |
+| `Stop` | `run_hook.py poststop` | Parses Antigravity's `transcript.jsonl` on normal turn completion (`NO_TOOL_CALL`) and logs a run note for turns that edited files (`write_file`, `edit_file`, `replace_file_content`, `multi_replace_file_content`, `write_to_file`). A turn with no edits is still logged when the reply is substantial (400+ characters and not a progress update). When the prompt is only an answer ("yes", "1. go ahead"), the note is titled from the reply. Skips turns where the agent already ran `obmem record-run`. Always returns `{"decision": "allow"}` so it never blocks stops. |
 
 All hooks silently no-op (`{}` or `{"decision": "allow"}`) when no vault is mapped for the current workspace.
 
@@ -95,6 +95,14 @@ All shared environment variables and optional config files work identically acro
 Lifecycle hooks run directly on the host and do not hit terminal sandbox limits. When an agent invokes `obmem` via a sandboxed `run_command`, however, the sandbox blocks access to files outside the workspace (your Obsidian vault, `state/vault_config.json`, and—for editable `pipx` installs—the source checkout). If the current workspace also contains a `scripts/` folder, Python may report `ModuleNotFoundError: No module named 'scripts.obsidian_memory'` instead of a permission error.
 
 The bundled Antigravity `SKILL.md` instructs the agent to retry standalone `obmem` commands outside the sandbox (`BypassSandbox: true`) when this happens, so you can approve `obmem` once cleanly.
+
+To make reads (`obmem search`, `read-note`, `ask`) work inside the sandbox, run:
+
+```bash
+./antigravity/install.sh --sandbox-safe
+```
+
+It reinstalls an editable `obmem` as a regular pipx install (so the code lives in the pipx venv, not your checkout) and copies `state/vault_config.json` to `~/.local/state/obsidian-cli-memory-bank/vault_config.json`, which `obmem` reads first. Re-run it after pulling updates, because a regular install does not follow the checkout. `record-run` still writes to the vault, which the sandbox blocks, so it still needs `BypassSandbox: true`. The hooks run on the host and capture either way.
 
 ## 4) First-time vault setup
 
