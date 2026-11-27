@@ -1427,3 +1427,54 @@ class MemorySyncHookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PromptHookTimeLimitTests(unittest.TestCase):
+    """The prompt hook runs before every message reaches the model, so a stuck
+    step (a Jev request, a slow disk) must give up quickly, not hold the prompt."""
+
+    def test_searches_have_short_limits_and_pass_the_jev_budget(self) -> None:
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+        payload = {"prompt": "why does the export progress bar show the wrong frame count",
+                   "cwd": "/tmp/demo", "session_id": "s1"}
+        with patch.object(HOOK, "read_payload", return_value=payload), \
+             patch.object(HOOK, "active_context", return_value=("/tmp/demo", "demo")), \
+             patch.object(HOOK.subprocess, "run", side_effect=fake_run), \
+             patch("sys.stdin"), patch("sys.stdout", new_callable=__import__("io").StringIO):
+            self.assertEqual(HOOK.main(), 0)
+        searches = [kwargs for cmd, kwargs in calls if cmd[1] == "search"]
+        self.assertEqual(len(searches), 2)
+        for kwargs in searches:
+            self.assertLessEqual(kwargs["timeout"], 5)
+            self.assertEqual(float(kwargs["env"]["OBMEM_JEV_TIMEOUT"]), HOOK._JEV_TIMEOUT)
+            self.assertEqual(kwargs["env"]["OBMEM_EXCLUDE_SESSION"], "s1")
+        self.assertLess(HOOK._JEV_TIMEOUT, HOOK._SEARCH_TIMEOUT)
+        self.assertLess(HOOK._SEARCH_TIMEOUT, HOOK._TOTAL_TIMEOUT)
+
+    def test_a_stuck_obmem_cannot_hold_the_prompt_past_the_total_limit(self) -> None:
+        import subprocess
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            # An obmem that never answers: without the overall limit the hook
+            # would wait out each step's own timeout in turn.
+            fake = Path(tmp, "obmem")
+            fake.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+            fake.chmod(0o755)
+            repo = Path(tmp, "repo")
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            env = {**os.environ, "PATH": f"{tmp}:{os.environ.get('PATH', '')}", "HOME": tmp}
+            payload = json.dumps({"prompt": "why does the export progress bar show the wrong frame count",
+                                  "cwd": str(repo), "session_id": "s1"})
+            started = time.monotonic()
+            result = subprocess.run([sys.executable, str(HOOKS_DIR / "obsidian_preprompt_hook.py")],
+                                    input=payload, text=True, capture_output=True, env=env, timeout=30)
+            elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertLess(elapsed, HOOK._TOTAL_TIMEOUT + 1.5)

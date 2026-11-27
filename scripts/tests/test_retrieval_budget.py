@@ -77,6 +77,32 @@ class RetrievalBudgetTests(unittest.TestCase):
             self.assertLessEqual(len(excerpt.split('\n[Excerpt:')[0]), 1200)
             self.assertNotIn('old.md', json.dumps(payload))
 
+    def test_slow_jev_falls_back_to_local_results_within_its_time_limit(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / 'Project Memory/demo'
+            root.mkdir(parents=True)
+            for i in range(3):
+                (root / f'note-{i}.md').write_text('export progress\n')
+
+            def hang(*_args, **_kwargs):
+                time.sleep(5)
+                raise AssertionError('should have been abandoned')
+
+            with patch.dict('os.environ', {'TYPESAFE_API_KEY': 'test-key', 'OBMEM_JEV_TIMEOUT': '0.2'}), patch(
+                'scripts.obsidian_memory.urllib.request.urlopen', side_effect=hang
+            ):
+                started = time.monotonic()
+                output = self.command(
+                    vault, 'search', '--project', 'demo', '--query', 'export progress',
+                    '--ranker', 'auto',
+                )
+                elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 2)
+            self.assertNotIn('Ranked by Jev', output)
+            self.assertIn('Found 3 hits; showing 3.', output)
+
     def test_jev_judges_at_most_ten_candidates_for_ten_hits(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)

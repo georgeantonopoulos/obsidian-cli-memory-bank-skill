@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -3430,6 +3431,46 @@ def _build_or_query(raw_query: str) -> str:
 # Below this, Jev's single-best pick is too spread across notes to override Noul order.
 JEV_CHOICE_MIN_CONFIDENCE = 0.5
 
+# Seconds the whole Jev request may take. urlopen's own timeout applies to each
+# socket wait, not the request, so a slow DNS lookup or a trickling reply ran
+# past 20 s and stalled the prompt hook. OBMEM_JEV_TIMEOUT overrides it.
+_DEFAULT_JEV_TIMEOUT = 10.0
+
+
+def _jev_timeout() -> float:
+    try:
+        value = float(os.environ.get("OBMEM_JEV_TIMEOUT", _DEFAULT_JEV_TIMEOUT))
+    except ValueError:
+        return _DEFAULT_JEV_TIMEOUT
+    return value if math.isfinite(value) and value > 0 else _DEFAULT_JEV_TIMEOUT
+
+
+def _jev_post(request: "urllib.request.Request") -> Any:
+    """Send the Jev request and return its answers, within ``_jev_timeout()`` seconds.
+
+    The request runs in a daemon thread, so giving up does not wait for the
+    socket; the thread ends with the process. A timeout raises OSError, which
+    callers already treat as a failed request.
+    """
+    budget = _jev_timeout()
+    outcome: Dict[str, Any] = {}
+
+    def send() -> None:
+        try:
+            with urllib.request.urlopen(request, timeout=budget) as response:
+                outcome["answers"] = json.load(response)["answers"]
+        except BaseException as exc:  # handed back to the caller's thread
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=send, name="jev-request", daemon=True)
+    worker.start()
+    worker.join(budget)
+    if worker.is_alive():
+        raise TimeoutError(f"Jev did not answer within {budget:g} s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["answers"]
+
 
 def _jev_rerank(
     cli: ObsidianCLI, query: str, hits: List[Tuple[int, str]], api_key: str,
@@ -3498,8 +3539,7 @@ def _jev_rerank(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            answers = json.load(response)["answers"]
+        answers = _jev_post(request)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"Jev ranking request failed (HTTP {exc.code})") from exc
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -3529,6 +3569,16 @@ def _jev_rerank(
         key=lambda i: (i != best_index, -ranked[i][2], i),
     )
     return [(*ranked[i], i == best_index) for i in ordered]
+
+
+def _first_hits(output: str, limit: int) -> str:
+    """A local search result cut to its first ``limit`` hits, header included."""
+    lines = output.splitlines()
+    match = re.match(r"Found (\d+) hits; showing \d+\.$", lines[0]) if lines else None
+    if match is None:
+        return output
+    hits = lines[1:1 + limit]
+    return "\n".join([f"Found {match.group(1)} hits; showing {len(hits)}.", *hits])
 
 
 def _jev_option_name(path: str, taken: Dict[str, int]) -> str:
@@ -3625,7 +3675,9 @@ def cmd_search(args: argparse.Namespace) -> None:
         if ranker == "jev":
             raise
         print(f"Jev ranking skipped: {exc}; using local results", file=sys.stderr)
-        print(cli.run("search", *local_args))
+        # The shortlist is the same local ranking, longer: cut it rather than
+        # search the vault a second time.
+        print(_first_hits(output, limit))
         return
     if not candidates:
         print(output)
