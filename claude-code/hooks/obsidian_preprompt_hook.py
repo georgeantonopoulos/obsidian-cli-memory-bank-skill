@@ -780,6 +780,8 @@ def main() -> int:
     if payload is None:
         return 0
     antigravity = is_antigravity_payload(payload)
+    global _ANTIGRAVITY
+    _ANTIGRAVITY = antigravity
 
     def _noop() -> int:
         if antigravity:
@@ -937,24 +939,33 @@ def main() -> int:
     return 0
 
 
-class _OutOfTime(BaseException):  # not caught by the hook's own "except Exception"
-    pass
+# Set once the payload is known: Antigravity expects "{}" on a no-op.
+_ANTIGRAVITY = False
 
 
 def _out_of_time(_signum, _frame):
-    raise _OutOfTime()
+    """Give up: the prompt goes ahead without memory.
+
+    Exits from the handler itself, because unwinding would wait for the
+    search threads (each ThreadPoolExecutor block joins its workers); a
+    search still running finishes on its own, read-only.
+    """
+    if _ANTIGRAVITY:
+        os.write(1, b"{}\n")
+    os._exit(0)
 
 
 if __name__ == "__main__":
     # Whatever else is slow, the prompt goes ahead without memory after
-    # _TOTAL_TIMEOUT seconds. os._exit, because a normal exit would wait for the
-    # search threads; a search still running finishes on its own, read-only.
+    # _TOTAL_TIMEOUT seconds.
     if hasattr(signal, "setitimer"):
         signal.signal(signal.SIGALRM, _out_of_time)
         signal.setitimer(signal.ITIMER_REAL, _TOTAL_TIMEOUT)
     try:
-        sys.exit(main())
-    except _OutOfTime:
-        os._exit(0)
+        code = main()
     except Exception:  # a memory hook must never break or block the session
-        sys.exit(0)
+        code = 0
+    finally:
+        if hasattr(signal, "setitimer"):
+            signal.setitimer(signal.ITIMER_REAL, 0)
+    sys.exit(code)
