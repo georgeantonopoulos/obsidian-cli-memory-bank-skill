@@ -3467,7 +3467,12 @@ def _post_json_within(request: urllib.request.Request, limit: float) -> Any:
     if worker.is_alive():
         raise TimeoutError(f"no reply within {limit:g} s")
     if "error" in outcome:
-        raise outcome["error"]
+        error = outcome["error"]
+        if isinstance(error, TimeoutError):
+            # A socket step timed out on its own: report a failed request,
+            # not the whole-request limit.
+            raise OSError(f"socket timeout: {error}") from error
+        raise error
     return outcome["value"]
 
 

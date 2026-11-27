@@ -710,6 +710,19 @@ def _created_epoch(value: str) -> float:
         return 0.0
 
 
+def _search_timeout() -> float:
+    """Seconds to wait for one search: obmem gives up on Jev after
+    $OBMEM_JEV_TIMEOUT (3 s by default) and returns its local order, so this
+    leaves room for that fallback and is only reached when the search hangs."""
+    try:
+        jev = float(os.environ.get("OBMEM_JEV_TIMEOUT", "") or 3)
+    except ValueError:
+        jev = 3.0
+    if not jev > 0 or jev == float("inf"):
+        jev = 3.0
+    return max(10.0, jev + 7.0)
+
+
 def _search(project: str | None, query: str, intent: str, workspace: str, env: dict | None) -> str:
     """One obmem search; ``project`` None searches every project."""
     scope = ["--all-projects"] if project is None else ["--project", project]
@@ -718,9 +731,7 @@ def _search(project: str | None, query: str, intent: str, workspace: str, env: d
             [obmem_bin(), "search", *scope, "--query", query,
              "--intent", intent, "--min-jev", f"{_jev_min():.2f}",
              "--limit", str(_CANDIDATE_LIMIT), "--workspace", workspace],
-            # obmem gives up on Jev after 3 s and returns its local order, so
-            # this limit is only reached when the search itself hangs.
-            text=True, capture_output=True, check=False, timeout=10, env=env,
+            text=True, capture_output=True, check=False, timeout=_search_timeout(), env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
