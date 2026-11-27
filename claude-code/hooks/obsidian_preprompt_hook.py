@@ -101,9 +101,9 @@ _MIN_PROMPT_WORDS = 3
 _DEFAULT_JEV_MIN = 0.50
 
 # Time limits, in seconds. The hook runs before every prompt reaches the model,
-# so a stuck step must not hold the prompt: Jev normally answers in about 0.3 s
+# so a stuck step must not hold the prompt: Jev usually answers well within its limit
 # and the search falls back to local ranking past _JEV_TIMEOUT; a search is cut off at
-# _SEARCH_TIMEOUT (local search of every project takes about 1 s) and any other
+# _SEARCH_TIMEOUT (a few times a typical local search) and any other
 # obmem call at _STEP_TIMEOUT. A cut-off step adds no memory to that prompt.
 _JEV_TIMEOUT = 1.5
 _SEARCH_TIMEOUT = 5

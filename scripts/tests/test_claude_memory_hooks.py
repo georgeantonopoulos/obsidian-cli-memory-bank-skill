@@ -1425,10 +1425,6 @@ class MemorySyncHookTests(unittest.TestCase):
             self.assertEqual(record.call_args.kwargs["summary"], "Rule. Extends other-rule.")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PromptHookTimeLimitTests(unittest.TestCase):
     """The prompt hook runs before every message reaches the model, so a stuck
     step (a Jev request, a slow disk) must give up quickly, not hold the prompt."""
@@ -1478,3 +1474,7 @@ class PromptHookTimeLimitTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
         self.assertLess(elapsed, HOOK._TOTAL_TIMEOUT + 1.5)
+
+
+if __name__ == "__main__":
+    unittest.main()
