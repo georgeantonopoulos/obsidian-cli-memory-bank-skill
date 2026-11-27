@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -98,6 +99,17 @@ _MIN_PROMPT_WORDS = 3
 # loosely related run logs through, so the hook asks for 0.50).
 # Unrelated prompts score ~0.02-0.05, related ones 0.5+. Only applies when Jev ranks.
 _DEFAULT_JEV_MIN = 0.50
+
+# Time limits, in seconds. The hook runs before every prompt reaches the model,
+# so a stuck step must not hold the prompt: Jev usually answers well within its limit
+# and the search falls back to local ranking past _JEV_TIMEOUT; a search is cut off at
+# _SEARCH_TIMEOUT (a few times a typical local search) and any other
+# obmem call at _STEP_TIMEOUT. A cut-off step adds no memory to that prompt.
+_JEV_TIMEOUT = 1.5
+_SEARCH_TIMEOUT = 5
+_STEP_TIMEOUT = 3
+# The whole hook, as a last resort.
+_TOTAL_TIMEOUT = 8
 
 
 def _jev_min() -> float:
@@ -501,7 +513,7 @@ def _note_title(path: Path) -> str:
 def _vault_path(workspace: str) -> Path | None:
     try:
         result = subprocess.run([obmem_bin(), "show-vault", "--workspace", workspace],
-                                text=True, capture_output=True, check=False, timeout=10)
+                                text=True, capture_output=True, check=False, timeout=_STEP_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return None
     text = result.stdout.strip() if result.returncode == 0 else ""
@@ -668,7 +680,7 @@ def _note_excerpts(selected_hits: str, workspace: str, query: str = "", other: s
             # anywhere in it; what is pasted in stays within its limit.
             result = subprocess.run(
                 [obmem_bin(), "read-note", "--path", path, "--full", "--workspace", workspace],
-                text=True, capture_output=True, check=False, timeout=10,
+                text=True, capture_output=True, check=False, timeout=_STEP_TIMEOUT,
             )
         except (OSError, subprocess.SubprocessError):
             return ""
@@ -710,7 +722,7 @@ def _created_epoch(value: str) -> float:
         return 0.0
 
 
-def _search(project: str | None, query: str, intent: str, workspace: str, env: dict | None) -> str:
+def _search(project: str | None, query: str, intent: str, workspace: str, env: dict) -> str:
     """One obmem search; ``project`` None searches every project."""
     scope = ["--all-projects"] if project is None else ["--project", project]
     try:
@@ -718,7 +730,7 @@ def _search(project: str | None, query: str, intent: str, workspace: str, env: d
             [obmem_bin(), "search", *scope, "--query", query,
              "--intent", intent, "--min-jev", f"{_jev_min():.2f}",
              "--limit", str(_CANDIDATE_LIMIT), "--workspace", workspace],
-            text=True, capture_output=True, check=False, timeout=20, env=env,
+            text=True, capture_output=True, check=False, timeout=_SEARCH_TIMEOUT, env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -768,6 +780,8 @@ def main() -> int:
     if payload is None:
         return 0
     antigravity = is_antigravity_payload(payload)
+    global _ANTIGRAVITY
+    _ANTIGRAVITY = antigravity
 
     def _noop() -> int:
         if antigravity:
@@ -874,8 +888,9 @@ def main() -> int:
     # list to the candidate limit (an older obmem ignores these; the filter
     # below still applies then).
     since = compacted_at(session_id)
-    search_env = {**os.environ, "OBMEM_EXCLUDE_SESSION": session_id,
-                  "OBMEM_EXCLUDE_SINCE": str(since)} if session_id else None
+    search_env = {**os.environ, "OBMEM_JEV_TIMEOUT": f"{_JEV_TIMEOUT:g}"}
+    if session_id:
+        search_env.update(OBMEM_EXCLUDE_SESSION=session_id, OBMEM_EXCLUDE_SINCE=str(since))
     # Every project is searched too, at the same time: a prompt about another
     # project's work rarely names that project.
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -924,8 +939,33 @@ def main() -> int:
     return 0
 
 
+# Set once the payload is known: Antigravity expects "{}" on a no-op.
+_ANTIGRAVITY = False
+
+
+def _out_of_time(_signum, _frame):
+    """Give up: the prompt goes ahead without memory.
+
+    Exits from the handler itself, because unwinding would wait for the
+    search threads (each ThreadPoolExecutor block joins its workers); a
+    search still running finishes on its own, read-only.
+    """
+    if _ANTIGRAVITY:
+        os.write(1, b"{}\n")
+    os._exit(0)
+
+
 if __name__ == "__main__":
+    # Whatever else is slow, the prompt goes ahead without memory after
+    # _TOTAL_TIMEOUT seconds.
+    if hasattr(signal, "setitimer"):
+        signal.signal(signal.SIGALRM, _out_of_time)
+        signal.setitimer(signal.ITIMER_REAL, _TOTAL_TIMEOUT)
     try:
-        sys.exit(main())
+        code = main()
     except Exception:  # a memory hook must never break or block the session
-        sys.exit(0)
+        code = 0
+    finally:
+        if hasattr(signal, "setitimer"):
+            signal.setitimer(signal.ITIMER_REAL, 0)
+    sys.exit(code)

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The prompt hook no longer stalls a prompt for 20 s.** When the Jev request
+  hung, the memory search waited out the hook's 20 s limit, so the prompt sat
+  for 20 s and got no memory. urlopen's timeout covers each socket wait, not
+  the request, so the Jev request now runs under a wall-clock limit
+  (`OBMEM_JEV_TIMEOUT`, default 10 s; the prompt hook passes 1.5 s) and falls
+  back to local ranking, reusing the shortlist instead of searching the vault
+  again. The hook also cuts a search off at 5 s, other obmem calls at 3 s, and
+  gives up entirely after 8 s. With Jev made to hang, 10 prompts took 20.3 s
+  each before and 2.6 s after, still with memory; with Jev answering normally,
+  timing is unchanged.
+
 - **Native Antigravity plugin and lifecycle hooks.** Added `antigravity/` (`plugin.json`, `hooks.json`, `skills/obsidian-cli-memory-bank/SKILL.md`, `install.sh`, and `INSTALL.md`) and extended the shared hook scripts (`claude-code/hooks/`) to understand Antigravity's camelCase payloads, `transcript.jsonl` format, and JSON hook contracts (`SessionStart`, `PreInvocation`, and `Stop`) without duplicating hook logic or changing Claude Code behavior. `PreInvocation` deduplicates per user turn so memory search runs once per prompt across tool-call loops and surfaces a one-line inline `Memory:` notice via `metadata.user_markdown`; `Stop` auto-captures edited turns (`antigravity,auto-log`) on `NO_TOOL_CALL` completion and always returns `{"decision": "allow"}`. Shared hooks also fall back to `~/.local/bin/obmem` and Homebrew paths when GUI runtimes launch with a minimal `PATH`.
 
 - **`obmem ask`: follow-up questions to memory.** When the first recall leaves
