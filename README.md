@@ -103,7 +103,10 @@ opt in to Jev with their own TypeSafe API key. Jev receives the query, note titl
 and up to 1,200 source characters from each of the 10 best local matches (or as
 many as `--limit` asks for, up to 30), then ranks that shortlist before the CLI
 shows the best three. Archived notes stay
-excluded unless you pass `--include-archive`.
+excluded unless you pass `--include-archive`. A Jev request that takes longer
+than 3 seconds in total is dropped and the search keeps the local order
+(`ranker auto`) or fails (`ranker jev`); set `OBMEM_JEV_TIMEOUT` to change the
+limit.
 
 ```bash
 # Enter your own key privately for this shell session (input is hidden).

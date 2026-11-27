@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -3429,6 +3430,45 @@ def _build_or_query(raw_query: str) -> str:
 
 # Below this, Jev's single-best pick is too spread across notes to override Noul order.
 JEV_CHOICE_MIN_CONFIDENCE = 0.5
+# Whole-request limit for a Jev call, in seconds ($OBMEM_JEV_TIMEOUT overrides).
+# urlopen's own timeout applies to each socket step and not to the DNS lookup,
+# so a stalled network could hold a search for much longer than this; past the
+# limit the search falls back to local order.
+JEV_TIMEOUT_SECONDS = 3.0
+
+
+def _jev_timeout() -> float:
+    try:
+        value = float(os.environ.get("OBMEM_JEV_TIMEOUT", "") or JEV_TIMEOUT_SECONDS)
+    except ValueError:
+        return JEV_TIMEOUT_SECONDS
+    return value if math.isfinite(value) and value > 0 else JEV_TIMEOUT_SECONDS
+
+
+def _post_json_within(request: urllib.request.Request, limit: float) -> Any:
+    """POST ``request`` and parse its JSON reply, giving up after ``limit`` seconds in all.
+
+    The request runs on a daemon thread so a stalled DNS lookup or a slow,
+    trickling reply cannot outlast the limit; an abandoned thread does not keep
+    the process alive.
+    """
+    outcome: Dict[str, Any] = {}
+
+    def fetch() -> None:
+        try:
+            with urllib.request.urlopen(request, timeout=limit) as response:
+                outcome["value"] = json.load(response)
+        except BaseException as exc:  # handed to the caller's thread below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=fetch, name="jev-request", daemon=True)
+    worker.start()
+    worker.join(limit)
+    if worker.is_alive():
+        raise TimeoutError(f"no reply within {limit:g} s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 def _jev_rerank(
@@ -3497,11 +3537,13 @@ def _jev_rerank(
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
+    limit = _jev_timeout()
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            answers = json.load(response)["answers"]
+        answers = _post_json_within(request, limit)["answers"]
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"Jev ranking request failed (HTTP {exc.code})") from exc
+    except TimeoutError as exc:
+        raise RuntimeError(f"Jev ranking request timed out after {limit:g} s") from exc
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise RuntimeError("Jev ranking request failed") from exc
     ranked = []

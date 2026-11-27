@@ -718,7 +718,9 @@ def _search(project: str | None, query: str, intent: str, workspace: str, env: d
             [obmem_bin(), "search", *scope, "--query", query,
              "--intent", intent, "--min-jev", f"{_jev_min():.2f}",
              "--limit", str(_CANDIDATE_LIMIT), "--workspace", workspace],
-            text=True, capture_output=True, check=False, timeout=20, env=env,
+            # obmem gives up on Jev after 3 s and returns its local order, so
+            # this limit is only reached when the search itself hangs.
+            text=True, capture_output=True, check=False, timeout=10, env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return ""

@@ -37,6 +37,43 @@ class RetrievalBudgetTests(unittest.TestCase):
             self.assertIn('Found 9 hits; showing 9.', expanded)
             self.assertIn('Archive/old.md', expanded)
 
+    def test_stalled_jev_request_falls_back_to_local_order_within_the_limit(self):
+        import threading
+        import time
+
+        released = threading.Event()
+
+        def stall(*_args, **_kwargs):
+            # A DNS lookup or reply that never finishes; urlopen's own timeout
+            # does not cover it.
+            released.wait(30)
+            raise OSError('released')
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / 'Project Memory/demo'
+            root.mkdir(parents=True)
+            for i in range(3):
+                (root / f'note-{i}.md').write_text('export progress')
+            env = {'TYPESAFE_API_KEY': 'test-key', 'OBMEM_JEV_TIMEOUT': '0.3'}
+            errors = io.StringIO()
+            try:
+                with patch.dict('os.environ', env), patch(
+                    'scripts.obsidian_memory.urllib.request.urlopen', side_effect=stall
+                ), contextlib.redirect_stderr(errors):
+                    started = time.monotonic()
+                    output = self.command(
+                        vault, 'search', '--project', 'demo', '--query', 'export',
+                        '--ranker', 'auto',
+                    )
+                    elapsed = time.monotonic() - started
+            finally:
+                released.set()
+        self.assertLess(elapsed, 5)
+        self.assertIn('timed out after 0.3 s', errors.getvalue())
+        self.assertIn('Found 3 hits; showing 3.', output)
+        self.assertNotIn('Jev', output)
+
     def test_jev_reranks_local_shortlist_and_sends_bounded_excerpts(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
